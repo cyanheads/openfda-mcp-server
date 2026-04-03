@@ -1,7 +1,7 @@
 # Agent Protocol
 
 **Server:** openfda-mcp-server
-**Version:** 0.1.2
+**Version:** 0.1.3
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core)
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -32,8 +32,6 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 
 - **Logic throws, framework catches.** Tool/resource handlers are pure — throw on failure, no `try/catch`. Plain `Error` is fine; the framework catches, classifies, and formats. Use error factories (`notFound()`, `validationError()`, etc.) when the error code matters.
 - **Use `ctx.log`** for request-scoped logging. No `console` calls.
-- **Use `ctx.state`** for tenant-scoped storage. Never access persistence directly.
-- **Check `ctx.elicit` / `ctx.sample`** for presence before calling.
 - **Secrets in env vars only** — never hardcoded.
 
 ---
@@ -44,33 +42,37 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 
 ```ts
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
-export const searchItems = tool('search_items', {
-  description: 'Search inventory items by query.',
+export const countTool = tool('openfda_count', {
+  description: 'Aggregate and tally unique values for any field across any openFDA endpoint.',
   annotations: { readOnlyHint: true },
   input: z.object({
-    query: z.string().describe('Search terms'),
-    limit: z.number().default(10).describe('Max results'),
+    endpoint: z.enum(['drug/event', 'drug/label', /* ... */]).describe('openFDA endpoint path'),
+    count: z.string().describe('Field to count. Append .exact for whole-phrase counting'),
+    search: z.string().optional().describe('Filter query to scope the count'),
+    limit: z.number().min(1).max(1000).default(100).optional().describe('Top terms to return'),
   }),
   output: z.object({
-    items: z.array(z.object({
-      id: z.string().describe('Item ID'),
-      name: z.string().describe('Item name'),
-    })).describe('Matching items'),
+    meta: z.object({ lastUpdated: z.string().describe('Dataset last updated date') }),
+    results: z.array(z.object({
+      term: z.string().describe('Field value'),
+      count: z.number().describe('Number of occurrences'),
+    })).describe('Term-count pairs sorted by count descending'),
   }),
-  auth: ['inventory:read'],
 
   async handler(input, ctx) {
-    const items = await findItems(input.query, input.limit);
-    ctx.log.info('Search completed', { query: input.query, count: items.length });
-    return { items };
+    const svc = getOpenFdaService();
+    const response = await svc.query(input.endpoint, { search: input.search, count: input.count, limit: input.limit }, ctx);
+    ctx.log.info('Count query completed', { endpoint: input.endpoint, terms: response.results.length });
+    return { meta: { lastUpdated: response.meta.lastUpdated }, results: response.results.map(r => ({ term: String(r.term), count: r.count as number })) };
   },
 
   // format() populates content[] — the only field most LLM clients forward to
   // the model. Render all data the LLM needs, not just a count or title.
   format: (result) => [{
     type: 'text',
-    text: result.items.map(i => `**${i.id}**: ${i.name}`).join('\n'),
+    text: result.results.map((r, i) => `${i + 1}. ${r.term}: ${r.count}`).join('\n'),
   }],
 });
 ```
@@ -102,12 +104,8 @@ Handlers receive a unified `ctx` object. Key properties:
 | Property | Description |
 |:---------|:------------|
 | `ctx.log` | Request-scoped logger — `.debug()`, `.info()`, `.notice()`, `.warning()`, `.error()`. Auto-correlates requestId, traceId, tenantId. |
-| `ctx.state` | Tenant-scoped KV — `.get(key)`, `.set(key, value, { ttl? })`, `.delete(key)`, `.list(prefix, { cursor, limit })`. Accepts any serializable value. |
-| `ctx.elicit` | Ask user for structured input. **Check for presence first:** `if (ctx.elicit) { ... }` |
-| `ctx.sample` | Request LLM completion from the client. **Check for presence first:** `if (ctx.sample) { ... }` |
-| `ctx.signal` | `AbortSignal` for cancellation. |
-| `ctx.progress` | Task progress (present when `task: true`) — `.setTotal(n)`, `.increment()`, `.update(message)`. |
-| `ctx.requestId` | Unique request ID. |
+| `ctx.signal` | `AbortSignal` for cancellation. Used by the openFDA service for request timeouts and retry abort. |
+| `ctx.requestId` | Unique request ID. Passed to the service layer for retry context. |
 | `ctx.tenantId` | Tenant ID from JWT or `'default'` for stdio. |
 
 ---
@@ -143,12 +141,18 @@ src/
   config/
     server-config.ts                    # Server-specific env vars (Zod schema)
   services/
-    [domain]/
-      [domain]-service.ts               # Domain service (init/accessor pattern)
-      types.ts                          # Domain types
+    openfda/
+      openfda-service.ts                # openFDA API client (retry, rate-limit, error normalization)
+      types.ts                          # Query params and response types
   mcp-server/
     tools/definitions/
-      [tool-name].tool.ts               # Tool definitions
+      count.tool.ts                     # openfda_count
+      get-drug-label.tool.ts            # openfda_get_drug_label
+      lookup-ndc.tool.ts                # openfda_lookup_ndc
+      search-adverse-events.tool.ts     # openfda_search_adverse_events
+      search-device-clearances.tool.ts  # openfda_search_device_clearances
+      search-drug-approvals.tool.ts     # openfda_search_drug_approvals
+      search-recalls.tool.ts            # openfda_search_recalls
 ```
 
 ---
@@ -157,10 +161,10 @@ src/
 
 | What | Convention | Example |
 |:-----|:-----------|:--------|
-| Files | kebab-case with suffix | `search-docs.tool.ts` |
-| Tool/resource/prompt names | snake_case | `search_docs` |
-| Directories | kebab-case | `src/services/doc-search/` |
-| Descriptions | Single string or template literal, no `+` concatenation | `'Search items by query and filter.'` |
+| Files | kebab-case with suffix | `search-recalls.tool.ts` |
+| Tool/resource/prompt names | snake_case | `openfda_search_recalls` |
+| Directories | kebab-case | `src/services/openfda/` |
+| Descriptions | Single string or template literal, no `+` concatenation | `'Search enforcement reports and recall actions.'` |
 
 ---
 
@@ -210,7 +214,7 @@ When you complete a skill's checklist, check the boxes and add a completion time
 | `bun run devcheck` | Lint + format + typecheck + security |
 | `bun run tree` | Generate directory structure doc |
 | `bun run format` | Auto-fix formatting |
-| `bun test` | Run tests |
+| `bun run test` | Run tests (Vitest) |
 | `bun run dev:stdio` | Dev mode (stdio) |
 | `bun run dev:http` | Dev mode (HTTP) |
 | `bun run start:stdio` | Production mode (stdio) |
@@ -226,7 +230,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { McpError, JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 
 // Server's own code — via path alias
-import { getMyService } from '@/services/my-domain/my-service.js';
+import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 ```
 
 ---
@@ -236,7 +240,7 @@ import { getMyService } from '@/services/my-domain/my-service.js';
 - [ ] Zod schemas: all fields have `.describe()`, only JSON-Schema-serializable types (no `z.custom()`, `z.date()`, `z.transform()`, etc.)
 - [ ] Optional nested objects: handler guards for empty inner values from form-based clients (`if (input.obj?.field && ...)`, not just `if (input.obj)`)
 - [ ] JSDoc `@fileoverview` + `@module` on every file
-- [ ] `ctx.log` for logging, `ctx.state` for storage
+- [ ] `ctx.log` for logging, `ctx.signal` for cancellation
 - [ ] Handlers throw on failure — error factories or plain `Error`, no try/catch
 - [ ] `format()` renders all data the LLM needs — `content[]` is the only field most clients forward to the model
 - [ ] Registered in `createApp()` arrays (directly or via barrel exports)
