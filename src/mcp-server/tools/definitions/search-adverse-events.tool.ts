@@ -19,7 +19,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       .string()
       .optional()
       .describe(
-        'Elasticsearch query string. Examples: patient.drug.medicinalproduct:"aspirin", patient.reaction.reactionmeddrapt:"nausea"+AND+serious:"1". Omit to browse recent.',
+        'Elasticsearch query string. Examples: patient.drug.medicinalproduct:"aspirin", patient.reaction.reactionmeddrapt:"nausea" AND serious:"1". Omit to browse recent.',
       ),
     sort: z.string().optional().describe('Sort field and direction. Example: receivedate:desc'),
     limit: z.number().min(1).max(1000).default(10).optional().describe('Results to return'),

@@ -17,7 +17,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
     search: z
       .string()
       .describe(
-        'openFDA search query. Examples: openfda.brand_name:"humira", sponsor_name:"pfizer", submissions.submission_type:"ORIG"+AND+submissions.review_priority:"PRIORITY"',
+        'openFDA search query. Examples: openfda.brand_name:"humira", sponsor_name:"pfizer", submissions.submission_type:"ORIG" AND submissions.review_priority:"PRIORITY"',
       ),
     sort: z
       .string()

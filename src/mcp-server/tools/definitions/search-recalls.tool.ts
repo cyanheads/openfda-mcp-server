@@ -32,7 +32,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       .string()
       .optional()
       .describe(
-        'openFDA search query. Examples: classification:"Class+I", recalling_firm:"pfizer", reason_for_recall:"undeclared+allergen".',
+        'openFDA search query. Examples: classification:"Class I", recalling_firm:"pfizer", reason_for_recall:"undeclared allergen".',
       ),
     sort: z.string().optional().describe('Sort expression. Example: report_date:desc.'),
     limit: z
@@ -99,7 +99,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       results: response.results,
       message:
         response.results.length === 0
-          ? 'No matching records found. Try broadening the search query or adjusting filters.'
+          ? `No recall/enforcement records matched${input.search ? ` search: ${input.search}` : ''} in ${input.category}/${endpointValue}. Try broadening filters or check field names (e.g. classification, recalling_firm, reason_for_recall).`
           : undefined,
     };
   },

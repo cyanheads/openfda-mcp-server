@@ -120,7 +120,7 @@ export class OpenFdaService {
         );
       }
       throw validationError(
-        `openFDA query error: ${errorMessage}. Check field names and query syntax — use +AND+/+OR+ for boolean operators, quotes for exact match.`,
+        `openFDA query error: ${errorMessage}. Check field names and query syntax — use AND/OR for boolean operators, quotes for exact match.`,
         { endpoint },
       );
     }

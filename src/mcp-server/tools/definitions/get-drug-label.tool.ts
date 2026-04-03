@@ -72,7 +72,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       meta: response.meta,
       results: response.results,
       ...(response.results.length === 0 && {
-        message: 'No labels matched the query. Try broader terms or check field names.',
+        message: `No labels matched${input.search ? ` search: ${input.search}` : ''}. Try broader terms or check field names (e.g. openfda.brand_name, openfda.generic_name, openfda.manufacturer_name).`,
       }),
     };
   },

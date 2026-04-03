@@ -114,7 +114,8 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       }
       // PMA
       else if (r.pma_number) {
-        lines.push(`### ${r.pma_number}`);
+        const deviceLabel = r.trade_name ?? r.generic_name ?? '';
+        lines.push(`### ${r.pma_number}${deviceLabel ? `: ${deviceLabel}` : ''}`);
         lines.push(
           `**Applicant:** ${r.applicant ?? 'N/A'} | **Product code:** ${r.product_code ?? 'N/A'}`,
         );
