@@ -28,15 +28,8 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       .min(1)
       .max(1000)
       .default(10)
-      .optional()
       .describe('Maximum number of records to return (1-1000).'),
-    skip: z
-      .number()
-      .min(0)
-      .max(25000)
-      .default(0)
-      .optional()
-      .describe('Pagination offset (0-25000).'),
+    skip: z.number().min(0).max(25000).default(0).describe('Pagination offset (0-25000).'),
   }),
 
   output: z.object({

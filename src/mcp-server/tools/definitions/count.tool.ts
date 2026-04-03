@@ -53,7 +53,6 @@ export const countTool = tool('openfda_count', {
       .min(1)
       .max(1000)
       .default(100)
-      .optional()
       .describe('Number of top terms to return (default 100, max 1000)'),
   }),
 

@@ -25,14 +25,12 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       .min(1)
       .max(1000)
       .default(5)
-      .optional()
       .describe('Maximum number of results to return (1-1000). Default 5. Labels are large.'),
     skip: z
       .number()
       .min(0)
       .max(25000)
       .default(0)
-      .optional()
       .describe('Number of results to skip for pagination (0-25000). Default 0.'),
   }),
 

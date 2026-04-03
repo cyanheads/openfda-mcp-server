@@ -12,7 +12,6 @@ const Category = z.enum(['drug', 'food', 'device']).describe('Product category')
 const Endpoint = z
   .enum(['enforcement', 'recall'])
   .default('enforcement')
-  .optional()
   .describe('Report type. Default enforcement. The recall endpoint is only available for devices.');
 
 /** Truncate a string to `max` characters, appending ellipsis when trimmed. */
@@ -40,15 +39,8 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       .min(1)
       .max(1000)
       .default(10)
-      .optional()
       .describe('Maximum number of records to return (1-1000).'),
-    skip: z
-      .number()
-      .min(0)
-      .max(25000)
-      .default(0)
-      .optional()
-      .describe('Pagination offset (0-25000).'),
+    skip: z.number().min(0).max(25000).default(0).describe('Pagination offset (0-25000).'),
   }),
 
   output: z.object({

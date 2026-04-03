@@ -27,14 +27,12 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       .min(1)
       .max(1000)
       .default(10)
-      .optional()
       .describe('Maximum number of records to return (1-1000, default 10)'),
     skip: z
       .number()
       .min(0)
       .max(25000)
       .default(0)
-      .optional()
       .describe('Number of records to skip for pagination (0-25000, default 0)'),
   }),
 
