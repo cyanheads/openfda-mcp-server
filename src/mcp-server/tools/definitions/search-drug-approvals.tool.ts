@@ -16,8 +16,9 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
   input: z.object({
     search: z
       .string()
+      .optional()
       .describe(
-        'openFDA search query. Examples: openfda.brand_name:"humira", sponsor_name:"pfizer", submissions.submission_type:"ORIG" AND submissions.review_priority:"PRIORITY"',
+        'openFDA search query. Examples: openfda.brand_name:"humira", sponsor_name:"pfizer", submissions.submission_type:"ORIG" AND submissions.review_priority:"PRIORITY". Omit to browse recent.',
       ),
     sort: z
       .string()
@@ -118,6 +119,24 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       if (openfda.route) lines.push(`**Route:** ${(openfda.route as string[]).join(', ')}`);
       if (openfda.product_type)
         lines.push(`**Type:** ${(openfda.product_type as string[]).join(', ')}`);
+
+      const products = r.products ?? [];
+      if (products.length > 0) {
+        lines.push('**Products:**');
+        for (const p of products) {
+          const ingredients = (p.active_ingredients ?? [])
+            .map((i: Record<string, unknown>) => `${i.name} ${i.strength ?? ''}`.trim())
+            .join(', ');
+          const parts = [
+            p.brand_name,
+            ingredients ? `(${ingredients})` : null,
+            p.dosage_form,
+            p.route,
+            p.marketing_status,
+          ].filter(Boolean);
+          lines.push(`- ${parts.join(' | ')}`);
+        }
+      }
 
       const submissions = r.submissions ?? [];
       if (submissions.length > 0) {

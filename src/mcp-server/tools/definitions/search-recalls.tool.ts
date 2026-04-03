@@ -114,7 +114,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       ];
     }
 
-    const header = `**${result.meta.total} total records** (showing ${result.results.length}, offset ${result.meta.skip}) | Last updated: ${result.meta.lastUpdated}\n`;
+    const header = `**${result.meta.total.toLocaleString()} total records** (showing ${result.results.length}, offset ${result.meta.skip}) | Last updated: ${result.meta.lastUpdated}\n`;
 
     const records = result.results.map((r) => {
       const lines = [

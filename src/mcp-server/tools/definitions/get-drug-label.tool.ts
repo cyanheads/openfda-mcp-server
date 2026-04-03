@@ -87,6 +87,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
     ];
 
     const sections = [
+      ['Boxed Warning', 'boxed_warning'],
       ['Indications & Usage', 'indications_and_usage'],
       ['Dosage & Administration', 'dosage_and_administration'],
       ['Warnings', 'warnings'],

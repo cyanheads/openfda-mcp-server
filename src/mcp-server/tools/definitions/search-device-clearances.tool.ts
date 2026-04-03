@@ -18,8 +18,9 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       ),
     search: z
       .string()
+      .optional()
       .describe(
-        'openFDA search query. Examples: applicant:"medtronic", advisory_committee_description:"cardiovascular", product_code:"DXN", openfda.device_name:"catheter".',
+        'openFDA search query. Examples: applicant:"medtronic", advisory_committee_description:"cardiovascular", product_code:"DXN", openfda.device_name:"catheter". Omit to browse recent.',
       ),
     sort: z.string().optional().describe('Sort expression. Example: decision_date:desc.'),
     limit: z
@@ -119,7 +120,9 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
         lines.push(
           `**Applicant:** ${r.applicant ?? 'N/A'} | **Product code:** ${r.product_code ?? 'N/A'}`,
         );
-        lines.push(`**Decision:** ${r.decision_code ?? 'N/A'} (${r.decision_date ?? 'N/A'})`);
+        lines.push(
+          `**Decision:** ${r.decision_description ?? r.decision_code ?? 'N/A'} (${r.decision_date ?? 'N/A'})`,
+        );
         if (r.advisory_committee_description)
           lines.push(`**Advisory committee:** ${r.advisory_committee_description}`);
         if (r.supplement_number) lines.push(`**Supplement:** ${r.supplement_number}`);
