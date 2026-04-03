@@ -6,6 +6,8 @@
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
 
+> **Design doc:** `docs/design.md` is the source of truth for the tool surface, error handling, config, and implementation notes. Read it before adding or modifying tools.
+
 ---
 
 ## What's Next?
@@ -73,53 +75,19 @@ export const searchItems = tool('search_items', {
 });
 ```
 
-### Resource
-
-```ts
-import { resource, z } from '@cyanheads/mcp-ts-core';
-
-export const itemData = resource('inventory://{itemId}', {
-  description: 'Fetch an inventory item by ID.',
-  params: z.object({ itemId: z.string().describe('Item identifier') }),
-  auth: ['inventory:read'],
-  async handler(params, ctx) {
-    const item = await ctx.state.get(`item:${params.itemId}`);
-    if (!item) throw new Error(`Item ${params.itemId} not found`);
-    return item;
-  },
-});
-```
-
-### Prompt
-
-```ts
-import { prompt, z } from '@cyanheads/mcp-ts-core';
-
-export const reviewCode = prompt('review_code', {
-  description: 'Review code for issues and best practices.',
-  args: z.object({
-    code: z.string().describe('Code to review'),
-    language: z.string().optional().describe('Programming language'),
-  }),
-  generate: (args) => [
-    { role: 'user', content: { type: 'text', text: `Review this ${args.language ?? ''} code:\n${args.code}` } },
-  ],
-});
-```
-
 ### Server config
 
 ```ts
 // src/config/server-config.ts — lazy-parsed, separate from framework config
 const ServerConfigSchema = z.object({
-  myApiKey: z.string().describe('External API key'),
-  maxResults: z.coerce.number().default(100),
+  apiKey: z.string().optional().describe('openFDA API key — increases daily limit from 1K to 120K requests'),
+  baseUrl: z.string().default('https://api.fda.gov').describe('openFDA base URL'),
 });
 let _config: z.infer<typeof ServerConfigSchema> | undefined;
 export function getServerConfig() {
   _config ??= ServerConfigSchema.parse({
-    myApiKey: process.env.MY_API_KEY,
-    maxResults: process.env.MY_MAX_RESULTS,
+    apiKey: process.env.OPENFDA_API_KEY,
+    baseUrl: process.env.OPENFDA_BASE_URL,
   });
   return _config;
 }
@@ -181,10 +149,6 @@ src/
   mcp-server/
     tools/definitions/
       [tool-name].tool.ts               # Tool definitions
-    resources/definitions/
-      [resource-name].resource.ts       # Resource definitions
-    prompts/definitions/
-      [prompt-name].prompt.ts           # Prompt definitions
 ```
 
 ---
@@ -277,4 +241,4 @@ import { getMyService } from '@/services/my-domain/my-service.js';
 - [ ] `format()` renders all data the LLM needs — `content[]` is the only field most clients forward to the model
 - [ ] Registered in `createApp()` arrays (directly or via barrel exports)
 - [ ] Tests use `createMockContext()` from `@cyanheads/mcp-ts-core/testing`
-- [ ] `npm run devcheck` passes
+- [ ] `bun run devcheck` passes
