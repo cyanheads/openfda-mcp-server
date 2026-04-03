@@ -6,14 +6,14 @@
     "url": "https://github.com/cyanheads/openfda-mcp-server",
     "source": "github"
   },
-  "version": "0.1.4",
+  "version": "0.1.5",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/openfda-mcp-server",
       "runtimeHint": "bun",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "environmentVariables": [
         {
           "name": "OPENFDA_API_KEY",
@@ -38,7 +38,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/openfda-mcp-server",
       "runtimeHint": "bun",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "environmentVariables": [
         {
           "name": "OPENFDA_API_KEY",

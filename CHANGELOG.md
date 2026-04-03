@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.5] - 2026-04-03
+
+### Fixed
+
+- Removed redundant `.optional()` from all fields with `.default()` values across all 7 tool definitions — fields with defaults are never undefined, so the combination was semantically incorrect and could produce unexpected schema behavior
+
+### Changed
+
+- Added `@vitest/coverage-istanbul` to `devcheck.config.json` allowed dependencies
+
 ## [0.1.4] - 2026-04-03
 
 ### Changed

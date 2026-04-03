@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/openfda-mcp-server",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "mcpName": "io.github.cyanheads/openfda-mcp-server",
   "description": "MCP server for querying FDA data on drugs, food, devices, and recalls via openFDA.",
   "type": "module",
