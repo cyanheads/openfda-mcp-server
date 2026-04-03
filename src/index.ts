@@ -5,7 +5,12 @@
  */
 
 import { createApp } from '@cyanheads/mcp-ts-core';
+import { allToolDefinitions } from './mcp-server/tools/definitions/index.js';
+import { initOpenFdaService } from './services/openfda/openfda-service.js';
 
 await createApp({
-  tools: [],
+  tools: allToolDefinitions,
+  setup() {
+    initOpenFdaService();
+  },
 });
