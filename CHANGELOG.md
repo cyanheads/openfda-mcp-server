@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1] - 2026-04-03
+
+### Changed
+
+- Removed URL-encoded syntax (`+AND+`, `+OR+`, `+`) from tool descriptions and error messages — the service layer handles encoding, so user-facing text now shows plain `AND`/`OR`/spaces
+- Improved empty-result messages for `openfda_get_drug_label` and `openfda_search_recalls` — now echo the search query and suggest common field names
+- PMA result headings in `openfda_search_device_clearances` now include trade/generic name when available
+
 ## [0.1.0] - 2026-04-03
 
 Initial release.

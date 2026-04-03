@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/openfda-mcp-server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MCP server wrapping the openFDA API for FDA data across drugs, food, devices, and other regulated products.",
   "type": "module",
   "main": "dist/index.js",
