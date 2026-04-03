@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server.svg)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server)
 [![License](https://img.shields.io/npm/l/@cyanheads/openfda-mcp-server.svg)](LICENSE)
 
-MCP server wrapping the [openFDA API](https://open.fda.gov/apis/) for FDA data across drugs, food, devices, and other regulated products. Query adverse events, recalls, drug labels, approvals, device clearances, NDC codes, and aggregate statistics — all through a unified MCP interface.
+MCP server for querying FDA data on drugs, food, devices, and recalls via the [openFDA API](https://open.fda.gov/apis/). Query adverse events, recalls, drug labels, approvals, device clearances, NDC codes, and aggregate statistics — all through a unified MCP interface.
 
 Built on [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core). Supports stdio and HTTP transports.
 

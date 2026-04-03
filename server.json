@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "cyanheads/openfda-mcp-server",
-  "description": "MCP server wrapping the openFDA API for FDA data across drugs, food, devices, and other regulated products.",
+  "description": "MCP server for querying FDA data on drugs, food, devices, and recalls via openFDA.",
   "repository": {
     "url": "https://github.com/cyanheads/openfda-mcp-server",
     "source": "github"

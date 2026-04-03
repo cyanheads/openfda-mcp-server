@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.1.2] - 2026-04-03
+
+### Added
+
+- Boxed warning section in `openfda_get_drug_label` format output
+- Product details (ingredients, dosage form, route, marketing status) in `openfda_search_drug_approvals` format output
+- `decision_description` display in `openfda_search_device_clearances` format output
+
+### Changed
+
+- Made `search` parameter optional in `openfda_search_device_clearances` and `openfda_search_drug_approvals` — omit to browse recent entries
+- Improved `limit` and `skip` field descriptions with explicit ranges and defaults in `openfda_search_adverse_events`
+- Total record counts now use locale-formatted numbers in `openfda_search_recalls`
+- Concise server description in `server.json` and `package.json`
+- Sorted imports alphabetically across all test files
+
+### Fixed
+
+- Removed unused `getOpenFdaService` import from service test
+
 ## [0.1.1] - 2026-04-03
 
 ### Changed
