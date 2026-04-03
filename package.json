@@ -1,6 +1,7 @@
 {
   "name": "@cyanheads/openfda-mcp-server",
-  "version": "0.1.2",
+  "version": "0.1.3",
+  "mcpName": "io.github.cyanheads/openfda-mcp-server",
   "description": "MCP server for querying FDA data on drugs, food, devices, and recalls via openFDA.",
   "type": "module",
   "main": "dist/index.js",
@@ -23,14 +24,30 @@
     "start:stdio": "MCP_TRANSPORT_TYPE=stdio node dist/index.js",
     "start:http": "MCP_TRANSPORT_TYPE=http node dist/index.js"
   },
-  "keywords": ["mcp", "mcp-server", "model-context-protocol"],
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "openfda",
+    "fda",
+    "drug-safety",
+    "adverse-events",
+    "typescript"
+  ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/cyanheads/openfda-mcp-server"
+    "url": "git+https://github.com/cyanheads/openfda-mcp-server.git"
   },
+  "homepage": "https://github.com/cyanheads/openfda-mcp-server",
+  "bugs": {
+    "url": "https://github.com/cyanheads/openfda-mcp-server/issues"
+  },
+  "author": "cyanheads",
   "license": "Apache-2.0",
+  "packageManager": "bun@1.3.11",
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=22.0.0",
+    "bun": ">=1.2.0"
   },
   "publishConfig": {
     "access": "public"

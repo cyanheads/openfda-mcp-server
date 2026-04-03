@@ -1,19 +1,19 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "cyanheads/openfda-mcp-server",
+  "name": "io.github.cyanheads/openfda-mcp-server",
   "description": "MCP server for querying FDA data on drugs, food, devices, and recalls via openFDA.",
   "repository": {
     "url": "https://github.com/cyanheads/openfda-mcp-server",
     "source": "github"
   },
-  "version": "0.1.1",
+  "version": "0.1.3",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/openfda-mcp-server",
-      "runtimeHint": "node",
-      "version": "0.1.1",
+      "runtimeHint": "bun",
+      "version": "0.1.3",
       "packageArguments": [
         {
           "type": "positional",
@@ -25,6 +25,12 @@
         }
       ],
       "environmentVariables": [
+        {
+          "name": "OPENFDA_API_KEY",
+          "description": "Free API key from open.fda.gov — increases daily limit from 1K to 120K requests.",
+          "format": "string",
+          "isRequired": false
+        },
         {
           "name": "MCP_LOG_LEVEL",
           "description": "Sets the minimum log level for output (e.g., 'debug', 'info', 'warn').",
@@ -41,8 +47,8 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/openfda-mcp-server",
-      "runtimeHint": "node",
-      "version": "0.1.1",
+      "runtimeHint": "bun",
+      "version": "0.1.3",
       "packageArguments": [
         {
           "type": "positional",
@@ -54,6 +60,12 @@
         }
       ],
       "environmentVariables": [
+        {
+          "name": "OPENFDA_API_KEY",
+          "description": "Free API key from open.fda.gov — increases daily limit from 1K to 120K requests.",
+          "format": "string",
+          "isRequired": false
+        },
         {
           "name": "MCP_HTTP_HOST",
           "description": "The hostname for the HTTP server.",
