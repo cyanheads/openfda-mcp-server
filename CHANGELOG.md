@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.4] - 2026-04-03
+
+### Changed
+
+- README — added bunx, npx, and Docker configuration examples; expanded configuration table with all framework env vars; added Bun badge; reformatted tool table; general polish
+- `package.json` — normalized scripts to use `bun run` prefix; added author, funding, and security overrides; added `@vitest/coverage-istanbul` dev dependency; fixed homepage URL
+- `server.json` — removed `packageArguments` from both transports (simplifies bunx/npx invocation); added `MCP_TRANSPORT_TYPE` env var to HTTP transport config
+
 ## [0.1.3] - 2026-04-03
 
 ### Added
