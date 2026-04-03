@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.1.3] - 2026-04-03
+
+### Added
+
+- Apache-2.0 LICENSE file
+- `bunfig.toml` for Bun runtime configuration
+- `docs/tree.md` directory structure documentation
+- OCI image description and source labels to Dockerfile
+- `OPENFDA_API_KEY` environment variable to both transport configs in `server.json`
+- `mcpName`, `homepage`, `bugs`, `author`, `packageManager` fields to `package.json`
+- Expanded keywords in `package.json` (openfda, fda, drug-safety, adverse-events, typescript)
+- Bun engine requirement (`>=1.2.0`) to `package.json`
+
+### Changed
+
+- README.md — complete rewrite with detailed per-tool descriptions, getting started guide, configuration table, Docker instructions, and project structure overview
+- CLAUDE.md — updated agent protocol with server-specific code examples, structure, naming conventions, and commands; removed unused generic ctx properties (`ctx.state`, `ctx.elicit`, `ctx.sample`)
+- `server.json` name updated to `io.github.cyanheads/openfda-mcp-server` format
+- `server.json` runtimeHint changed from `node` to `bun`
+- `package.json` repository URL updated to `git+` format
+
 ## [0.1.2] - 2026-04-03
 
 ### Added
