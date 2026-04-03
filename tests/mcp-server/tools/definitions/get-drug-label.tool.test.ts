@@ -1,13 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import type { Context } from '@cyanheads/mcp-ts-core';
+import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
   getOpenFdaService: vi.fn(),
 }));
 
-import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import { getDrugLabelTool } from '@/mcp-server/tools/definitions/get-drug-label.tool.js';
+import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 const mockQuery = vi.fn();
 
@@ -26,10 +26,7 @@ describe('openfda_get_drug_label', () => {
       results: [{ openfda: { brand_name: ['Aspirin'] } }],
     });
 
-    const result = await getDrugLabelTool.handler(
-      { search: 'openfda.brand_name:"aspirin"' },
-      ctx,
-    );
+    const result = await getDrugLabelTool.handler({ search: 'openfda.brand_name:"aspirin"' }, ctx);
 
     expect(mockQuery.mock.calls[0][0]).toBe('drug/label');
     expect(result.results).toHaveLength(1);

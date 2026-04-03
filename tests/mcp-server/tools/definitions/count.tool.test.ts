@@ -1,13 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import type { Context } from '@cyanheads/mcp-ts-core';
+import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
   getOpenFdaService: vi.fn(),
 }));
 
-import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import { countTool } from '@/mcp-server/tools/definitions/count.tool.js';
+import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 const mockQuery = vi.fn();
 
@@ -51,10 +51,7 @@ describe('openfda_count', () => {
       results: [{ term: 2026, count: 5 }],
     });
 
-    const result = await countTool.handler(
-      { endpoint: 'drug/event', count: 'receivedate' },
-      ctx,
-    );
+    const result = await countTool.handler({ endpoint: 'drug/event', count: 'receivedate' }, ctx);
 
     expect(result.results[0].term).toBe('2026');
   });

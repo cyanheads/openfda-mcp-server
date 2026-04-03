@@ -1,13 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import type { Context } from '@cyanheads/mcp-ts-core';
+import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
   getOpenFdaService: vi.fn(),
 }));
 
-import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import { searchDrugApprovalsTool } from '@/mcp-server/tools/definitions/search-drug-approvals.tool.js';
+import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 const mockQuery = vi.fn();
 
@@ -26,10 +26,7 @@ describe('openfda_search_drug_approvals', () => {
       results: [{ application_number: 'NDA012345', sponsor_name: 'Pfizer' }],
     });
 
-    const result = await searchDrugApprovalsTool.handler(
-      { search: 'sponsor_name:"pfizer"' },
-      ctx,
-    );
+    const result = await searchDrugApprovalsTool.handler({ search: 'sponsor_name:"pfizer"' }, ctx);
 
     expect(mockQuery.mock.calls[0][0]).toBe('drug/drugsfda');
     expect(result.results[0].application_number).toBe('NDA012345');

@@ -1,13 +1,13 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
-import { McpError } from '@cyanheads/mcp-ts-core/errors';
 import type { Context } from '@cyanheads/mcp-ts-core';
+import { McpError } from '@cyanheads/mcp-ts-core/errors';
+import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@cyanheads/mcp-ts-core/utils', () => ({
   withRetry: vi.fn((fn: () => Promise<unknown>) => fn()),
 }));
 
-import { OpenFdaService, getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import { OpenFdaService } from '@/services/openfda/openfda-service.js';
 
 describe('OpenFdaService', () => {
   let service: OpenFdaService;
@@ -120,9 +120,7 @@ describe('OpenFdaService', () => {
     });
 
     it('throws McpError on 5xx', async () => {
-      mockFetch.mockResolvedValue(
-        mockResponse(503, { error: { message: 'Service unavailable' } }),
-      );
+      mockFetch.mockResolvedValue(mockResponse(503, { error: { message: 'Service unavailable' } }));
 
       await expect(service.query('drug/event', {}, ctx)).rejects.toThrow(McpError);
       await expect(service.query('drug/event', {}, ctx)).rejects.toThrow(/upstream/i);

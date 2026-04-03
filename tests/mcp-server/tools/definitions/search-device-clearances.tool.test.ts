@@ -1,13 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import type { Context } from '@cyanheads/mcp-ts-core';
+import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
   getOpenFdaService: vi.fn(),
 }));
 
-import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import { searchDeviceClearancesTool } from '@/mcp-server/tools/definitions/search-device-clearances.tool.js';
+import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 const mockQuery = vi.fn();
 
@@ -41,10 +41,7 @@ describe('openfda_search_device_clearances', () => {
       results: [],
     });
 
-    await searchDeviceClearancesTool.handler(
-      { pathway: 'pma', search: 'applicant:"test"' },
-      ctx,
-    );
+    await searchDeviceClearancesTool.handler({ pathway: 'pma', search: 'applicant:"test"' }, ctx);
 
     expect(mockQuery.mock.calls[0][0]).toBe('device/pma');
   });

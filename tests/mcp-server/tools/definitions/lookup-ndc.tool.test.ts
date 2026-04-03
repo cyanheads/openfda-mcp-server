@@ -1,13 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import type { Context } from '@cyanheads/mcp-ts-core';
+import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
   getOpenFdaService: vi.fn(),
 }));
 
-import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import { lookupNdcTool } from '@/mcp-server/tools/definitions/lookup-ndc.tool.js';
+import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 const mockQuery = vi.fn();
 
@@ -26,10 +26,7 @@ describe('openfda_lookup_ndc', () => {
       results: [{ product_ndc: '0363-0218', brand_name: 'Aspirin' }],
     });
 
-    const result = await lookupNdcTool.handler(
-      { search: 'product_ndc:"0363-0218"' },
-      ctx,
-    );
+    const result = await lookupNdcTool.handler({ search: 'product_ndc:"0363-0218"' }, ctx);
 
     expect(mockQuery.mock.calls[0][0]).toBe('drug/ndc');
     expect(result.results[0].brand_name).toBe('Aspirin');
@@ -57,9 +54,7 @@ describe('openfda_lookup_ndc', () => {
           dosage_form: 'TABLET',
           route: ['ORAL'],
           active_ingredients: [{ name: 'ASPIRIN', strength: '325 mg' }],
-          packaging: [
-            { package_ndc: '0363-0218-01', description: '100 TABLET in 1 BOTTLE' },
-          ],
+          packaging: [{ package_ndc: '0363-0218-01', description: '100 TABLET in 1 BOTTLE' }],
         },
       ],
     });

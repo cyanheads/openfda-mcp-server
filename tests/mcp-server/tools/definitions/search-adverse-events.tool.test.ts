@@ -1,13 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import type { Context } from '@cyanheads/mcp-ts-core';
+import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
   getOpenFdaService: vi.fn(),
 }));
 
-import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import { searchAdverseEventsTool } from '@/mcp-server/tools/definitions/search-adverse-events.tool.js';
+import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 const mockQuery = vi.fn();
 
@@ -39,7 +39,10 @@ describe('openfda_search_adverse_events', () => {
   });
 
   it('maps device category correctly', async () => {
-    mockQuery.mockResolvedValue({ meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' }, results: [] });
+    mockQuery.mockResolvedValue({
+      meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
+      results: [],
+    });
 
     await searchAdverseEventsTool.handler({ category: 'device' }, ctx);
 
