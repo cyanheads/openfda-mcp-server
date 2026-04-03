@@ -6,24 +6,14 @@
     "url": "https://github.com/cyanheads/openfda-mcp-server",
     "source": "github"
   },
-  "version": "0.1.3",
+  "version": "0.1.4",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/openfda-mcp-server",
       "runtimeHint": "bun",
-      "version": "0.1.3",
-      "packageArguments": [
-        {
-          "type": "positional",
-          "value": "run"
-        },
-        {
-          "type": "positional",
-          "value": "start:stdio"
-        }
-      ],
+      "version": "0.1.4",
       "environmentVariables": [
         {
           "name": "OPENFDA_API_KEY",
@@ -48,23 +38,20 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/openfda-mcp-server",
       "runtimeHint": "bun",
-      "version": "0.1.3",
-      "packageArguments": [
-        {
-          "type": "positional",
-          "value": "run"
-        },
-        {
-          "type": "positional",
-          "value": "start:http"
-        }
-      ],
+      "version": "0.1.4",
       "environmentVariables": [
         {
           "name": "OPENFDA_API_KEY",
           "description": "Free API key from open.fda.gov — increases daily limit from 1K to 120K requests.",
           "format": "string",
           "isRequired": false
+        },
+        {
+          "name": "MCP_TRANSPORT_TYPE",
+          "description": "Must be set to 'http' for streamable HTTP transport.",
+          "format": "string",
+          "isRequired": true,
+          "default": "http"
         },
         {
           "name": "MCP_HTTP_HOST",
