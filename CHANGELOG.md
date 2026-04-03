@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.6] - 2026-04-03
+
+### Changed
+
+- Refined package and server description — removed "MCP server for" prefix, added "STDIO or Streamable HTTP" transport context across `package.json`, `server.json`, and `README.md`
+
 ## [0.1.5] - 2026-04-03
 
 ### Fixed

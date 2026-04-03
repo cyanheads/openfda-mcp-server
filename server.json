@@ -1,19 +1,19 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.cyanheads/openfda-mcp-server",
-  "description": "MCP server for querying FDA data on drugs, food, devices, and recalls via openFDA.",
+  "description": "Query FDA data on drugs, food, devices, and recalls via openFDA. STDIO or Streamable HTTP.",
   "repository": {
     "url": "https://github.com/cyanheads/openfda-mcp-server",
     "source": "github"
   },
-  "version": "0.1.5",
+  "version": "0.1.6",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/openfda-mcp-server",
       "runtimeHint": "bun",
-      "version": "0.1.5",
+      "version": "0.1.6",
       "environmentVariables": [
         {
           "name": "OPENFDA_API_KEY",
@@ -38,7 +38,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/openfda-mcp-server",
       "runtimeHint": "bun",
-      "version": "0.1.5",
+      "version": "0.1.6",
       "environmentVariables": [
         {
           "name": "OPENFDA_API_KEY",
