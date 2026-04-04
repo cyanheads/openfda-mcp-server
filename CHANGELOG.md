@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.1.8] - 2026-04-04
+
+### Added
+
+- Shared `format-utils.ts` module — `truncate`, `humanizeField`, and `formatRemainingFields` helpers used by all tool format functions
+
+### Changed
+
+- All tool `format()` functions now render every field present in API responses instead of hardcoded subsets — LLMs see complete data without hidden fields
+- `openfda_get_drug_label` format dynamically iterates all label sections and openfda metadata instead of a fixed list of 8 sections
+- `openfda_search_adverse_events` format expanded: drug entries now include indication and route; remaining patient and top-level fields rendered automatically
+- `openfda_search_device_clearances` format renders remaining fields for both 510(k) and PMA records
+- `openfda_search_drug_approvals` format renders remaining openfda metadata and top-level fields
+- `openfda_search_recalls` and `openfda_lookup_ndc` format render remaining fields per record
+- Standardized `sort` parameter descriptions across all 6 searchable tools — consistent phrasing with note that unrecognized fields are silently ignored
+- Moved `truncate()` from `search-recalls.tool.ts` to shared `format-utils.ts`
+
 ## [0.1.7] - 2026-04-04
 
 ### Added

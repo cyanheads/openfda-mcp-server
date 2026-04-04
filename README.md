@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.1.7-blue.svg?style=flat-square)](./CHANGELOG.md) [![Framework](https://img.shields.io/badge/Built%20on-@cyanheads/mcp--ts--core-259?style=flat-square)](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) 
+[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.1.8-blue.svg?style=flat-square)](./CHANGELOG.md) [![Framework](https://img.shields.io/badge/Built%20on-@cyanheads/mcp--ts--core-259?style=flat-square)](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) 
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.11-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
@@ -42,7 +42,7 @@ Search adverse event reports across drugs, food, and devices. Use to investigate
 - Category selection: `drug`, `food`, or `device` — each returns different field schemas
 - Elasticsearch query syntax for filtering by product, reaction, seriousness, date range
 - Pagination via `limit` (up to 1000) and `skip` (up to 25000)
-- Formatted output includes report ID, seriousness, patient demographics, reactions, and drugs with characterization
+- Formatted output includes report ID, seriousness, patient demographics, reactions, drugs with characterization/indication/route, and all remaining fields
 
 ---
 
@@ -82,7 +82,7 @@ Search FDA device premarket notifications — 510(k) clearances and PMA approval
 Look up FDA drug labeling (package inserts / SPL documents). Check indications, warnings, dosage, contraindications, active ingredients, or any structured label section.
 
 - Search by brand name, generic name, manufacturer, or set ID
-- Formatted output includes key label sections: boxed warning, indications, dosage, warnings, contraindications, adverse reactions, drug interactions, active ingredients
+- Formatted output dynamically renders all label sections and openfda metadata present in the record
 - Large sections are automatically truncated to keep output readable
 - Default limit of 5 — labels are large documents
 
