@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.7] - 2026-04-04
+
+### Added
+
+- Public hosted server notice and config example in README (`https://openfda.caseyjhand.com/mcp`)
+
+### Changed
+
+- Upgraded TypeScript dev dependency from `^5.9.3` to `^6.0.2`
+
 ## [0.1.6] - 2026-04-03
 
 ### Changed
