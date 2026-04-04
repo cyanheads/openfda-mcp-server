@@ -4,6 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { humanizeField } from '@/mcp-server/tools/format-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 const ENDPOINT = 'drug/label';
@@ -19,7 +20,12 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       .describe(
         'Query targeting label fields. Examples: openfda.brand_name:"aspirin", openfda.generic_name:"metformin", openfda.manufacturer_name:"pfizer", set_id:"uuid".',
       ),
-    sort: z.string().optional().describe('Sort order for results. Example: effective_time:desc.'),
+    sort: z
+      .string()
+      .optional()
+      .describe(
+        'Sort expression (field:asc or field:desc). Example: effective_time:desc. Unrecognized fields are silently ignored by the API — results return in default order.',
+      ),
     limit: z
       .number()
       .min(1)
@@ -84,33 +90,39 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       `**${result.meta.total.toLocaleString()} total labels** (showing ${result.results.length}, skip: ${result.meta.skip}) | Data updated: ${result.meta.lastUpdated}\n`,
     ];
 
-    const sections = [
-      ['Boxed Warning', 'boxed_warning'],
-      ['Indications & Usage', 'indications_and_usage'],
-      ['Dosage & Administration', 'dosage_and_administration'],
-      ['Warnings', 'warnings'],
-      ['Contraindications', 'contraindications'],
-      ['Adverse Reactions', 'adverse_reactions'],
-      ['Drug Interactions', 'drug_interactions'],
-      ['Active Ingredient', 'active_ingredient'],
-    ] as const;
+    /** Keys rendered in the header block — skipped during section iteration. */
+    const metaKeys = new Set(['openfda', 'set_id', 'id', 'version', 'effective_time']);
 
     for (const r of result.results) {
-      const openfda = r.openfda ?? {};
-      const brandName = (openfda.brand_name ?? [])[0] ?? 'Unknown';
-      const genericName = (openfda.generic_name ?? [])[0];
-      const manufacturer = (openfda.manufacturer_name ?? [])[0];
+      const openfda = (r.openfda ?? {}) as Record<string, unknown>;
+      const brandName = ((openfda.brand_name as string[]) ?? [])[0] ?? 'Unknown';
+      const genericName = ((openfda.generic_name as string[]) ?? [])[0];
+      const manufacturer = ((openfda.manufacturer_name as string[]) ?? [])[0];
 
       lines.push(`### ${brandName}${genericName ? ` (${genericName})` : ''}`);
       if (manufacturer) lines.push(`**Manufacturer:** ${manufacturer}`);
-      if (openfda.route) lines.push(`**Route:** ${(openfda.route as string[]).join(', ')}`);
+      if (r.effective_time) lines.push(`**Effective date:** ${r.effective_time}`);
+      if (r.set_id) lines.push(`**Set ID:** ${r.set_id}${r.version ? ` (v${r.version})` : ''}`);
 
-      for (const [label, key] of sections) {
-        const val = r[key];
-        if (!val) continue;
-        const text = Array.isArray(val) ? val.join('\n') : String(val);
+      // All openfda fields beyond the header ones
+      const renderedOpenfda = new Set(['brand_name', 'generic_name', 'manufacturer_name']);
+      for (const [key, val] of Object.entries(openfda)) {
+        if (renderedOpenfda.has(key) || val == null) continue;
+        const display = Array.isArray(val) ? (val as string[]).join(', ') : String(val);
+        if (display) lines.push(`**${humanizeField(key)}:** ${display}`);
+      }
+
+      // All label sections present in the record (not just a hardcoded subset)
+      for (const [key, value] of Object.entries(r)) {
+        if (metaKeys.has(key) || value == null) continue;
+        const text = Array.isArray(value)
+          ? value.join('\n')
+          : typeof value === 'object'
+            ? JSON.stringify(value)
+            : String(value);
+        if (!text) continue;
         const truncated = text.length > 1000 ? `${text.slice(0, 1000)}... (truncated)` : text;
-        lines.push(`\n**${label}:**\n${truncated}`);
+        lines.push(`\n**${humanizeField(key)}:**\n${truncated}`);
       }
       lines.push('\n---\n');
     }

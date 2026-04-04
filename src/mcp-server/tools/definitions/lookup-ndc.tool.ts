@@ -4,6 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 export const lookupNdcTool = tool('openfda_lookup_ndc', {
@@ -20,7 +21,9 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
     sort: z
       .string()
       .optional()
-      .describe('Sort field and direction. Example: listing_expiration_date:desc'),
+      .describe(
+        'Sort expression (field:asc or field:desc). Example: listing_expiration_date:desc. Unrecognized fields are silently ignored by the API — results return in default order.',
+      ),
     limit: z
       .number()
       .min(1)
@@ -82,6 +85,19 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
       `**${result.meta.total.toLocaleString()} total results** (showing ${result.results.length}, skip: ${result.meta.skip}) | Data updated: ${result.meta.lastUpdated}\n`,
     ];
 
+    const rendered = new Set([
+      'brand_name',
+      'generic_name',
+      'product_ndc',
+      'labeler_name',
+      'dosage_form',
+      'route',
+      'marketing_category',
+      'active_ingredients',
+      'packaging',
+      'listing_expiration_date',
+    ]);
+
     for (const r of result.results) {
       const title = r.brand_name ?? r.generic_name ?? r.product_ndc ?? 'Unknown';
       lines.push(`### ${title}`);
@@ -111,6 +127,7 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
 
       if (r.listing_expiration_date)
         lines.push(`**Listing expires:** ${r.listing_expiration_date}`);
+      lines.push(...formatRemainingFields(r, rendered));
       lines.push('');
     }
 

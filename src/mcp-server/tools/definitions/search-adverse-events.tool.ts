@@ -4,6 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { formatRemainingFields, truncate } from '@/mcp-server/tools/format-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
@@ -21,7 +22,12 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       .describe(
         'Elasticsearch query string. Examples: patient.drug.medicinalproduct:"aspirin", patient.reaction.reactionmeddrapt:"nausea" AND serious:"1". Omit to browse recent.',
       ),
-    sort: z.string().optional().describe('Sort field and direction. Example: receivedate:desc'),
+    sort: z
+      .string()
+      .optional()
+      .describe(
+        'Sort expression (field:asc or field:desc). Example: receivedate:desc. Unrecognized fields are silently ignored by the API — results return in default order.',
+      ),
     limit: z
       .number()
       .min(1)
@@ -103,19 +109,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
           .map((rx: Record<string, unknown>) => rx.reactionmeddrapt)
           .filter(Boolean)
           .join(', ');
-        const drugs = (patient.drug ?? [])
-          .map((d: Record<string, unknown>) => {
-            const char =
-              d.drugcharacterization === '1'
-                ? 'Suspect'
-                : d.drugcharacterization === '2'
-                  ? 'Concomitant'
-                  : d.drugcharacterization === '3'
-                    ? 'Interacting'
-                    : '';
-            return `${d.medicinalproduct ?? 'Unknown'}${char ? ` (${char})` : ''}`;
-          })
-          .join(', ');
+
         lines.push(`### Report ${r.safetyreportid ?? 'N/A'}`);
         lines.push(
           `**Date:** ${r.receivedate ?? 'N/A'} | **Serious:** ${r.serious === '1' ? 'Yes' : r.serious === '2' ? 'No' : (r.serious ?? 'N/A')}`,
@@ -125,27 +119,65 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
             `**Patient:** Sex ${patient.patientsex === '1' ? 'Male' : patient.patientsex === '2' ? 'Female' : patient.patientsex}`,
           );
         if (reactions) lines.push(`**Reactions:** ${reactions}`);
-        if (drugs) lines.push(`**Drugs:** ${drugs}`);
+
+        // Drugs — expanded with indication and route
+        const drugList = (patient.drug ?? []) as Record<string, unknown>[];
+        if (drugList.length > 0) {
+          lines.push('**Drugs:**');
+          for (const d of drugList) {
+            const char =
+              d.drugcharacterization === '1'
+                ? 'Suspect'
+                : d.drugcharacterization === '2'
+                  ? 'Concomitant'
+                  : d.drugcharacterization === '3'
+                    ? 'Interacting'
+                    : '';
+            const detail = [
+              char,
+              d.drugindication ? `for ${d.drugindication}` : null,
+              d.drugadministrationroute ? `via ${d.drugadministrationroute}` : null,
+            ]
+              .filter(Boolean)
+              .join(', ');
+            lines.push(`- ${d.medicinalproduct ?? 'Unknown'}${detail ? ` (${detail})` : ''}`);
+          }
+        }
+
+        // Remaining patient fields (age, weight, death, etc.)
+        const renderedPatient = new Set(['reaction', 'drug', 'patientsex']);
+        lines.push(...formatRemainingFields(patient, renderedPatient));
+
+        // Remaining top-level fields (companynumb, sender, primarysource, etc.)
+        const renderedTop = new Set(['patient', 'safetyreportid', 'receivedate', 'serious']);
+        lines.push(...formatRemainingFields(r, renderedTop));
       }
       // Device adverse events
       else if (r.device) {
         lines.push(`### Report ${r.report_number ?? r.mdr_report_key ?? 'N/A'}`);
         if (r.event_type) lines.push(`**Event type:** ${r.event_type}`);
         for (const d of Array.isArray(r.device) ? r.device : []) {
+          const renderedDevice = new Set(['brand_name', 'generic_name', 'manufacturer_d_name']);
           lines.push(
             `**Device:** ${d.brand_name ?? d.generic_name ?? 'Unknown'}${d.manufacturer_d_name ? ` by ${d.manufacturer_d_name}` : ''}`,
           );
+          lines.push(...formatRemainingFields(d, renderedDevice));
         }
-        const texts = (r.mdr_text ?? [])
-          .slice(0, 2)
-          .map((t: Record<string, unknown>) => t.text)
-          .filter(Boolean);
-        if (texts.length) {
-          const narrative = texts.join(' ');
-          lines.push(
-            `**Narrative:** ${narrative.length > 500 ? `${narrative.slice(0, 500)}...` : narrative}`,
-          );
+        for (const t of (r.mdr_text ?? []) as Record<string, unknown>[]) {
+          if (!t.text) continue;
+          const label = t.text_type_code ? `Narrative (${t.text_type_code})` : 'Narrative';
+          lines.push(`**${label}:** ${truncate(t.text as string, 500)}`);
         }
+
+        // Remaining top-level fields (date_of_event, source_type, patient, etc.)
+        const renderedTop = new Set([
+          'device',
+          'report_number',
+          'mdr_report_key',
+          'event_type',
+          'mdr_text',
+        ]);
+        lines.push(...formatRemainingFields(r, renderedTop));
       }
       // Food adverse events
       else if (r.products || r.reactions) {
@@ -158,15 +190,29 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
           lines.push(
             `**Outcomes:** ${(Array.isArray(r.outcomes) ? r.outcomes : [r.outcomes]).join(', ')}`,
           );
-        const products = (r.products ?? [])
-          .map((p: Record<string, unknown>) => p.name_brand ?? p.industry_name ?? 'Unknown')
-          .join(', ');
-        if (products) lines.push(`**Products:** ${products}`);
+        const productsList = (r.products ?? []) as Record<string, unknown>[];
+        if (productsList.length > 0) {
+          lines.push('**Products:**');
+          for (const p of productsList) {
+            const name = (p.name_brand as string) ?? (p.industry_name as string) ?? 'Unknown';
+            const detail = [
+              p.role ? `role: ${p.role}` : null,
+              p.industry_code ? `code: ${p.industry_code}` : null,
+            ]
+              .filter(Boolean)
+              .join(', ');
+            lines.push(`- ${name}${detail ? ` (${detail})` : ''}`);
+          }
+        }
+
+        // Remaining top-level fields (date_created, date_started, consumer, etc.)
+        const renderedTop = new Set(['report_number', 'reactions', 'outcomes', 'products']);
+        lines.push(...formatRemainingFields(r, renderedTop));
       }
-      // Fallback
+      // Fallback — dump full record
       else {
         lines.push(`### Record`);
-        lines.push(`\`\`\`json\n${JSON.stringify(r, null, 2).slice(0, 500)}\n\`\`\``);
+        lines.push(`\`\`\`json\n${JSON.stringify(r, null, 2).slice(0, 1000)}\n\`\`\``);
       }
       lines.push('');
     }

@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { validationError } from '@cyanheads/mcp-ts-core/errors';
+import { formatRemainingFields, truncate } from '@/mcp-server/tools/format-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 const Category = z.enum(['drug', 'food', 'device']).describe('Product category');
@@ -13,12 +14,6 @@ const Endpoint = z
   .enum(['enforcement', 'recall'])
   .default('enforcement')
   .describe('Report type. Default enforcement. The recall endpoint is only available for devices.');
-
-/** Truncate a string to `max` characters, appending ellipsis when trimmed. */
-function truncate(value: string | undefined, max: number): string {
-  if (!value) return 'N/A';
-  return value.length > max ? `${value.slice(0, max)}...` : value;
-}
 
 export const searchRecallsTool = tool('openfda_search_recalls', {
   description: 'Search enforcement reports and recall actions across drugs, food, and devices.',
@@ -33,7 +28,12 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       .describe(
         'openFDA search query. Examples: classification:"Class I", recalling_firm:"pfizer", reason_for_recall:"undeclared allergen".',
       ),
-    sort: z.string().optional().describe('Sort expression. Example: report_date:desc.'),
+    sort: z
+      .string()
+      .optional()
+      .describe(
+        'Sort expression (field:asc or field:desc). Example: report_date:desc. Unrecognized fields are silently ignored by the API — results return in default order.',
+      ),
     limit: z
       .number()
       .min(1)
@@ -108,6 +108,17 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
 
     const header = `**${result.meta.total.toLocaleString()} total records** (showing ${result.results.length}, offset ${result.meta.skip}) | Last updated: ${result.meta.lastUpdated}\n`;
 
+    const rendered = new Set([
+      'recall_number',
+      'classification',
+      'recalling_firm',
+      'product_description',
+      'reason_for_recall',
+      'status',
+      'voluntary_mandated',
+      'distribution_pattern',
+    ]);
+
     const records = result.results.map((r) => {
       const lines = [
         `**Recall #${r.recall_number ?? 'N/A'}** — ${r.classification ?? 'Unclassified'}`,
@@ -119,6 +130,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       if (r.distribution_pattern) {
         lines.push(`Distribution: ${r.distribution_pattern}`);
       }
+      lines.push(...formatRemainingFields(r, rendered));
       return lines.join('\n');
     });
 

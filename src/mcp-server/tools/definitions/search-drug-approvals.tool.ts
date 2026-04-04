@@ -5,6 +5,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 /** Exported tool definition for searching drug approvals. */
@@ -23,7 +24,9 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
     sort: z
       .string()
       .optional()
-      .describe('Sort field and order. Example: submissions.submission_status_date:desc'),
+      .describe(
+        'Sort expression (field:asc or field:desc). Example: submissions.submission_status_date:desc. Unrecognized fields are silently ignored by the API — results return in default order.',
+      ),
     limit: z
       .number()
       .min(1)
@@ -102,6 +105,14 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       `**${result.meta.total.toLocaleString()} total results** (showing ${result.results.length}, skip: ${result.meta.skip}) | Data updated: ${result.meta.lastUpdated}\n`,
     ];
 
+    const rendered = new Set([
+      'openfda',
+      'application_number',
+      'sponsor_name',
+      'products',
+      'submissions',
+    ]);
+
     for (const r of result.results) {
       const openfda = r.openfda ?? {};
       const brandName = (openfda.brand_name ?? [])[0] ?? '';
@@ -117,6 +128,16 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       if (openfda.route) lines.push(`**Route:** ${(openfda.route as string[]).join(', ')}`);
       if (openfda.product_type)
         lines.push(`**Type:** ${(openfda.product_type as string[]).join(', ')}`);
+
+      // Remaining openfda fields (substance_name, rxcui, nui, pharm_class, etc.)
+      const renderedOpenfda = new Set([
+        'brand_name',
+        'generic_name',
+        'manufacturer_name',
+        'route',
+        'product_type',
+      ]);
+      lines.push(...formatRemainingFields(openfda, renderedOpenfda));
 
       const products = r.products ?? [];
       if (products.length > 0) {
@@ -151,6 +172,8 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
         }
         if (submissions.length > 10) lines.push(`- ... and ${submissions.length - 10} more`);
       }
+
+      lines.push(...formatRemainingFields(r, rendered));
       lines.push('');
     }
 

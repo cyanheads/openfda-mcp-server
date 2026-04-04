@@ -4,6 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 export const searchDeviceClearancesTool = tool('openfda_search_device_clearances', {
@@ -22,7 +23,12 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       .describe(
         'openFDA search query. Examples: applicant:"medtronic", advisory_committee_description:"cardiovascular", product_code:"DXN", openfda.device_name:"catheter". Omit to browse recent.',
       ),
-    sort: z.string().optional().describe('Sort expression. Example: decision_date:desc.'),
+    sort: z
+      .string()
+      .optional()
+      .describe(
+        'Sort expression (field:asc or field:desc). Example: decision_date:desc. Unrecognized fields are silently ignored by the API — results return in default order.',
+      ),
     limit: z
       .number()
       .min(1)
@@ -88,6 +94,30 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       `**${result.meta.total.toLocaleString()} total results** (showing ${result.results.length}, skip: ${result.meta.skip}) | Data updated: ${result.meta.lastUpdated}\n`,
     ];
 
+    const rendered510k = new Set([
+      'k_number',
+      'device_name',
+      'applicant',
+      'product_code',
+      'decision_description',
+      'decision_date',
+      'advisory_committee_description',
+      'clearance_type',
+      'statement_or_summary',
+    ]);
+    const renderedPma = new Set([
+      'pma_number',
+      'trade_name',
+      'generic_name',
+      'applicant',
+      'product_code',
+      'decision_description',
+      'decision_code',
+      'decision_date',
+      'advisory_committee_description',
+      'supplement_number',
+    ]);
+
     for (const r of result.results) {
       // 510(k)
       if (r.k_number) {
@@ -105,6 +135,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
           const text = String(r.statement_or_summary);
           lines.push(`**Summary:** ${text.length > 500 ? `${text.slice(0, 500)}...` : text}`);
         }
+        lines.push(...formatRemainingFields(r, rendered510k));
       }
       // PMA
       else if (r.pma_number) {
@@ -119,6 +150,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
         if (r.advisory_committee_description)
           lines.push(`**Advisory committee:** ${r.advisory_committee_description}`);
         if (r.supplement_number) lines.push(`**Supplement:** ${r.supplement_number}`);
+        lines.push(...formatRemainingFields(r, renderedPma));
       }
       // Fallback
       else {
