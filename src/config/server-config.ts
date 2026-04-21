@@ -4,6 +4,7 @@
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
+import { parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
 
 const ServerConfigSchema = z.object({
   apiKey: z
@@ -19,9 +20,9 @@ let _config: ServerConfig | undefined;
 
 /** Lazy-parsed server config from environment variables. */
 export function getServerConfig(): ServerConfig {
-  _config ??= ServerConfigSchema.parse({
-    apiKey: process.env.OPENFDA_API_KEY,
-    baseUrl: process.env.OPENFDA_BASE_URL,
+  _config ??= parseEnvConfig(ServerConfigSchema, {
+    apiKey: 'OPENFDA_API_KEY',
+    baseUrl: 'OPENFDA_BASE_URL',
   });
   return _config;
 }
