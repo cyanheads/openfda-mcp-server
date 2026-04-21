@@ -87,7 +87,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
     }
 
     const lines: string[] = [
-      `**${result.meta.total.toLocaleString()} total labels** (showing ${result.results.length}, skip: ${result.meta.skip}) | Data updated: ${result.meta.lastUpdated}\n`,
+      `**${result.meta.total} total label results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Data updated: ${result.meta.lastUpdated}\n`,
     ];
 
     /** Keys rendered in the header block — skipped during section iteration. */
@@ -126,6 +126,8 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       }
       lines.push('\n---\n');
     }
+
+    if (result.message) lines.push(result.message);
 
     return [{ type: 'text' as const, text: lines.join('\n') }];
   },

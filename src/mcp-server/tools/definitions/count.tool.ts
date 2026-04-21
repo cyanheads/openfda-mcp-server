@@ -114,14 +114,16 @@ export const countTool = tool('openfda_count', {
 
     const totalCount = result.results.reduce((sum, r) => sum + r.count, 0);
     const lines: string[] = [
-      `**${result.results.length} terms** (total occurrences: ${totalCount.toLocaleString()}) | Data updated: ${result.meta.lastUpdated}\n`,
+      `**${result.results.length} terms** (total occurrences: ${totalCount}) | Data updated: ${result.meta.lastUpdated}\n`,
       '| # | Term | Count |',
       '|---|------|-------|',
     ];
 
     for (const [i, r] of result.results.entries()) {
-      lines.push(`| ${i + 1} | ${r.term} | ${r.count.toLocaleString()} |`);
+      lines.push(`| ${i + 1} | ${r.term} | ${r.count} |`);
     }
+
+    if (result.message) lines.push(`\n${result.message}`);
 
     return [{ type: 'text' as const, text: lines.join('\n') }];
   },

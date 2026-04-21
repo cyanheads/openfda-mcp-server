@@ -106,7 +106,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       ];
     }
 
-    const header = `**${result.meta.total.toLocaleString()} total records** (showing ${result.results.length}, offset ${result.meta.skip}) | Last updated: ${result.meta.lastUpdated}\n`;
+    const header = `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Last updated: ${result.meta.lastUpdated}\n`;
 
     const rendered = new Set([
       'recall_number',
@@ -135,7 +135,8 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
     });
 
     const body = records.join('\n\n---\n\n');
+    const footer = result.message ? `\n\n${result.message}` : '';
 
-    return [{ type: 'text' as const, text: `${header}\n${body}` }];
+    return [{ type: 'text' as const, text: `${header}\n${body}${footer}` }];
   },
 });

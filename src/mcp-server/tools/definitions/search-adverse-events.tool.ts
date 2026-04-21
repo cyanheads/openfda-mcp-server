@@ -98,7 +98,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
     }
 
     const lines: string[] = [
-      `**${result.meta.total.toLocaleString()} total results** (showing ${result.results.length}, skip: ${result.meta.skip}) | Data updated: ${result.meta.lastUpdated}\n`,
+      `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Data updated: ${result.meta.lastUpdated}\n`,
     ];
 
     for (const r of result.results) {
@@ -216,6 +216,8 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       }
       lines.push('');
     }
+
+    if (result.message) lines.push(result.message);
 
     return [{ type: 'text' as const, text: lines.join('\n') }];
   },

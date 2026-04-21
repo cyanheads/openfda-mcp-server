@@ -91,7 +91,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
     }
 
     const lines: string[] = [
-      `**${result.meta.total.toLocaleString()} total results** (showing ${result.results.length}, skip: ${result.meta.skip}) | Data updated: ${result.meta.lastUpdated}\n`,
+      `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Data updated: ${result.meta.lastUpdated}\n`,
     ];
 
     const rendered510k = new Set([
@@ -159,6 +159,8 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       }
       lines.push('');
     }
+
+    if (result.message) lines.push(result.message);
 
     return [{ type: 'text' as const, text: lines.join('\n') }];
   },
