@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.1.9] - 2026-04-20
+
+### Changed
+
+- Upgraded `@cyanheads/mcp-ts-core` from `^0.2.12` to `^0.5.3` — picks up MCP Apps builders, prompt OTel instrumentation, new testing helpers, `parseEnvConfig`, framework-level ZodError conversion, and the new `format-parity` lint rule
+- All 7 tool `format()` functions reworked to satisfy the new `format-parity` lint rule — every field declared in `output` schema now appears in rendered `content[]` text so `structuredContent`-only and `content[]`-only clients see the same data
+  - Headers now include all four meta fields (`total`, `returned`, `skip`, `limit`) and the word "results" for consistent naming
+  - `message` field is rendered after results when present (previously only on empty)
+  - Removed `toLocaleString()` from numeric fields so values match raw schema sentinels
+- `src/config/server-config.ts` — adopted `parseEnvConfig` from `@cyanheads/mcp-ts-core/config` for env-var-aware error messages instead of raw `ServerConfigSchema.parse(process.env)`
+
+### Removed
+
+- All entries from `package.json` `overrides` block (`@hono/node-server`, `brace-expansion`, `express-rate-limit`, `hono`, `path-to-regexp`, `picomatch`, `vite`, `yaml`) — every previously vulnerable transitive dep has been patched upstream; `bun audit` now reports zero vulnerabilities without any manual pins
+
+### Synced
+
+- 14 framework skills updated to latest versions and 1 new skill added (`add-app-tool`); copies in `skills/` and `.claude/skills/` refreshed
+
 ## [0.1.8] - 2026-04-04
 
 ### Added
