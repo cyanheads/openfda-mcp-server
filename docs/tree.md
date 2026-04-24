@@ -1,6 +1,6 @@
 # openfda-mcp-server - Directory Structure
 
-Generated on: 2026-04-03 20:18:53
+Generated on: 2026-04-24 17:59:34
 
 ```text
 openfda-mcp-server/
@@ -17,12 +17,17 @@ openfda-mcp-server/
 ├── docs/
 │   └── design.md
 ├── scripts/
+│   ├── build-changelog.ts
 │   ├── build.ts
+│   ├── check-docs-sync.ts
+│   ├── check-skills-sync.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
 │   ├── lint-mcp.ts
 │   └── tree.ts
 ├── skills/
+│   ├── add-app-tool/
+│   │   └── SKILL.md
 │   ├── add-prompt/
 │   │   └── SKILL.md
 │   ├── add-resource/
@@ -40,6 +45,8 @@ openfda-mcp-server/
 │   ├── api-context/
 │   │   └── SKILL.md
 │   ├── api-errors/
+│   │   └── SKILL.md
+│   ├── api-linter/
 │   │   └── SKILL.md
 │   ├── api-services/
 │   │   ├── references/
@@ -74,9 +81,13 @@ openfda-mcp-server/
 │   │   │   ├── readme.md
 │   │   │   └── server-json.md
 │   │   └── SKILL.md
+│   ├── release-and-publish/
+│   │   └── SKILL.md
 │   ├── report-issue-framework/
 │   │   └── SKILL.md
 │   ├── report-issue-local/
+│   │   └── SKILL.md
+│   ├── security-pass/
 │   │   └── SKILL.md
 │   └── setup/
 │       └── SKILL.md
@@ -85,15 +96,16 @@ openfda-mcp-server/
 │   │   └── server-config.ts
 │   ├── mcp-server/
 │   │   └── tools/
-│   │       └── definitions/
-│   │           ├── count.tool.ts
-│   │           ├── get-drug-label.tool.ts
-│   │           ├── index.ts
-│   │           ├── lookup-ndc.tool.ts
-│   │           ├── search-adverse-events.tool.ts
-│   │           ├── search-device-clearances.tool.ts
-│   │           ├── search-drug-approvals.tool.ts
-│   │           └── search-recalls.tool.ts
+│   │       ├── definitions/
+│   │       │   ├── count.tool.ts
+│   │       │   ├── get-drug-label.tool.ts
+│   │       │   ├── index.ts
+│   │       │   ├── lookup-ndc.tool.ts
+│   │       │   ├── search-adverse-events.tool.ts
+│   │       │   ├── search-device-clearances.tool.ts
+│   │       │   ├── search-drug-approvals.tool.ts
+│   │       │   └── search-recalls.tool.ts
+│   │       └── format-utils.ts
 │   ├── services/
 │   │   └── openfda/
 │   │       ├── openfda-service.ts
