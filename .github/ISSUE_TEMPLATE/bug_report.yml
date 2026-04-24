@@ -1,5 +1,5 @@
 name: Bug Report
-description: Report a bug in openfda-mcp-server
+description: Report a bug in @cyanheads/openfda-mcp-server
 labels: ["bug"]
 body:
   - type: markdown

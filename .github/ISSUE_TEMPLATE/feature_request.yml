@@ -1,5 +1,5 @@
 name: Feature Request
-description: Suggest a new feature or improvement for openfda-mcp-server
+description: Suggest a new feature or improvement for @cyanheads/openfda-mcp-server
 labels: ["enhancement"]
 body:
   - type: textarea
