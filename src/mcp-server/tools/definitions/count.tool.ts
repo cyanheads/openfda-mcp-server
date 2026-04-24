@@ -64,10 +64,12 @@ export const countTool = tool('openfda_count', {
       .describe('Response metadata'),
     results: z
       .array(
-        z.object({
-          term: z.string().describe('Field value'),
-          count: z.number().describe('Number of occurrences'),
-        }),
+        z
+          .object({
+            term: z.string().describe('Field value'),
+            count: z.number().describe('Number of occurrences'),
+          })
+          .describe('A single term-count pair'),
       )
       .describe('Term-count pairs sorted by count descending'),
     message: z.string().optional().describe('Guidance when results are empty'),
