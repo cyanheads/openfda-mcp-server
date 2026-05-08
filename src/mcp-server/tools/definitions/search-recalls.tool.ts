@@ -4,7 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { validationError } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatRemainingFields, truncate } from '@/mcp-server/tools/format-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
@@ -59,12 +59,23 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       .describe('Guidance when results are empty or search can be refined'),
   }),
 
+  errors: [
+    {
+      reason: 'recall_endpoint_non_device',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'The recall endpoint was requested for a non-device category.',
+      recovery: 'Set endpoint=enforcement for drug and food categories; recall is device-only.',
+    },
+  ],
+
   async handler(input, ctx) {
     const endpointValue = input.endpoint ?? 'enforcement';
 
     if (endpointValue === 'recall' && input.category !== 'device') {
-      throw validationError(
+      throw ctx.fail(
+        'recall_endpoint_non_device',
         'The recall endpoint is only available for devices. Use enforcement for drug and food recalls.',
+        { ...ctx.recoveryFor('recall_endpoint_non_device') },
       );
     }
 

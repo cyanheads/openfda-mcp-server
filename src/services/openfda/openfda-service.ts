@@ -102,11 +102,13 @@ export class OpenFdaService {
         this.apiKey
           ? 'openFDA rate limit exceeded (240 req/min or 120K/day with key). Retry after a brief wait.'
           : 'openFDA rate limit exceeded (240 req/min or 1K/day without key). Configure OPENFDA_API_KEY to increase to 120K/day.',
+        { reason: 'rate_limited', endpoint },
       );
     }
 
     if (response.status >= 500) {
       throw serviceUnavailable(`openFDA upstream error: ${errorMessage}`, {
+        reason: 'upstream_error',
         endpoint,
         status: response.status,
       });
@@ -116,12 +118,12 @@ export class OpenFdaService {
       if (/25000/i.test(errorMessage)) {
         throw validationError(
           'Pagination limit reached: skip cannot exceed 25000. Narrow the search query with additional filters or date ranges instead of increasing skip.',
-          { endpoint },
+          { reason: 'pagination_limit_reached', endpoint },
         );
       }
       throw validationError(
         `openFDA query error: ${errorMessage}. Check field names and query syntax — use AND/OR for boolean operators, quotes for exact match.`,
-        { endpoint },
+        { reason: 'query_error', endpoint },
       );
     }
 

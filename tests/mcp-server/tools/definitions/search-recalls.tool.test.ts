@@ -18,7 +18,7 @@ describe('openfda_search_recalls', () => {
   beforeEach(() => {
     mockQuery.mockReset();
     vi.mocked(getOpenFdaService).mockReturnValue({ query: mockQuery } as never);
-    ctx = createMockContext();
+    ctx = createMockContext({ errors: searchRecallsTool.errors });
   });
 
   it('queries enforcement endpoint by default', async () => {
