@@ -1,6 +1,6 @@
 # openfda-mcp-server - Directory Structure
 
-Generated on: 2026-04-24 17:59:34
+Generated on: 2026-05-08 10:43:52
 
 ```text
 openfda-mcp-server/
@@ -13,6 +13,9 @@ openfda-mcp-server/
 ├── .vscode/
 │   ├── extensions.json
 │   └── settings.json
+├── changelog/
+│   ├── 0.1.x/
+│   └── template.md
 ├── claude-plans/
 ├── docs/
 │   └── design.md
@@ -20,10 +23,12 @@ openfda-mcp-server/
 │   ├── build-changelog.ts
 │   ├── build.ts
 │   ├── check-docs-sync.ts
+│   ├── check-framework-antipatterns.ts
 │   ├── check-skills-sync.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
 │   ├── lint-mcp.ts
+│   ├── split-changelog.ts
 │   └── tree.ts
 ├── skills/
 │   ├── add-app-tool/
@@ -40,6 +45,8 @@ openfda-mcp-server/
 │   │   └── SKILL.md
 │   ├── api-auth/
 │   │   └── SKILL.md
+│   ├── api-canvas/
+│   │   └── SKILL.md
 │   ├── api-config/
 │   │   └── SKILL.md
 │   ├── api-context/
@@ -53,6 +60,8 @@ openfda-mcp-server/
 │   │   │   ├── graph.md
 │   │   │   ├── llm.md
 │   │   │   └── speech.md
+│   │   └── SKILL.md
+│   ├── api-telemetry/
 │   │   └── SKILL.md
 │   ├── api-testing/
 │   │   └── SKILL.md
@@ -89,7 +98,9 @@ openfda-mcp-server/
 │   │   └── SKILL.md
 │   ├── security-pass/
 │   │   └── SKILL.md
-│   └── setup/
+│   ├── setup/
+│   │   └── SKILL.md
+│   └── tool-defs-analysis/
 │       └── SKILL.md
 ├── src/
 │   ├── config/

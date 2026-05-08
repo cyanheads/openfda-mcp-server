@@ -1,8 +1,9 @@
 # Agent Protocol
 
 **Server:** openfda-mcp-server
-**Version:** 0.1.10
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core)
+**Version:** 0.1.11
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.8.19`
+**Engines:** Bun ≥1.3.0, Node ≥24.0.0
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
 
@@ -107,29 +108,50 @@ Handlers receive a unified `ctx` object. Key properties:
 | `ctx.signal` | `AbortSignal` for cancellation. Used by the openFDA service for request timeouts and retry abort. |
 | `ctx.requestId` | Unique request ID. Passed to the service layer for retry context. |
 | `ctx.tenantId` | Tenant ID from JWT or `'default'` for stdio. |
+| `ctx.fail` | Typed error builder when an `errors[]` contract is declared. `ctx.fail('reason', msg?, data?)` builds an `McpError` keyed against the contract's reasons. |
+| `ctx.recoveryFor` | Typed resolver returning `{ recovery: { hint } }` for a declared reason; spread into `data` to carry the contract recovery onto the wire. |
 
 ---
 
 ## Errors
 
-Handlers throw — the framework catches, classifies, and formats. Three escalation levels:
+Handlers throw — the framework catches, classifies, and formats.
+
+**Recommended: typed error contract.** Declare `errors: [{ reason, code, when, recovery, retryable? }]` on `tool()` to receive a typed `ctx.fail(reason, ...)` keyed by the declared reason union. TypeScript catches `ctx.fail('typo')` at compile time, `data.reason` is auto-populated for observability, and the `recovery` field (≥ 5 words, lint-validated) is the single source of truth for the recovery hint. Spread `ctx.recoveryFor('reason')` into `data` to carry the contract recovery onto the wire (the framework mirrors `data.recovery.hint` into `content[]` text). Override with explicit `{ recovery: { hint: '...' } }` when runtime context matters. Baseline codes (`InternalError`, `ServiceUnavailable`, `Timeout`, `ValidationError`, `SerializationError`) bubble freely and don't need declaring. Used in `search-recalls.tool.ts` for the recall+non-device validation.
 
 ```ts
-// 1. Plain Error — framework auto-classifies from message patterns
-throw new Error('Item not found');           // → NotFound
-throw new Error('Invalid query format');     // → ValidationError
+errors: [
+  { reason: 'recall_endpoint_non_device', code: JsonRpcErrorCode.ValidationError,
+    when: 'The recall endpoint was requested for a non-device category.',
+    recovery: 'Set endpoint=enforcement for drug and food categories; recall is device-only.' },
+],
+async handler(input, ctx) {
+  if (input.endpoint === 'recall' && input.category !== 'device') {
+    throw ctx.fail('recall_endpoint_non_device', undefined, { ...ctx.recoveryFor('recall_endpoint_non_device') });
+  }
+}
+```
 
-// 2. Error factories — explicit code, concise
-import { notFound, validationError, forbidden, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
+**Service-layer throws carry `data: { reason }`.** The conformance lint scans handler source only — failures thrown from `openfda-service.ts` aren't visible to it. To make service throws carry the same wire-shape `error.data.reason` clients see from `ctx.fail`, the service passes `data: { reason: 'X' }` to the factory (used in `openfda-service.ts` for `rate_limited`, `upstream_error`, `pagination_limit_reached`, `query_error`).
+
+**Fallback (no contract entry fits, ad-hoc throws):**
+
+```ts
+// Error factories — explicit code, concise
+import { notFound, validationError, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
 throw notFound('Item not found', { itemId });
 throw serviceUnavailable('API unavailable', { url }, { cause: err });
 
-// 3. McpError — full control over code and data
+// Plain Error — framework auto-classifies from message patterns
+throw new Error('Item not found');           // → NotFound
+throw new Error('Invalid query format');     // → ValidationError
+
+// McpError — when no factory exists for the code
 import { McpError, JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 throw new McpError(JsonRpcErrorCode.DatabaseError, 'Connection failed', { pool: 'primary' });
 ```
 
-Plain `Error` is fine for most cases. Use factories when the error code matters. See framework CLAUDE.md for the full auto-classification table and all available factories.
+See framework CLAUDE.md and the `api-errors` skill for the full auto-classification table, all available factories, and the contract reference.
 
 ---
 
@@ -193,14 +215,17 @@ Available skills:
 | `security-pass` | 8-axis MCP server audit (injection surfaces, scope blast radius, input sinks, tenant isolation, telemetry leakage, resource bounds) |
 | `report-issue-framework` | File a bug or feature request against `@cyanheads/mcp-ts-core` via `gh` CLI |
 | `report-issue-local` | File a bug or feature request against this server's own repo via `gh` CLI |
+| `tool-defs-analysis` | Read-only audit of definition language across the surface — voice, internal/audience leaks, defaults, recovery hints, structure |
 | `api-auth` | Auth modes, scopes, JWT/OAuth |
+| `api-canvas` | DataCanvas: register tabular data, run SQL, export, plus the `spillover()` helper for big result sets — Tier 3 opt-in |
 | `api-config` | AppConfig, parseConfig, env vars |
 | `api-context` | Context interface, logger, state, progress |
-| `api-errors` | McpError, JsonRpcErrorCode, error patterns |
+| `api-errors` | McpError, JsonRpcErrorCode, error patterns, typed contracts |
 | `api-linter` | Definition lint rule reference (`format-parity`, `describe-on-fields`, `schema-*`, etc.) — consult when devcheck reports a lint diagnostic |
 | `api-services` | LLM, Speech, Graph services |
+| `api-telemetry` | OTel catalog: spans, metrics, completion logs, env config, cardinality rules |
 | `api-testing` | createMockContext, test patterns |
-| `api-utils` | Formatting, parsing, security, pagination, scheduling |
+| `api-utils` | Formatting, parsing, security, pagination, scheduling, telemetry helpers |
 | `api-workers` | Cloudflare Workers runtime |
 
 When you complete a skill's checklist, check the boxes and add a completion timestamp at the end (e.g., `Completed: 2026-03-11`).
@@ -218,10 +243,10 @@ When you complete a skill's checklist, check the boxes and add a completion time
 | `bun run tree` | Generate directory structure doc |
 | `bun run format` | Auto-fix formatting |
 | `bun run test` | Run tests (Vitest) |
-| `bun run dev:stdio` | Dev mode (stdio) |
-| `bun run dev:http` | Dev mode (HTTP) |
-| `bun run start:stdio` | Production mode (stdio) |
-| `bun run start:http` | Production mode (HTTP) |
+| `bun run start:stdio` | Production mode (stdio, after build) |
+| `bun run start:http` | Production mode (HTTP, after build) |
+
+Smoke-test path is `bun run rebuild && bun run start:stdio` (or `start:http`) — run against the built tree to match production.
 
 ---
 
@@ -240,12 +265,13 @@ import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 ## Checklist
 
-- [ ] Zod schemas: all fields have `.describe()`, only JSON-Schema-serializable types (no `z.custom()`, `z.date()`, `z.transform()`, etc.)
-- [ ] Optional nested objects: handler guards for empty inner values from form-based clients (`if (input.obj?.field && ...)`, not just `if (input.obj)`)
+- [ ] Zod schemas: all fields have `.describe()`, only JSON-Schema-serializable types (no `z.custom()`, `z.date()`, `z.transform()`, `z.bigint()`, `z.symbol()`, `z.void()`, `z.map()`, `z.set()`, `z.function()`, `z.nan()`)
+- [ ] Optional nested objects: handler guards for empty inner values from form-based clients (`if (input.obj?.field && ...)`, not just `if (input.obj)`). When regex/length constraints matter, use `z.union([z.literal(''), z.string().regex(...).describe(...)])` — literal variants are exempt from `describe-on-fields`.
 - [ ] JSDoc `@fileoverview` + `@module` on every file
 - [ ] `ctx.log` for logging, `ctx.signal` for cancellation
-- [ ] Handlers throw on failure — error factories or plain `Error`, no try/catch
-- [ ] `format()` renders all data the LLM needs — `content[]` is the only field most clients forward to the model
+- [ ] Handlers throw on failure — typed `errors[]` + `ctx.fail` when domain failures fit, factories or plain `Error` otherwise. No try/catch.
+- [ ] `format()` renders all data the LLM needs — different clients forward different surfaces (`structuredContent` vs `content[]`); both must carry the same data
 - [ ] Registered in `createApp()` arrays (directly or via barrel exports)
 - [ ] Tests use `createMockContext()` from `@cyanheads/mcp-ts-core/testing`
 - [ ] `bun run devcheck` passes
+- [ ] Smoke-test: `bun run rebuild && bun run start:stdio` (or `start:http`)
