@@ -112,6 +112,39 @@ describe('OpenFdaService', () => {
       expect(result.meta.total).toBe(0);
     });
 
+    it('preserves skip/limit from request when 404 returns no matches', async () => {
+      mockFetch.mockResolvedValue(
+        mockResponse(404, { error: { code: 'NOT_FOUND', message: 'No matches found!' } }),
+      );
+
+      const result = await service.query('drug/event', { skip: 25000, limit: 10 }, ctx);
+
+      expect(result.meta).toEqual({
+        total: 0,
+        skip: 25000,
+        limit: 10,
+        lastUpdated: 'unknown',
+      });
+    });
+
+    it('falls back to cached lastUpdated on 404 after a prior success on same endpoint', async () => {
+      mockFetch.mockResolvedValueOnce(
+        mockResponse(200, {
+          meta: { results: { total: 100, skip: 0, limit: 1 }, last_updated: '2026-04-28' },
+          results: [{ id: '1' }],
+        }),
+      );
+      mockFetch.mockResolvedValueOnce(
+        mockResponse(404, { error: { code: 'NOT_FOUND', message: 'No matches found!' } }),
+      );
+
+      await service.query('drug/event', { limit: 1 }, ctx);
+      const second = await service.query('drug/event', { skip: 25000, limit: 1 }, ctx);
+
+      expect(second.meta.lastUpdated).toBe('2026-04-28');
+      expect(second.meta.skip).toBe(25000);
+    });
+
     it('throws McpError on 429', async () => {
       mockFetch.mockResolvedValue(mockResponse(429, { error: { message: 'Too many requests' } }));
 

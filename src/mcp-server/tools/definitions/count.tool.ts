@@ -32,7 +32,7 @@ const ENDPOINTS = [
 
 export const countTool = tool('openfda_count', {
   description:
-    'Aggregate and tally unique values for any field across any openFDA endpoint. Returns ranked term-count pairs sorted by count descending.',
+    'Aggregate and tally unique values for any field across any openFDA endpoint. Returns ranked term-count pairs sorted by count descending. Pair with openfda_search_adverse_events, openfda_search_drug_approvals, openfda_search_device_clearances, openfda_search_recalls, openfda_get_drug_label, or openfda_lookup_ndc when sample records help interpret the aggregates.',
   annotations: { readOnlyHint: true },
 
   input: z.object({

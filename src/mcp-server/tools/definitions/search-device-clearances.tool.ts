@@ -4,7 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
+import { emptyResultMessage, formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 export const searchDeviceClearancesTool = tool('openfda_search_device_clearances', {
@@ -14,9 +14,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
   input: z.object({
     pathway: z
       .enum(['510k', 'pma'])
-      .describe(
-        'Premarket pathway. 510(k) is most common (174K+ records). PMA is for higher-risk devices.',
-      ),
+      .describe('Premarket pathway. 510(k) is the most common; PMA is for higher-risk devices.'),
     search: z
       .string()
       .optional()
@@ -27,7 +25,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       .string()
       .optional()
       .describe(
-        'Sort expression (field:asc or field:desc). Example: decision_date:desc. Unrecognized fields are silently ignored by the API — results return in default order.',
+        'Sort expression (field:asc or field:desc). Example: decision_date:desc. Invalid or non-sortable fields cause a query error — use a documented field name.',
       ),
     limit: z
       .number()
@@ -49,11 +47,10 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       .describe('Response metadata'),
     results: z
       .array(z.record(z.string(), z.any()))
-      .describe('510(k) clearance or PMA approval records'),
-    message: z
-      .string()
-      .optional()
-      .describe('Guidance when results are empty or search can be refined'),
+      .describe(
+        '510(k) or PMA records — 510(k) carries k_number, device_name, applicant, product_code, decision_date, decision_description, advisory_committee_description; PMA carries pma_number, trade_name, generic_name, supplement_number plus shared applicant/product_code/decision_date/decision_description.',
+      ),
+    message: z.string().optional().describe('Guidance when no clearances matched the query.'),
   }),
 
   async handler(input, ctx) {
@@ -80,7 +77,10 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       results: response.results,
       message:
         response.results.length === 0
-          ? 'No matching device clearances found. Try broadening the search — use applicant, product_code, advisory_committee_description, or openfda.device_name fields.'
+          ? emptyResultMessage(
+              response.meta.skip,
+              'No matching device clearances found. Try broadening the search — use applicant, product_code, advisory_committee_description, or openfda.device_name fields.',
+            )
           : undefined,
     };
   },
@@ -101,6 +101,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       'product_code',
       'decision_description',
       'decision_date',
+      'advisory_committee',
       'advisory_committee_description',
       'clearance_type',
       'statement_or_summary',
@@ -114,6 +115,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       'decision_description',
       'decision_code',
       'decision_date',
+      'advisory_committee',
       'advisory_committee_description',
       'supplement_number',
     ]);

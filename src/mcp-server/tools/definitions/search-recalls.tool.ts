@@ -5,7 +5,11 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { formatRemainingFields, truncate } from '@/mcp-server/tools/format-utils.js';
+import {
+  emptyResultMessage,
+  formatRemainingFields,
+  truncate,
+} from '@/mcp-server/tools/format-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 const Category = z.enum(['drug', 'food', 'device']).describe('Product category');
@@ -26,13 +30,13 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       .string()
       .optional()
       .describe(
-        'openFDA search query. Examples: classification:"Class I", recalling_firm:"pfizer", reason_for_recall:"undeclared allergen".',
+        'openFDA search query. Examples: classification:"Class I" (also "Class II" or "Class III"), recalling_firm:"pfizer", reason_for_recall:"undeclared allergen".',
       ),
     sort: z
       .string()
       .optional()
       .describe(
-        'Sort expression (field:asc or field:desc). Example: report_date:desc. Unrecognized fields are silently ignored by the API — results return in default order.',
+        'Sort expression (field:asc or field:desc). Example: report_date:desc. Invalid or non-sortable fields cause a query error — use a documented field name.',
       ),
     limit: z
       .number()
@@ -52,11 +56,15 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
         lastUpdated: z.string().describe('Dataset last updated date'),
       })
       .describe('Response metadata'),
-    results: z.array(z.record(z.string(), z.any())).describe('Enforcement/recall records'),
+    results: z
+      .array(z.record(z.string(), z.any()))
+      .describe(
+        'Enforcement or recall records — recall_number, classification, recalling_firm, product_description, reason_for_recall, status, voluntary_mandated, distribution_pattern, report_date. Field set varies between enforcement and recall endpoints.',
+      ),
     message: z
       .string()
       .optional()
-      .describe('Guidance when results are empty or search can be refined'),
+      .describe('Guidance when no recall/enforcement records matched the query.'),
   }),
 
   errors: [
@@ -102,7 +110,10 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       results: response.results,
       message:
         response.results.length === 0
-          ? `No recall/enforcement records matched${input.search ? ` search: ${input.search}` : ''} in ${input.category}/${endpointValue}. Try broadening filters or check field names (e.g. classification, recalling_firm, reason_for_recall).`
+          ? emptyResultMessage(
+              response.meta.skip,
+              `No recall/enforcement records matched${input.search ? ` search: ${input.search}` : ''} in ${input.category}/${endpointValue}. Try broadening filters or check field names (e.g. classification, recalling_firm, reason_for_recall).`,
+            )
           : undefined,
     };
   },

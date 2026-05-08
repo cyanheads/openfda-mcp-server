@@ -4,7 +4,11 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { formatRemainingFields, truncate } from '@/mcp-server/tools/format-utils.js';
+import {
+  emptyResultMessage,
+  formatRemainingFields,
+  truncate,
+} from '@/mcp-server/tools/format-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
@@ -20,13 +24,13 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       .string()
       .optional()
       .describe(
-        'Elasticsearch query string. Examples: patient.drug.medicinalproduct:"aspirin", patient.reaction.reactionmeddrapt:"nausea" AND serious:"1". Omit to browse recent.',
+        'openFDA search query. Examples: patient.drug.medicinalproduct:"aspirin", patient.reaction.reactionmeddrapt:"nausea" AND serious:"1". Omit to browse recent.',
       ),
     sort: z
       .string()
       .optional()
       .describe(
-        'Sort expression (field:asc or field:desc). Example: receivedate:desc. Unrecognized fields are silently ignored by the API — results return in default order.',
+        'Sort expression (field:asc or field:desc). Example: receivedate:desc. Invalid or non-sortable fields cause a query error — use a documented field name.',
       ),
     limit: z
       .number()
@@ -56,10 +60,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       .describe(
         'Adverse event records — fields vary by category (drug: patient/reactions/drugs, device: device details/event type, food: products/outcomes)',
       ),
-    message: z
-      .string()
-      .optional()
-      .describe('Guidance when results are empty or search can be refined'),
+    message: z.string().optional().describe('Guidance when no reports matched the query.'),
   }),
 
   async handler(input, ctx) {
@@ -85,7 +86,10 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
     if (response.results.length === 0) {
       return {
         ...response,
-        message: `No adverse event reports matched${input.search ? ` search: ${input.search}` : ''} in ${input.category}/event. Try broadening filters, checking field names (use openfda.brand_name for product searches), or removing date constraints.`,
+        message: emptyResultMessage(
+          response.meta.skip,
+          `No adverse event reports matched${input.search ? ` search: ${input.search}` : ''} in ${input.category}/event. Try broadening filters, checking field names (use openfda.brand_name for product searches), or removing date constraints.`,
+        ),
       };
     }
 
@@ -149,7 +153,22 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
         lines.push(...formatRemainingFields(patient, renderedPatient));
 
         // Remaining top-level fields (companynumb, sender, primarysource, etc.)
-        const renderedTop = new Set(['patient', 'safetyreportid', 'receivedate', 'serious']);
+        // Skip FDA workflow timestamps and format codes that aren't useful for clinical reading.
+        const renderedTop = new Set([
+          'patient',
+          'safetyreportid',
+          'receivedate',
+          'serious',
+          'safetyreportversion',
+          'transmissiondate',
+          'transmissiondateformat',
+          'receivedateformat',
+          'receiptdate',
+          'receiptdateformat',
+          'reporttype',
+          'fulfillexpeditecriteria',
+          'duplicate',
+        ]);
         lines.push(...formatRemainingFields(r, renderedTop));
       }
       // Device adverse events

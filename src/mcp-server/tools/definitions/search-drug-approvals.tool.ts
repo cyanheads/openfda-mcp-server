@@ -5,13 +5,13 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
+import { emptyResultMessage, formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 /** Exported tool definition for searching drug approvals. */
 export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
   description:
-    'Search the Drugs@FDA database for drug application approvals (NDAs and ANDAs). Returns application details, sponsor info, and full submission history.',
+    'Search the Drugs@FDA database for drug application approvals (NDAs and ANDAs). Returns application details, sponsor info, and full submission history. Pair with openfda_get_drug_label to read the approved label, or openfda_count to aggregate by sponsor_name, product_type, or route.',
   annotations: { readOnlyHint: true },
 
   input: z.object({
@@ -25,7 +25,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       .string()
       .optional()
       .describe(
-        'Sort expression (field:asc or field:desc). Example: submissions.submission_status_date:desc. Unrecognized fields are silently ignored by the API — results return in default order.',
+        'Sort expression (field:asc or field:desc). Example: submissions.submission_status_date:desc. Invalid or non-sortable fields cause a query error — use a documented field name.',
       ),
     limit: z
       .number()
@@ -52,11 +52,10 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       .describe('Response metadata'),
     results: z
       .array(z.record(z.string(), z.any()))
-      .describe('Drug application records with submission history'),
-    message: z
-      .string()
-      .optional()
-      .describe('Guidance when results are empty or search can be refined'),
+      .describe(
+        'Drug application records — application_number, sponsor_name, openfda block (brand_name, generic_name, route, product_type, substance_name), products[] (active_ingredients, dosage_form, marketing_status), submissions[] (submission_type, submission_status, submission_status_date, review_priority).',
+      ),
+    message: z.string().optional().describe('Guidance when no approvals matched the query.'),
   }),
 
   async handler(input, ctx) {
@@ -81,7 +80,10 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
 
     const message =
       response.results.length === 0
-        ? 'No drug approvals matched the query. Try broader terms, check field names (e.g. openfda.brand_name, sponsor_name), or remove filters.'
+        ? emptyResultMessage(
+            response.meta.skip,
+            'No drug approvals matched the query. Try broader terms, check field names (e.g. openfda.brand_name, sponsor_name), or remove filters.',
+          )
         : undefined;
 
     return {

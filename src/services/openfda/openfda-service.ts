@@ -14,6 +14,8 @@ const REQUEST_TIMEOUT_MS = 15_000;
 export class OpenFdaService {
   private readonly baseUrl: string;
   private readonly apiKey: string | undefined;
+  /** Last-seen `meta.last_updated` per endpoint, used as fallback on 404 responses. */
+  private readonly lastUpdatedByEndpoint: Map<string, string> = new Map();
 
   constructor(config: ServerConfig) {
     this.baseUrl = config.baseUrl;
@@ -43,10 +45,10 @@ export class OpenFdaService {
 
         if (response.ok) {
           const data = (await response.json()) as Record<string, unknown>;
-          return this.normalizeResponse<T>(data);
+          return this.normalizeResponse<T>(data, endpoint);
         }
 
-        return this.handleErrorResponse<T>(response, endpoint);
+        return this.handleErrorResponse<T>(response, endpoint, params);
       },
       {
         operation: `openFDA:${endpoint}`,
@@ -68,15 +70,22 @@ export class OpenFdaService {
     return url;
   }
 
-  private normalizeResponse<T>(data: Record<string, unknown>): OpenFdaResponse<T> {
+  private normalizeResponse<T>(
+    data: Record<string, unknown>,
+    endpoint: string,
+  ): OpenFdaResponse<T> {
     const meta = data.meta as Record<string, unknown> | undefined;
     const pagination = meta?.results as Record<string, unknown> | undefined;
+    const lastUpdated = (meta?.last_updated as string) ?? 'unknown';
+    if (lastUpdated !== 'unknown') {
+      this.lastUpdatedByEndpoint.set(endpoint, lastUpdated);
+    }
     return {
       meta: {
         total: (pagination?.total as number) ?? 0,
         skip: (pagination?.skip as number) ?? 0,
         limit: (pagination?.limit as number) ?? 0,
-        lastUpdated: (meta?.last_updated as string) ?? 'unknown',
+        lastUpdated,
       },
       results: (data.results as T[]) ?? [],
     };
@@ -85,6 +94,7 @@ export class OpenFdaService {
   private async handleErrorResponse<T>(
     response: Response,
     endpoint: string,
+    params: OpenFdaQueryParams,
   ): Promise<OpenFdaResponse<T>> {
     const body = (await response.json().catch(() => null)) as Record<string, unknown> | null;
     const errorObj = body?.error as Record<string, unknown> | undefined;
@@ -92,7 +102,12 @@ export class OpenFdaService {
 
     if (response.status === 404) {
       return {
-        meta: { total: 0, skip: 0, limit: 0, lastUpdated: 'unknown' },
+        meta: {
+          total: 0,
+          skip: params.skip ?? 0,
+          limit: params.limit ?? 0,
+          lastUpdated: this.lastUpdatedByEndpoint.get(endpoint) ?? 'unknown',
+        },
         results: [],
       };
     }

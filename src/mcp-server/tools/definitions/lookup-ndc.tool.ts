@@ -4,12 +4,12 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
+import { emptyResultMessage, formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 export const lookupNdcTool = tool('openfda_lookup_ndc', {
   description:
-    'Look up drugs in the NDC (National Drug Code) Directory. Identify drug products by NDC code, find active ingredients, packaging details, or manufacturer info.',
+    'Look up drugs in the NDC (National Drug Code) Directory. Identify drug products by NDC code, find active ingredients, packaging details, or manufacturer info. Pair with openfda_get_drug_label using the returned brand_name or set_id to read the package insert.',
   annotations: { readOnlyHint: true },
 
   input: z.object({
@@ -22,7 +22,7 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
       .string()
       .optional()
       .describe(
-        'Sort expression (field:asc or field:desc). Example: listing_expiration_date:desc. Unrecognized fields are silently ignored by the API — results return in default order.',
+        'Sort expression (field:asc or field:desc). Example: listing_expiration_date:desc. Invalid or non-sortable fields cause a query error — use a documented field name.',
       ),
     limit: z
       .number()
@@ -49,11 +49,10 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
       .describe('Response metadata'),
     results: z
       .array(z.record(z.string(), z.any()))
-      .describe('NDC directory records with product and packaging details'),
-    message: z
-      .string()
-      .optional()
-      .describe('Guidance when results are empty or search can be refined'),
+      .describe(
+        'NDC directory records — product_ndc, brand_name, generic_name, labeler_name, dosage_form, route, marketing_category, active_ingredients[], packaging[], listing_expiration_date.',
+      ),
+    message: z.string().optional().describe('Guidance when no records matched the query.'),
   }),
 
   async handler(input, ctx) {
@@ -71,7 +70,10 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
       results: response.results,
       message:
         response.results.length === 0
-          ? 'No NDC records matched the query. Try broadening the search — use brand_name, generic_name, or active_ingredients.name fields.'
+          ? emptyResultMessage(
+              response.meta.skip,
+              'No NDC records matched the query. Try broadening the search — use brand_name, generic_name, or active_ingredients.name fields.',
+            )
           : undefined,
     };
   },

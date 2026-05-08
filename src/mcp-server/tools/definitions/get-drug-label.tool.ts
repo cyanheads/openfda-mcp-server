@@ -4,7 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { humanizeField } from '@/mcp-server/tools/format-utils.js';
+import { emptyResultMessage, humanizeField } from '@/mcp-server/tools/format-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 const ENDPOINT = 'drug/label';
@@ -18,13 +18,13 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
     search: z
       .string()
       .describe(
-        'Query targeting label fields. Examples: openfda.brand_name:"aspirin", openfda.generic_name:"metformin", openfda.manufacturer_name:"pfizer", set_id:"uuid".',
+        'Query targeting label fields. Examples: openfda.brand_name:"aspirin", openfda.generic_name:"metformin", openfda.manufacturer_name:"pfizer". For a specific revision, pass set_id with the SPL UUID returned in earlier results.',
       ),
     sort: z
       .string()
       .optional()
       .describe(
-        'Sort expression (field:asc or field:desc). Example: effective_time:desc. Unrecognized fields are silently ignored by the API — results return in default order.',
+        'Sort expression (field:asc or field:desc). Example: effective_time:desc. Invalid or non-sortable fields cause a query error — use a documented field name.',
       ),
     limit: z
       .number()
@@ -49,7 +49,11 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
         lastUpdated: z.string().describe('Date the dataset was last updated.'),
       })
       .describe('Pagination and freshness metadata.'),
-    results: z.array(z.record(z.string(), z.any())).describe('Array of drug label records.'),
+    results: z
+      .array(z.record(z.string(), z.any()))
+      .describe(
+        'Drug label records. Each carries an openfda block (brand_name, generic_name, manufacturer_name, route) plus optional SPL sections like indications_and_usage, warnings, dosage_and_administration, contraindications, adverse_reactions; section presence varies per label.',
+      ),
     message: z.string().optional().describe('Human-readable note when the result set is empty.'),
   }),
 
@@ -76,7 +80,10 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       meta: response.meta,
       results: response.results,
       ...(response.results.length === 0 && {
-        message: `No labels matched${input.search ? ` search: ${input.search}` : ''}. Try broader terms or check field names (e.g. openfda.brand_name, openfda.generic_name, openfda.manufacturer_name).`,
+        message: emptyResultMessage(
+          response.meta.skip,
+          `No labels matched${input.search ? ` search: ${input.search}` : ''}. Try broader terms or check field names (e.g. openfda.brand_name, openfda.generic_name, openfda.manufacturer_name).`,
+        ),
       }),
     };
   },
