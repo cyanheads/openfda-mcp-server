@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.12](changelog/0.1.x/0.1.12.md) — 2026-05-08
+
+Disambiguate empty-result responses (no-match vs paginated-past-end); cache last_updated per endpoint for 404 fallback; richer field rendering and tool-description polish across the surface.
+
 ## [0.1.11](changelog/0.1.x/0.1.11.md) — 2026-05-08
 
 Upgrade mcp-ts-core ^0.7.0 → ^0.8.19 — adopt typed error contract in search-recalls; bump engines to Node ≥24 / Bun ≥1.3.
