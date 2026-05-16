@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.13](changelog/0.1.x/0.1.13.md) — 2026-05-16
+
+Upgrade @cyanheads/mcp-ts-core ^0.8.19 → ^0.9.1; adopt the new createApp({ instructions }) field to forward server-level orientation to the model on initialize; raise changelog summary cap 250 → 350 chars; fix bun outdated parser in devcheck.
+
 ## [0.1.12](changelog/0.1.x/0.1.12.md) — 2026-05-08
 
 Disambiguate empty-result responses (no-match vs paginated-past-end); cache last_updated per endpoint for 404 fallback; richer field rendering and tool-description polish across the surface.
