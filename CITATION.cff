@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: openfda-mcp-server
+abstract: "Model Context Protocol (MCP) server for the openFDA API, providing adverse event reporting search across drugs, food, and devices; enforcement and recall records; drug labeling and approvals (NDA/ANDA); device clearances (510(k) and PMA); NDC directory lookups; and field aggregation across all 19 openFDA endpoints."
+type: software
+authors:
+  - family-names: Hand
+    given-names: Casey
+    orcid: "https://orcid.org/0009-0009-3726-568X"
+repository-code: "https://github.com/cyanheads/openfda-mcp-server"
+license: Apache-2.0
+keywords:
+  - mcp
+  - model-context-protocol
+  - openfda
+  - drug-safety
+  - pharmacovigilance
+  - regulatory-data
