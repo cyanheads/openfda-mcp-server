@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.14](changelog/0.1.x/0.1.14.md) — 2026-05-23
+
+Upgrade @cyanheads/mcp-ts-core ^0.9.1 → ^0.9.6; add zod ^4.4.3 runtime dep; add publish-mcp script; scaffold manifest.json + .mcpbignore for MCPB bundle support; add install badges to README.
+
 ## [0.1.13](changelog/0.1.x/0.1.13.md) — 2026-05-16
 
 Upgrade @cyanheads/mcp-ts-core ^0.8.19 → ^0.9.1; adopt the new createApp({ instructions }) field to forward server-level orientation to the model on initialize; raise changelog summary cap 250 → 350 chars; fix bun outdated parser in devcheck.
