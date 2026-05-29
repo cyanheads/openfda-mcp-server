@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.3",
   "name": "openfda-mcp-server",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "description": "Query FDA data on drugs, food, devices, and recalls via openFDA. STDIO or Streamable HTTP.",
   "author": { "name": "cyanheads" },
   "repository": {
@@ -35,7 +35,8 @@
       "title": "openFDA API Key",
       "description": "Free API key from open.fda.gov — increases daily limit from 1K to 120K requests. Register at https://open.fda.gov/apis/authentication/.",
       "required": false,
-      "sensitive": true
+      "sensitive": true,
+      "default": ""
     }
   }
 }

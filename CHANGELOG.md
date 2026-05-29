@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.15](changelog/0.1.x/0.1.15.md) — 2026-05-28
+
+@cyanheads/mcp-ts-core ^0.9.6 → ^0.9.13: HTTP body cap, session-init gate, quieter client-error logging, landing page keywords; placeholder preprocess for API key; manifest default
+
 ## [0.1.14](changelog/0.1.x/0.1.14.md) — 2026-05-23
 
 Upgrade @cyanheads/mcp-ts-core ^0.9.1 → ^0.9.6; add zod ^4.4.3 runtime dep; add publish-mcp script; scaffold manifest.json + .mcpbignore for MCPB bundle support; add install badges to README.

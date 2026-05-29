@@ -7,6 +7,7 @@ describe('getServerConfig', () => {
   });
 
   it('applies defaults when no env vars are set', async () => {
+    vi.stubEnv('OPENFDA_API_KEY', '');
     const { getServerConfig } = await import('@/config/server-config.js');
     const config = getServerConfig();
     expect(config.baseUrl).toBe('https://api.fda.gov');
@@ -23,6 +24,7 @@ describe('getServerConfig', () => {
   });
 
   it('caches after first call', async () => {
+    vi.stubEnv('OPENFDA_API_KEY', '');
     const { getServerConfig } = await import('@/config/server-config.js');
     const first = getServerConfig();
     vi.stubEnv('OPENFDA_API_KEY', 'changed');

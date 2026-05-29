@@ -1,0 +1,10 @@
+{
+  "@cyanheads/openfda-mcp-server": {
+    "command": "npx",
+    "args": ["-y", "@cyanheads/openfda-mcp-server"],
+    "env": {
+      "MCP_TRANSPORT_TYPE": "stdio",
+      "OPENFDA_API_KEY": ""
+    }
+  }
+}

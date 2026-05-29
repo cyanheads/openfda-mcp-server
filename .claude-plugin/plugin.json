@@ -1,0 +1,21 @@
+{
+  "name": "@cyanheads/openfda-mcp-server",
+  "version": "0.1.15",
+  "description": "Query FDA data on drugs, food, devices, and recalls via openFDA. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "cyanheads"
+  },
+  "homepage": "https://github.com/cyanheads/openfda-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/openfda-mcp-server",
+  "license": "Apache-2.0",
+  "mcpServers": {
+    "@cyanheads/openfda-mcp-server": {
+      "command": "npx",
+      "args": ["-y", "@cyanheads/openfda-mcp-server"],
+      "env": {
+        "MCP_TRANSPORT_TYPE": "stdio",
+        "OPENFDA_API_KEY": ""
+      }
+    }
+  }
+}
