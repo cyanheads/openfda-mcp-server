@@ -52,8 +52,20 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
       .describe(
         'NDC directory records — product_ndc, brand_name, generic_name, labeler_name, dosage_form, route, marketing_category, active_ingredients[], packaging[], listing_expiration_date.',
       ),
-    message: z.string().optional().describe('Guidance when no records matched the query.'),
   }),
+
+  enrichment: {
+    totalResults: z.number().describe('Total matching NDC records in the dataset'),
+    effectiveQuery: z
+      .string()
+      .describe('Search filter applied to the NDC lookup, as submitted to openFDA'),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Guidance when results are empty — how to broaden filters or correct field names. Absent when results are returned.',
+      ),
+  },
 
   async handler(input, ctx) {
     const service = getOpenFdaService();
@@ -65,22 +77,25 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
       returned: response.results.length,
     });
 
+    ctx.enrich({ totalResults: response.meta.total, effectiveQuery: input.search });
+    if (response.results.length === 0) {
+      ctx.enrich.notice(
+        emptyResultMessage(
+          response.meta.skip,
+          'No NDC records matched the query. Try broadening the search — use brand_name, generic_name, or active_ingredients.name fields.',
+        ),
+      );
+    }
+
     return {
       meta: response.meta,
       results: response.results,
-      message:
-        response.results.length === 0
-          ? emptyResultMessage(
-              response.meta.skip,
-              'No NDC records matched the query. Try broadening the search — use brand_name, generic_name, or active_ingredients.name fields.',
-            )
-          : undefined,
     };
   },
 
   format: (result) => {
     if (result.results.length === 0) {
-      return [{ type: 'text' as const, text: result.message ?? 'No NDC records found.' }];
+      return [{ type: 'text' as const, text: 'No NDC records found.' }];
     }
 
     const lines: string[] = [
@@ -132,8 +147,6 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
       lines.push(...formatRemainingFields(r, rendered));
       lines.push('');
     }
-
-    if (result.message) lines.push(result.message);
 
     return [{ type: 'text' as const, text: lines.join('\n') }];
   },

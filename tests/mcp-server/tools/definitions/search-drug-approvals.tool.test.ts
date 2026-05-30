@@ -1,5 +1,5 @@
 import type { Context } from '@cyanheads/mcp-ts-core';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
@@ -32,14 +32,40 @@ describe('openfda_search_drug_approvals', () => {
     expect(result.results[0].application_number).toBe('NDA012345');
   });
 
-  it('returns message when empty', async () => {
+  it('populates enrichment.totalResults', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 15, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
+      results: [{ application_number: 'NDA012345' }],
+    });
+
+    await searchDrugApprovalsTool.handler({ search: 'sponsor_name:"pfizer"' }, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalResults).toBe(15);
+  });
+
+  it('echoes search filter in enrichment.effectiveQuery', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
+      results: [{ application_number: 'NDA012345' }],
+    });
+
+    await searchDrugApprovalsTool.handler({ search: 'sponsor_name:"pfizer"' }, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.effectiveQuery).toBe('sponsor_name:"pfizer"');
+  });
+
+  it('sets enrichment.notice when empty', async () => {
     mockQuery.mockResolvedValue({
       meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
       results: [],
     });
 
-    const result = await searchDrugApprovalsTool.handler({ search: 'nonexistent' }, ctx);
-    expect(result.message).toMatch(/no drug approvals/i);
+    await searchDrugApprovalsTool.handler({ search: 'nonexistent' }, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toMatch(/no drug approvals/i);
   });
 
   it('formats submissions list', () => {

@@ -1,6 +1,6 @@
 import type { Context } from '@cyanheads/mcp-ts-core';
 import { McpError } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
@@ -54,14 +54,40 @@ describe('openfda_search_recalls', () => {
     ).rejects.toThrow(/only available for devices/i);
   });
 
-  it('returns message when empty', async () => {
+  it('populates enrichment.totalResults', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 23, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
+      results: [{ recall_number: 'R-1' }],
+    });
+
+    await searchRecallsTool.handler({ category: 'drug' }, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalResults).toBe(23);
+  });
+
+  it('echoes search filter in enrichment.effectiveQuery', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
+      results: [{ recall_number: 'R-1' }],
+    });
+
+    await searchRecallsTool.handler({ category: 'drug', search: 'classification:"Class I"' }, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.effectiveQuery).toBe('classification:"Class I"');
+  });
+
+  it('sets enrichment.notice when empty', async () => {
     mockQuery.mockResolvedValue({
       meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
       results: [],
     });
 
-    const result = await searchRecallsTool.handler({ category: 'drug' }, ctx);
-    expect(result.message).toBeDefined();
+    await searchRecallsTool.handler({ category: 'drug' }, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toBeDefined();
   });
 
   it('formats recall records', () => {

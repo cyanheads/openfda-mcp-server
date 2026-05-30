@@ -50,8 +50,21 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       .describe(
         '510(k) or PMA records — 510(k) carries k_number, device_name, applicant, product_code, decision_date, decision_description, advisory_committee_description; PMA carries pma_number, trade_name, generic_name, supplement_number plus shared applicant/product_code/decision_date/decision_description.',
       ),
-    message: z.string().optional().describe('Guidance when no clearances matched the query.'),
   }),
+
+  enrichment: {
+    totalResults: z.number().describe('Total matching device clearance records in the dataset'),
+    effectiveQuery: z
+      .string()
+      .optional()
+      .describe('Search filter applied to the device clearance query, as submitted to openFDA'),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Guidance when results are empty — how to broaden filters or correct field names. Absent when results are returned.',
+      ),
+  },
 
   async handler(input, ctx) {
     const service = getOpenFdaService();
@@ -72,22 +85,23 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       returned: response.results.length,
     });
 
-    return {
-      meta: response.meta,
-      results: response.results,
-      message:
-        response.results.length === 0
-          ? emptyResultMessage(
-              response.meta.skip,
-              'No matching device clearances found. Try broadening the search — use applicant, product_code, advisory_committee_description, or openfda.device_name fields.',
-            )
-          : undefined,
-    };
+    ctx.enrich({ totalResults: response.meta.total });
+    if (input.search) ctx.enrich.echo(input.search);
+    if (response.results.length === 0) {
+      ctx.enrich.notice(
+        emptyResultMessage(
+          response.meta.skip,
+          'No matching device clearances found. Try broadening the search — use applicant, product_code, advisory_committee_description, or openfda.device_name fields.',
+        ),
+      );
+    }
+
+    return { meta: response.meta, results: response.results };
   },
 
   format: (result) => {
     if (result.results.length === 0) {
-      return [{ type: 'text' as const, text: result.message ?? 'No device clearances found.' }];
+      return [{ type: 'text' as const, text: 'No device clearances found.' }];
     }
 
     const lines: string[] = [
@@ -161,8 +175,6 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       }
       lines.push('');
     }
-
-    if (result.message) lines.push(result.message);
 
     return [{ type: 'text' as const, text: lines.join('\n') }];
   },

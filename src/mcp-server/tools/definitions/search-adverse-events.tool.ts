@@ -60,8 +60,21 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       .describe(
         'Adverse event records — fields vary by category (drug: patient/reactions/drugs, device: device details/event type, food: products/outcomes)',
       ),
-    message: z.string().optional().describe('Guidance when no reports matched the query.'),
   }),
+
+  enrichment: {
+    totalResults: z.number().describe('Total matching adverse event records in the dataset'),
+    effectiveQuery: z
+      .string()
+      .optional()
+      .describe('Search filter applied to the query, as submitted to openFDA'),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Guidance when results are empty or paging overshot — how to broaden filters or adjust the query. Absent when results are returned.',
+      ),
+  },
 
   async handler(input, ctx) {
     const svc = getOpenFdaService();
@@ -83,22 +96,23 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       returned: response.results.length,
     });
 
+    ctx.enrich({ totalResults: response.meta.total });
+    if (input.search) ctx.enrich.echo(input.search);
     if (response.results.length === 0) {
-      return {
-        ...response,
-        message: emptyResultMessage(
+      ctx.enrich.notice(
+        emptyResultMessage(
           response.meta.skip,
           `No adverse event reports matched${input.search ? ` search: ${input.search}` : ''} in ${input.category}/event. Try broadening filters, checking field names (use openfda.brand_name for product searches), or removing date constraints.`,
         ),
-      };
+      );
     }
 
-    return response;
+    return { meta: response.meta, results: response.results };
   },
 
   format: (result) => {
     if (result.results.length === 0) {
-      return [{ type: 'text' as const, text: result.message ?? 'No results found.' }];
+      return [{ type: 'text' as const, text: 'No results found.' }];
     }
 
     const lines: string[] = [
@@ -235,8 +249,6 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       }
       lines.push('');
     }
-
-    if (result.message) lines.push(result.message);
 
     return [{ type: 'text' as const, text: lines.join('\n') }];
   },

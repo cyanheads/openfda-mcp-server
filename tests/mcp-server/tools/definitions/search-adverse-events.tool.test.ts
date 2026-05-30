@@ -1,5 +1,5 @@
 import type { Context } from '@cyanheads/mcp-ts-core';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
@@ -49,18 +49,43 @@ describe('openfda_search_adverse_events', () => {
     expect(mockQuery.mock.calls[0][0]).toBe('device/event');
   });
 
-  it('returns message when results are empty', async () => {
+  it('populates enrichment.totalResults', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 42, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
+      results: [{ safetyreportid: '1', patient: {} }],
+    });
+
+    await searchAdverseEventsTool.handler({ category: 'drug' }, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalResults).toBe(42);
+  });
+
+  it('echoes search filter in enrichment.effectiveQuery', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
+      results: [{ safetyreportid: '1', patient: {} }],
+    });
+
+    await searchAdverseEventsTool.handler(
+      { category: 'drug', search: 'patient.drug.medicinalproduct:"aspirin"' },
+      ctx,
+    );
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.effectiveQuery).toBe('patient.drug.medicinalproduct:"aspirin"');
+  });
+
+  it('sets enrichment.notice when results are empty', async () => {
     mockQuery.mockResolvedValue({
       meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
       results: [],
     });
 
-    const result = await searchAdverseEventsTool.handler(
-      { category: 'drug', search: 'nonexistent' },
-      ctx,
-    );
+    await searchAdverseEventsTool.handler({ category: 'drug', search: 'nonexistent' }, ctx);
 
-    expect(result.message).toMatch(/no adverse event/i);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toMatch(/no adverse event/i);
   });
 
   it('formats drug adverse event records', () => {
@@ -92,7 +117,6 @@ describe('openfda_search_adverse_events', () => {
     const content = searchAdverseEventsTool.format({
       meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
       results: [],
-      message: 'No results found.',
     });
 
     expect(content[0].text).toBe('No results found.');

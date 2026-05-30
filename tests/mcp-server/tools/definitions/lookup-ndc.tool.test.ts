@@ -1,5 +1,5 @@
 import type { Context } from '@cyanheads/mcp-ts-core';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
@@ -32,14 +32,29 @@ describe('openfda_lookup_ndc', () => {
     expect(result.results[0].brand_name).toBe('Aspirin');
   });
 
-  it('returns message when empty', async () => {
+  it('populates enrichment.totalResults and effectiveQuery', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
+      results: [{ product_ndc: '0363-0218', brand_name: 'Aspirin' }],
+    });
+
+    await lookupNdcTool.handler({ search: 'product_ndc:"0363-0218"' }, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalResults).toBe(1);
+    expect(enrichment.effectiveQuery).toBe('product_ndc:"0363-0218"');
+  });
+
+  it('sets enrichment.notice when results are empty', async () => {
     mockQuery.mockResolvedValue({
       meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
       results: [],
     });
 
-    const result = await lookupNdcTool.handler({ search: 'nonexistent' }, ctx);
-    expect(result.message).toMatch(/no NDC records/i);
+    await lookupNdcTool.handler({ search: 'nonexistent' }, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toMatch(/no NDC records/i);
   });
 
   it('formats NDC records with ingredients and packaging', () => {

@@ -61,11 +61,21 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       .describe(
         'Enforcement or recall records — recall_number, classification, recalling_firm, product_description, reason_for_recall, status, voluntary_mandated, distribution_pattern, report_date. Field set varies between enforcement and recall endpoints.',
       ),
-    message: z
+  }),
+
+  enrichment: {
+    totalResults: z.number().describe('Total matching recall/enforcement records in the dataset'),
+    effectiveQuery: z
       .string()
       .optional()
-      .describe('Guidance when no recall/enforcement records matched the query.'),
-  }),
+      .describe('Search filter applied to the recall query, as submitted to openFDA'),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Guidance when results are empty — how to broaden filters or correct field names. Absent when results are returned.',
+      ),
+  },
 
   errors: [
     {
@@ -105,27 +115,23 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       total: response.meta.total,
     });
 
-    return {
-      meta: response.meta,
-      results: response.results,
-      message:
-        response.results.length === 0
-          ? emptyResultMessage(
-              response.meta.skip,
-              `No recall/enforcement records matched${input.search ? ` search: ${input.search}` : ''} in ${input.category}/${endpointValue}. Try broadening filters or check field names (e.g. classification, recalling_firm, reason_for_recall).`,
-            )
-          : undefined,
-    };
+    ctx.enrich({ totalResults: response.meta.total });
+    if (input.search) ctx.enrich.echo(input.search);
+    if (response.results.length === 0) {
+      ctx.enrich.notice(
+        emptyResultMessage(
+          response.meta.skip,
+          `No recall/enforcement records matched${input.search ? ` search: ${input.search}` : ''} in ${input.category}/${endpointValue}. Try broadening filters or check field names (e.g. classification, recalling_firm, reason_for_recall).`,
+        ),
+      );
+    }
+
+    return { meta: response.meta, results: response.results };
   },
 
   format: (result) => {
     if (result.results.length === 0) {
-      return [
-        {
-          type: 'text' as const,
-          text: result.message ?? 'No results found.',
-        },
-      ];
+      return [{ type: 'text' as const, text: 'No results found.' }];
     }
 
     const header = `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Last updated: ${result.meta.lastUpdated}\n`;
@@ -157,8 +163,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
     });
 
     const body = records.join('\n\n---\n\n');
-    const footer = result.message ? `\n\n${result.message}` : '';
 
-    return [{ type: 'text' as const, text: `${header}\n${body}${footer}` }];
+    return [{ type: 'text' as const, text: `${header}\n${body}` }];
   },
 });

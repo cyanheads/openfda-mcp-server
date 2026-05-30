@@ -1,5 +1,5 @@
 import type { Context } from '@cyanheads/mcp-ts-core';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
@@ -44,6 +44,45 @@ describe('openfda_search_device_clearances', () => {
     await searchDeviceClearancesTool.handler({ pathway: 'pma', search: 'applicant:"test"' }, ctx);
 
     expect(mockQuery.mock.calls[0][0]).toBe('device/pma');
+  });
+
+  it('populates enrichment.totalResults', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 7, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
+      results: [{ k_number: 'K123456' }],
+    });
+
+    await searchDeviceClearancesTool.handler({ pathway: '510k' }, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalResults).toBe(7);
+  });
+
+  it('echoes search filter in enrichment.effectiveQuery', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
+      results: [{ k_number: 'K123456' }],
+    });
+
+    await searchDeviceClearancesTool.handler(
+      { pathway: '510k', search: 'applicant:"medtronic"' },
+      ctx,
+    );
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.effectiveQuery).toBe('applicant:"medtronic"');
+  });
+
+  it('sets enrichment.notice when empty', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
+      results: [],
+    });
+
+    await searchDeviceClearancesTool.handler({ pathway: '510k', search: 'nonexistent' }, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toMatch(/no matching device clearances/i);
   });
 
   it('formats 510k records', () => {

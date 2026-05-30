@@ -1,5 +1,5 @@
 import type { Context } from '@cyanheads/mcp-ts-core';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
@@ -32,15 +32,29 @@ describe('openfda_get_drug_label', () => {
     expect(result.results).toHaveLength(1);
   });
 
-  it('includes message when empty', async () => {
+  it('populates enrichment.totalResults and effectiveQuery', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 1, skip: 0, limit: 5, lastUpdated: '2026-01-01' },
+      results: [{ openfda: { brand_name: ['Aspirin'] } }],
+    });
+
+    await getDrugLabelTool.handler({ search: 'openfda.brand_name:"aspirin"' }, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.totalResults).toBe(1);
+    expect(enrichment.effectiveQuery).toBe('openfda.brand_name:"aspirin"');
+  });
+
+  it('sets enrichment.notice when results are empty', async () => {
     mockQuery.mockResolvedValue({
       meta: { total: 0, skip: 0, limit: 5, lastUpdated: '' },
       results: [],
     });
 
-    const result = await getDrugLabelTool.handler({ search: 'nonexistent' }, ctx);
+    await getDrugLabelTool.handler({ search: 'nonexistent' }, ctx);
 
-    expect(result.message).toMatch(/no labels/i);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toMatch(/no labels/i);
   });
 
   it('formats label sections', () => {

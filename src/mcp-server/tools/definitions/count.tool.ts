@@ -72,8 +72,17 @@ export const countTool = tool('openfda_count', {
           .describe('A single term-count pair'),
       )
       .describe('Term-count pairs sorted by count descending'),
-    message: z.string().optional().describe('Guidance when results are empty'),
   }),
+
+  enrichment: {
+    termCount: z.number().describe('Number of distinct terms returned'),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Guidance when no terms matched — how to verify the field name or adjust the count expression. Absent when terms are returned.',
+      ),
+  },
 
   async handler(input, ctx) {
     const svc = getOpenFdaService();
@@ -98,12 +107,11 @@ export const countTool = tool('openfda_count', {
       count: r.count as number,
     }));
 
+    ctx.enrich({ termCount: results.length });
     if (results.length === 0) {
-      return {
-        meta: { lastUpdated: response.meta.lastUpdated },
-        results,
-        message: `No count results for ${input.count} on ${input.endpoint}${input.search ? ` with search: ${input.search}` : ''}. Verify the field name exists for this endpoint and check .exact suffix usage.`,
-      };
+      ctx.enrich.notice(
+        `No count results for ${input.count} on ${input.endpoint}${input.search ? ` with search: ${input.search}` : ''}. Verify the field name exists for this endpoint and check .exact suffix usage.`,
+      );
     }
 
     return { meta: { lastUpdated: response.meta.lastUpdated }, results };
@@ -111,7 +119,7 @@ export const countTool = tool('openfda_count', {
 
   format: (result) => {
     if (result.results.length === 0) {
-      return [{ type: 'text' as const, text: result.message ?? 'No count results.' }];
+      return [{ type: 'text' as const, text: 'No count results.' }];
     }
 
     const totalCount = result.results.reduce((sum, r) => sum + r.count, 0);
@@ -124,8 +132,6 @@ export const countTool = tool('openfda_count', {
     for (const [i, r] of result.results.entries()) {
       lines.push(`| ${i + 1} | ${r.term} | ${r.count} |`);
     }
-
-    if (result.message) lines.push(`\n${result.message}`);
 
     return [{ type: 'text' as const, text: lines.join('\n') }];
   },

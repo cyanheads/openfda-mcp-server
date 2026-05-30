@@ -1,5 +1,5 @@
 import type { Context } from '@cyanheads/mcp-ts-core';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
@@ -56,7 +56,25 @@ describe('openfda_count', () => {
     expect(result.results[0].term).toBe('2026');
   });
 
-  it('returns message when empty', async () => {
+  it('populates enrichment.termCount', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { lastUpdated: '2026-01-01' },
+      results: [
+        { term: 'NAUSEA', count: 100 },
+        { term: 'FATIGUE', count: 50 },
+      ],
+    });
+
+    await countTool.handler(
+      { endpoint: 'drug/event', count: 'patient.reaction.reactionmeddrapt.exact' },
+      ctx,
+    );
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.termCount).toBe(2);
+  });
+
+  it('sets enrichment.notice and returns empty results when no terms match', async () => {
     mockQuery.mockResolvedValue({ meta: { lastUpdated: '' }, results: [] });
 
     const result = await countTool.handler(
@@ -65,7 +83,9 @@ describe('openfda_count', () => {
     );
 
     expect(result.results).toHaveLength(0);
-    expect(result.message).toMatch(/no count results/i);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toMatch(/no count results/i);
+    expect(enrichment.termCount).toBe(0);
   });
 
   it('formats as markdown table', () => {
@@ -82,5 +102,14 @@ describe('openfda_count', () => {
     expect(text).toContain('NAUSEA');
     expect(text).toContain('FATIGUE');
     expect(text).toContain('2 terms');
+  });
+
+  it('formats empty results without message', () => {
+    const content = countTool.format({
+      meta: { lastUpdated: '' },
+      results: [],
+    });
+
+    expect(content[0].text).toBe('No count results.');
   });
 });

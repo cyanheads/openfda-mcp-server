@@ -54,8 +54,20 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       .describe(
         'Drug label records. Each carries an openfda block (brand_name, generic_name, manufacturer_name, route) plus optional SPL sections like indications_and_usage, warnings, dosage_and_administration, contraindications, adverse_reactions; section presence varies per label.',
       ),
-    message: z.string().optional().describe('Human-readable note when the result set is empty.'),
   }),
+
+  enrichment: {
+    totalResults: z.number().describe('Total matching label records in the dataset'),
+    effectiveQuery: z
+      .string()
+      .describe('Search filter applied to the drug label query, as submitted to openFDA'),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Guidance when results are empty or paging overshot — how to broaden filters or correct field names. Absent when results are returned.',
+      ),
+  },
 
   async handler(input, ctx) {
     const service = getOpenFdaService();
@@ -76,21 +88,25 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       returned: response.results.length,
     });
 
-    return {
-      meta: response.meta,
-      results: response.results,
-      ...(response.results.length === 0 && {
-        message: emptyResultMessage(
+    ctx.enrich({ totalResults: response.meta.total, effectiveQuery: input.search });
+    if (response.results.length === 0) {
+      ctx.enrich.notice(
+        emptyResultMessage(
           response.meta.skip,
           `No labels matched${input.search ? ` search: ${input.search}` : ''}. Try broader terms or check field names (e.g. openfda.brand_name, openfda.generic_name, openfda.manufacturer_name).`,
         ),
-      }),
+      );
+    }
+
+    return {
+      meta: response.meta,
+      results: response.results,
     };
   },
 
   format: (result) => {
     if (result.results.length === 0) {
-      return [{ type: 'text' as const, text: result.message ?? 'No labels found.' }];
+      return [{ type: 'text' as const, text: 'No labels found.' }];
     }
 
     const lines: string[] = [
@@ -133,8 +149,6 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       }
       lines.push('\n---\n');
     }
-
-    if (result.message) lines.push(result.message);
 
     return [{ type: 'text' as const, text: lines.join('\n') }];
   },

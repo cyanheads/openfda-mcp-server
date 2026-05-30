@@ -55,8 +55,21 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       .describe(
         'Drug application records — application_number, sponsor_name, openfda block (brand_name, generic_name, route, product_type, substance_name), products[] (active_ingredients, dosage_form, marketing_status), submissions[] (submission_type, submission_status, submission_status_date, review_priority).',
       ),
-    message: z.string().optional().describe('Guidance when no approvals matched the query.'),
   }),
+
+  enrichment: {
+    totalResults: z.number().describe('Total matching drug approval records in the dataset'),
+    effectiveQuery: z
+      .string()
+      .optional()
+      .describe('Search filter applied to the Drugs@FDA query, as submitted to openFDA'),
+    notice: z
+      .string()
+      .optional()
+      .describe(
+        'Guidance when results are empty — how to broaden filters or correct field names. Absent when results are returned.',
+      ),
+  },
 
   async handler(input, ctx) {
     const service = getOpenFdaService();
@@ -78,29 +91,26 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       returned: response.results.length,
     });
 
-    const message =
-      response.results.length === 0
-        ? emptyResultMessage(
-            response.meta.skip,
-            'No drug approvals matched the query. Try broader terms, check field names (e.g. openfda.brand_name, sponsor_name), or remove filters.',
-          )
-        : undefined;
+    ctx.enrich({ totalResults: response.meta.total });
+    if (input.search) ctx.enrich.echo(input.search);
+    if (response.results.length === 0) {
+      ctx.enrich.notice(
+        emptyResultMessage(
+          response.meta.skip,
+          'No drug approvals matched the query. Try broader terms, check field names (e.g. openfda.brand_name, sponsor_name), or remove filters.',
+        ),
+      );
+    }
 
     return {
       meta: response.meta,
       results: response.results,
-      message,
     };
   },
 
   format: (result) => {
     if (result.results.length === 0) {
-      return [
-        {
-          type: 'text' as const,
-          text: result.message ?? 'No drug approvals found.',
-        },
-      ];
+      return [{ type: 'text' as const, text: 'No drug approvals found.' }];
     }
 
     const lines: string[] = [
@@ -178,8 +188,6 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       lines.push(...formatRemainingFields(r, rendered));
       lines.push('');
     }
-
-    if (result.message) lines.push(result.message);
 
     return [{ type: 'text' as const, text: lines.join('\n') }];
   },

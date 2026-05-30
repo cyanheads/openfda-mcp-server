@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.16](changelog/0.1.x/0.1.16.md) — 2026-05-30
+
+Enrichment adoption across all 7 tools — query echoes, result totals, and empty-result guidance now surface in a typed enrichment block reaching both structuredContent and content[]
+
 ## [0.1.15](changelog/0.1.x/0.1.15.md) — 2026-05-28
 
 @cyanheads/mcp-ts-core ^0.9.6 → ^0.9.13: HTTP body cap, session-init gate, quieter client-error logging, landing page keywords; placeholder preprocess for API key; manifest default
