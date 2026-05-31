@@ -1,6 +1,6 @@
 # openfda-mcp-server - Directory Structure
 
-Generated on: 2026-05-29 05:24:17
+Generated on: 2026-05-31 02:55:55
 
 ```text
 openfda-mcp-server/
@@ -84,8 +84,6 @@ openfda-mcp-server/
 │   │   └── SKILL.md
 │   ├── design-mcp-server/
 │   │   └── SKILL.md
-│   ├── devcheck/
-│   │   └── SKILL.md
 │   ├── field-test/
 │   │   └── SKILL.md
 │   ├── git-wrapup/
@@ -122,9 +120,11 @@ openfda-mcp-server/
 │   │       │   ├── index.ts
 │   │       │   ├── lookup-ndc.tool.ts
 │   │       │   ├── search-adverse-events.tool.ts
+│   │       │   ├── search-animal-events.tool.ts
 │   │       │   ├── search-device-clearances.tool.ts
 │   │       │   ├── search-drug-approvals.tool.ts
-│   │       │   └── search-recalls.tool.ts
+│   │       │   ├── search-recalls.tool.ts
+│   │       │   └── search-tobacco-reports.tool.ts
 │   │       └── format-utils.ts
 │   ├── services/
 │   │   └── openfda/
@@ -136,16 +136,23 @@ openfda-mcp-server/
 │   │   └── server-config.test.ts
 │   ├── mcp-server/
 │   │   └── tools/
-│   │       └── definitions/
-│   │           ├── count.tool.test.ts
-│   │           ├── get-drug-label.tool.test.ts
-│   │           ├── lookup-ndc.tool.test.ts
-│   │           ├── search-adverse-events.tool.test.ts
-│   │           ├── search-device-clearances.tool.test.ts
-│   │           ├── search-drug-approvals.tool.test.ts
-│   │           └── search-recalls.tool.test.ts
+│   │       ├── definitions/
+│   │       │   ├── count.tool.test.ts
+│   │       │   ├── get-drug-label.tool.test.ts
+│   │       │   ├── input-validation.test.ts
+│   │       │   ├── lookup-ndc.tool.test.ts
+│   │       │   ├── search-adverse-events-edge.test.ts
+│   │       │   ├── search-adverse-events.tool.test.ts
+│   │       │   ├── search-animal-events.tool.test.ts
+│   │       │   ├── search-device-clearances.tool.test.ts
+│   │       │   ├── search-drug-approvals.tool.test.ts
+│   │       │   ├── search-recalls.tool.test.ts
+│   │       │   ├── search-tobacco-reports.tool.test.ts
+│   │       │   └── tools-edge-cases.test.ts
+│   │       └── format-utils.test.ts
 │   └── services/
 │       └── openfda/
+│           ├── openfda-service-security.test.ts
 │           └── openfda-service.test.ts
 ├── .dockerignore
 ├── .env.example

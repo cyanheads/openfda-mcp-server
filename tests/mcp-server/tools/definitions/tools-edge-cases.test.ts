@@ -16,9 +16,11 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 import { countTool } from '@/mcp-server/tools/definitions/count.tool.js';
 import { getDrugLabelTool } from '@/mcp-server/tools/definitions/get-drug-label.tool.js';
 import { lookupNdcTool } from '@/mcp-server/tools/definitions/lookup-ndc.tool.js';
+import { searchAnimalEventsTool } from '@/mcp-server/tools/definitions/search-animal-events.tool.js';
 import { searchDeviceClearancesTool } from '@/mcp-server/tools/definitions/search-device-clearances.tool.js';
 import { searchDrugApprovalsTool } from '@/mcp-server/tools/definitions/search-drug-approvals.tool.js';
 import { searchRecallsTool } from '@/mcp-server/tools/definitions/search-recalls.tool.js';
+import { searchTobaccoReportsTool } from '@/mcp-server/tools/definitions/search-tobacco-reports.tool.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 const mockQuery = vi.fn();
@@ -689,6 +691,169 @@ describe('openfda_search_device_clearances (edge cases)', () => {
     });
 
     expect(content[0].text).toBe('No device clearances found.');
+  });
+});
+
+// ── openfda_search_animal_events edge cases ───────────────────────────────────
+
+describe('openfda_search_animal_events (edge cases)', () => {
+  let ctx: Context;
+
+  beforeEach(() => {
+    mockQuery.mockReset();
+    vi.mocked(getOpenFdaService).mockReturnValue({ query: mockQuery } as never);
+    ctx = createMockContext();
+  });
+
+  it('passes search and sort to service', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
+      results: [{ unique_aer_id_number: 'AER-EC-1' }],
+    });
+
+    await searchAnimalEventsTool.handler(
+      { search: 'animal.species:"Cat"', sort: 'original_receive_date:asc' },
+      ctx,
+    );
+
+    expect(mockQuery).toHaveBeenCalledWith(
+      'animalandveterinary/event',
+      expect.objectContaining({
+        search: 'animal.species:"Cat"',
+        sort: 'original_receive_date:asc',
+      }),
+      ctx,
+    );
+  });
+
+  it('does not echo search in enrichment when search is absent', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
+      results: [{ unique_aer_id_number: 'AER-EC-2' }],
+    });
+
+    await searchAnimalEventsTool.handler({}, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.effectiveQuery).toBeUndefined();
+  });
+
+  it('sets pagination-context notice when empty at skip > 0', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 0, skip: 300, limit: 10, lastUpdated: '' },
+      results: [],
+    });
+
+    await searchAnimalEventsTool.handler({ skip: 300 }, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toMatch(/skip=300/);
+  });
+
+  it('format handles drug with active_ingredients array', () => {
+    const content = searchAnimalEventsTool.format({
+      meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
+      results: [
+        {
+          unique_aer_id_number: 'AER-EC-3',
+          drug: [
+            {
+              active_ingredients: [{ name: 'AFOXOLANER' }],
+              route: 'oral',
+              administered_by: 'Veterinarian',
+            },
+          ],
+        },
+      ],
+    });
+
+    const text = content[0].text;
+    expect(text).toContain('AFOXOLANER');
+  });
+
+  it('format handles sparse record without animal, drug, reaction, or outcome', () => {
+    const content = searchAnimalEventsTool.format({
+      meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
+      results: [{ unique_aer_id_number: 'AER-SPARSE' }],
+    });
+
+    const text = content[0].text;
+    expect(text).toContain('AER-SPARSE');
+    expect(typeof text).toBe('string');
+  });
+});
+
+// ── openfda_search_tobacco_reports edge cases ─────────────────────────────────
+
+describe('openfda_search_tobacco_reports (edge cases)', () => {
+  let ctx: Context;
+
+  beforeEach(() => {
+    mockQuery.mockReset();
+    vi.mocked(getOpenFdaService).mockReturnValue({ query: mockQuery } as never);
+    ctx = createMockContext();
+  });
+
+  it('passes search and sort to service', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
+      results: [{ report_id: 'TOB-EC-1' }],
+    });
+
+    await searchTobaccoReportsTool.handler(
+      { search: 'nonuser_affected:"Yes"', sort: 'date_submitted:desc' },
+      ctx,
+    );
+
+    expect(mockQuery).toHaveBeenCalledWith(
+      'tobacco/problem',
+      expect.objectContaining({ search: 'nonuser_affected:"Yes"', sort: 'date_submitted:desc' }),
+      ctx,
+    );
+  });
+
+  it('does not echo search in enrichment when search is absent', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
+      results: [{ report_id: 'TOB-EC-2' }],
+    });
+
+    await searchTobaccoReportsTool.handler({}, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.effectiveQuery).toBeUndefined();
+  });
+
+  it('sets pagination-context notice when empty at skip > 0', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 0, skip: 150, limit: 10, lastUpdated: '' },
+      results: [],
+    });
+
+    await searchTobaccoReportsTool.handler({ skip: 150 }, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.notice).toMatch(/skip=150/);
+  });
+
+  it('format handles sparse record without products or health problems', () => {
+    const content = searchTobaccoReportsTool.format({
+      meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
+      results: [{ report_id: 'TOB-SPARSE' }],
+    });
+
+    const text = content[0].text;
+    expect(text).toContain('TOB-SPARSE');
+    expect(typeof text).toBe('string');
+  });
+
+  it('format returns "No tobacco problem reports found." for empty results', () => {
+    const content = searchTobaccoReportsTool.format({
+      meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
+      results: [],
+    });
+
+    expect(content[0].text).toBe('No tobacco problem reports found.');
   });
 });
 

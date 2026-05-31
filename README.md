@@ -1,13 +1,13 @@
 <div align="center">
   <h1>@cyanheads/openfda-mcp-server</h1>
   <p><b>Query FDA data on drugs, food, devices, and recalls via openFDA. STDIO or Streamable HTTP.</b>
-  <div>7 Tools</div>
+  <div>9 Tools</div>
   </p>
 </div>
 
 <div align="center">
 
-[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.1.16-blue.svg?style=flat-square)](./CHANGELOG.md) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.11-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.1.17-blue.svg?style=flat-square)](./CHANGELOG.md) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.11-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -29,11 +29,13 @@
 
 ## Tools
 
-Seven tools for querying FDA data across drugs, food, devices, and recalls:
+Nine tools for querying FDA data across drugs, food, devices, animal/veterinary products, and recalls:
 
 | Tool | Description |
 |:---|:---|
 | `openfda_search_adverse_events` | Search adverse event reports across drugs, food, and devices |
+| `openfda_search_animal_events` | Search adverse event reports for veterinary drugs and devices |
+| `openfda_search_tobacco_reports` | Search problem reports for tobacco products, e-cigarettes, and vaping devices |
 | `openfda_search_recalls` | Search enforcement reports and recall actions across drugs, food, and devices |
 | `openfda_count` | Aggregate and tally unique values for any field across any openFDA endpoint |
 | `openfda_get_drug_label` | Look up FDA drug labeling (package inserts / SPL documents) |
@@ -56,7 +58,7 @@ Search adverse event reports across drugs, food, and devices. Use to investigate
 
 Aggregate and tally unique values for any field across any openFDA endpoint. Returns ranked term-count pairs sorted by count descending.
 
-- Works across all 19 openFDA endpoints (drugs, food, devices, animal/veterinary, other)
+- Works across all 20 openFDA endpoints (drugs, food, devices, animal/veterinary, tobacco, other)
 - Use `.exact` suffix on field names for whole-phrase counting
 - Optional `search` filter to scope the aggregation
 - Returns up to 1000 terms per query
@@ -112,6 +114,25 @@ Look up drugs in the NDC (National Drug Code) Directory. Identify drug products 
 - Search by product NDC, brand name, generic name, manufacturer, or active ingredient
 - Returns product details, active ingredients with strengths, and packaging information
 - Sortable by listing expiration date or other fields
+
+---
+
+### `openfda_search_animal_events`
+
+Search adverse event reports for veterinary drugs and devices submitted to the FDA Center for Veterinary Medicine (1.3M+ records).
+
+- Filter by animal species, breed, drug name, VeDDRA reaction term, or seriousness
+- Records include animal details (species, gender, age, weight), administered drugs, reactions, and outcomes
+- Formatted output surfaces key clinical fields; remaining fields rendered via catch-all
+
+---
+
+### `openfda_search_tobacco_reports`
+
+Search problem reports submitted to the FDA for tobacco products, including e-cigarettes, vaping products, cigarettes, and smokeless tobacco.
+
+- Filter by product type, reported health problems (e.g. seizure, chest pain), product problems (e.g. battery explosion), or non-user involvement
+- Formatted output surfaces products, health effects, product defects, and report counts
 
 ## Features
 

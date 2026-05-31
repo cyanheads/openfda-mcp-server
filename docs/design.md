@@ -63,12 +63,11 @@ Aggregate and tally unique values for any field across any openFDA endpoint. Use
 
 **Returns:** Array of `{term, count}` objects sorted by count descending. Example: `[{"term": "NAUSEA", "count": 752664}, {"term": "FATIGUE", "count": 742326}]`.
 
-**Count-only endpoints.** Several endpoints are reachable via `openfda_count` but have no dedicated search tool:
+**Count-only endpoints.** Several endpoints are reachable via `openfda_count` but have no dedicated search tool. `animalandveterinary/event` and `tobacco/problem` both now have dedicated search tools (`openfda_search_animal_events` and `openfda_search_tobacco_reports` respectively) and are no longer count-only:
 
 | Endpoint | Reason no search tool |
 |---|---|
 | `drug/shortages` | Small dataset (1.7K records). Count queries cover the main use case (shortage trends by category/company). If individual record lookup proves needed, add a tool later. |
-| `animalandveterinary/event` | Niche domain (1.3M records). Count covers trend analysis. A dedicated search tool is a reasonable v2 addition if veterinary safety is in scope. |
 | `device/registrationlisting` | Registration/listing data (320K records). Primarily useful for facility lookups -- low priority vs. the higher-signal 510(k)/PMA/recall tools. |
 | `device/udi` | Large dataset (4.9M records) but very granular device identifier data. UDI lookups are niche -- most device research uses 510(k) or classification. |
 | `device/covid19serology` | Narrow domain. Count-only unless serology test data becomes a priority. |
@@ -128,6 +127,32 @@ Look up drugs in the NDC (National Drug Code) Directory. Use to identify drug pr
 | `skip` | number | No | Pagination offset (max 25000). |
 
 **Returns:** NDC records: `product_ndc`, `brand_name`, `generic_name`, `labeler_name`, `active_ingredients[]` (name, strength), `dosage_form`, `route`, `marketing_category`, `packaging[]` (package NDC, description), `finished` flag, `listing_expiration_date`, plus `openfda` enrichment (manufacturer, rxcui, pharm class, UPC).
+
+### `openfda_search_animal_events`
+
+Search adverse event reports for veterinary drugs and devices. Use to investigate safety signals for veterinary products, find reports by animal species or drug, or explore reaction patterns.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `search` | string | No | openFDA query syntax. Examples: `animal.species:"Dog"`, `drug.brand_name:"Bravecto"`, `reaction.veddra_term_name:"Vomiting"`, `serious_ae:"true"`. Omit to browse recent reports. |
+| `sort` | string | No | Sort field and direction. Example: `original_receive_date:desc`. |
+| `limit` | number | No | Results to return (1-1000, default 10). |
+| `skip` | number | No | Pagination offset (max 25000). |
+
+**Returns:** Animal adverse event records: `unique_aer_id_number`, `original_receive_date`, `serious_ae`, `animal` (species, gender, breed, age, weight), `drug[]` (brand_name, active_ingredients, route, dose, administered_by), `reaction[]` (veddra_term_name, number_of_animals_affected), `outcome[]` (medical_status), `primary_reporter`, `type_of_information`.
+
+### `openfda_search_tobacco_reports`
+
+Search problem reports submitted to the FDA for tobacco products, including e-cigarettes, vaping products, cigarettes, and smokeless tobacco. Use to investigate safety signals, find reports by product type, or analyze health effects.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `search` | string | No | openFDA query syntax. Examples: `tobacco_products:"Electronic cigarette"`, `reported_health_problems:"Seizure"`, `nonuser_affected:"Yes"`. Omit to browse recent reports. |
+| `sort` | string | No | Sort field and direction. Example: `date_submitted:desc`. |
+| `limit` | number | No | Results to return (1-1000, default 10). |
+| `skip` | number | No | Pagination offset (max 25000). |
+
+**Returns:** Tobacco problem reports: `report_id`, `date_submitted`, `tobacco_products[]` (product type description), `reported_health_problems[]` (health effects), `reported_product_problems[]` (device/product defects), `number_tobacco_products`, `number_health_problems`, `number_product_problems`, `nonuser_affected`.
 
 ---
 

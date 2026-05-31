@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.17](changelog/0.1.x/0.1.17.md) — 2026-05-30
+
+Animal/veterinary adverse events and tobacco product reports; typed errors[] contracts with recovery hints on all tools; 401/403 mapped to Unauthorized/Forbidden in service layer
+
 ## [0.1.16](changelog/0.1.x/0.1.16.md) — 2026-05-30
 
 Enrichment adoption across all 7 tools — query echoes, result totals, and empty-result guidance now surface in a typed enrichment block reaching both structuredContent and content[]

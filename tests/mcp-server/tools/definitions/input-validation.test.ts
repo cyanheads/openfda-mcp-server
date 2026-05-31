@@ -11,9 +11,11 @@ import { countTool } from '@/mcp-server/tools/definitions/count.tool.js';
 import { getDrugLabelTool } from '@/mcp-server/tools/definitions/get-drug-label.tool.js';
 import { lookupNdcTool } from '@/mcp-server/tools/definitions/lookup-ndc.tool.js';
 import { searchAdverseEventsTool } from '@/mcp-server/tools/definitions/search-adverse-events.tool.js';
+import { searchAnimalEventsTool } from '@/mcp-server/tools/definitions/search-animal-events.tool.js';
 import { searchDeviceClearancesTool } from '@/mcp-server/tools/definitions/search-device-clearances.tool.js';
 import { searchDrugApprovalsTool } from '@/mcp-server/tools/definitions/search-drug-approvals.tool.js';
 import { searchRecallsTool } from '@/mcp-server/tools/definitions/search-recalls.tool.js';
+import { searchTobaccoReportsTool } from '@/mcp-server/tools/definitions/search-tobacco-reports.tool.js';
 
 // ── openfda_count ────────────────────────────────────────────────────────────
 
@@ -76,6 +78,7 @@ describe('openfda_count input schema', () => {
       'device/recall',
       'device/enforcement',
       'animalandveterinary/event',
+      'tobacco/problem',
     ] as const;
 
     for (const endpoint of validEndpoints) {
@@ -326,5 +329,99 @@ describe('openfda_search_device_clearances input schema', () => {
     expect(() =>
       searchDeviceClearancesTool.input.parse({ pathway: '510k', skip: 25001 }),
     ).toThrow();
+  });
+});
+
+// ── openfda_search_animal_events ──────────────────────────────────────────────
+
+describe('openfda_search_animal_events input schema', () => {
+  it('accepts empty input (all optional)', () => {
+    const input = searchAnimalEventsTool.input.parse({});
+    expect(input.limit).toBe(10);
+    expect(input.skip).toBe(0);
+    expect(input.search).toBeUndefined();
+    expect(input.sort).toBeUndefined();
+  });
+
+  it('accepts valid search and sort', () => {
+    const input = searchAnimalEventsTool.input.parse({
+      search: 'animal.species:"Dog"',
+      sort: 'original_receive_date:desc',
+    });
+    expect(input.search).toBe('animal.species:"Dog"');
+    expect(input.sort).toBe('original_receive_date:desc');
+  });
+
+  it('rejects limit below 1', () => {
+    expect(() => searchAnimalEventsTool.input.parse({ limit: 0 })).toThrow();
+  });
+
+  it('rejects limit above 1000', () => {
+    expect(() => searchAnimalEventsTool.input.parse({ limit: 1001 })).toThrow();
+  });
+
+  it('accepts limit=1 and limit=1000 boundaries', () => {
+    expect(() => searchAnimalEventsTool.input.parse({ limit: 1 })).not.toThrow();
+    expect(() => searchAnimalEventsTool.input.parse({ limit: 1000 })).not.toThrow();
+  });
+
+  it('rejects skip below 0', () => {
+    expect(() => searchAnimalEventsTool.input.parse({ skip: -1 })).toThrow();
+  });
+
+  it('rejects skip above 25000', () => {
+    expect(() => searchAnimalEventsTool.input.parse({ skip: 25001 })).toThrow();
+  });
+
+  it('accepts skip=25000 (boundary)', () => {
+    const input = searchAnimalEventsTool.input.parse({ skip: 25000 });
+    expect(input.skip).toBe(25000);
+  });
+});
+
+// ── openfda_search_tobacco_reports ────────────────────────────────────────────
+
+describe('openfda_search_tobacco_reports input schema', () => {
+  it('accepts empty input (all optional)', () => {
+    const input = searchTobaccoReportsTool.input.parse({});
+    expect(input.limit).toBe(10);
+    expect(input.skip).toBe(0);
+    expect(input.search).toBeUndefined();
+    expect(input.sort).toBeUndefined();
+  });
+
+  it('accepts valid search and sort', () => {
+    const input = searchTobaccoReportsTool.input.parse({
+      search: 'tobacco_products:"Electronic cigarette"',
+      sort: 'date_submitted:desc',
+    });
+    expect(input.search).toBe('tobacco_products:"Electronic cigarette"');
+    expect(input.sort).toBe('date_submitted:desc');
+  });
+
+  it('rejects limit below 1', () => {
+    expect(() => searchTobaccoReportsTool.input.parse({ limit: 0 })).toThrow();
+  });
+
+  it('rejects limit above 1000', () => {
+    expect(() => searchTobaccoReportsTool.input.parse({ limit: 1001 })).toThrow();
+  });
+
+  it('accepts limit=1 and limit=1000 boundaries', () => {
+    expect(() => searchTobaccoReportsTool.input.parse({ limit: 1 })).not.toThrow();
+    expect(() => searchTobaccoReportsTool.input.parse({ limit: 1000 })).not.toThrow();
+  });
+
+  it('rejects skip below 0', () => {
+    expect(() => searchTobaccoReportsTool.input.parse({ skip: -1 })).toThrow();
+  });
+
+  it('rejects skip above 25000', () => {
+    expect(() => searchTobaccoReportsTool.input.parse({ skip: 25001 })).toThrow();
+  });
+
+  it('accepts skip=25000 (boundary)', () => {
+    const input = searchTobaccoReportsTool.input.parse({ skip: 25000 });
+    expect(input.skip).toBe(25000);
   });
 });
