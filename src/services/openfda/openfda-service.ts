@@ -4,7 +4,13 @@
  */
 
 import type { Context } from '@cyanheads/mcp-ts-core';
-import { rateLimited, serviceUnavailable, validationError } from '@cyanheads/mcp-ts-core/errors';
+import {
+  forbidden,
+  rateLimited,
+  serviceUnavailable,
+  unauthorized,
+  validationError,
+} from '@cyanheads/mcp-ts-core/errors';
 import { withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig, type ServerConfig } from '@/config/server-config.js';
 import type { OpenFdaQueryParams, OpenFdaResponse } from './types.js';
@@ -48,7 +54,7 @@ export class OpenFdaService {
           return this.normalizeResponse<T>(data, endpoint);
         }
 
-        return this.handleErrorResponse<T>(response, endpoint, params);
+        return this.handleErrorResponse<T>(response, endpoint, params, ctx);
       },
       {
         operation: `openFDA:${endpoint}`,
@@ -95,6 +101,7 @@ export class OpenFdaService {
     response: Response,
     endpoint: string,
     params: OpenFdaQueryParams,
+    ctx: Context,
   ): Promise<OpenFdaResponse<T>> {
     const body = (await response.json().catch(() => null)) as Record<string, unknown> | null;
     const errorObj = body?.error as Record<string, unknown> | undefined;
@@ -117,7 +124,7 @@ export class OpenFdaService {
         this.apiKey
           ? 'openFDA rate limit exceeded (240 req/min or 120K/day with key). Retry after a brief wait.'
           : 'openFDA rate limit exceeded (240 req/min or 1K/day without key). Configure OPENFDA_API_KEY to increase to 120K/day.',
-        { reason: 'rate_limited', endpoint },
+        { reason: 'rate_limited', endpoint, ...ctx.recoveryFor('rate_limited') },
       );
     }
 
@@ -126,19 +133,38 @@ export class OpenFdaService {
         reason: 'upstream_error',
         endpoint,
         status: response.status,
+        ...ctx.recoveryFor('upstream_error'),
       });
+    }
+
+    if (response.status === 401) {
+      throw unauthorized(
+        'openFDA API key is missing or invalid. Provide a valid key via OPENFDA_API_KEY.',
+        { reason: 'unauthorized', endpoint },
+      );
+    }
+
+    if (response.status === 403) {
+      throw forbidden(
+        'Access to this openFDA endpoint is forbidden. Check that the API key has the required permissions.',
+        { reason: 'forbidden', endpoint },
+      );
     }
 
     if (response.status === 400) {
       if (/25000/i.test(errorMessage)) {
         throw validationError(
           'Pagination limit reached: skip cannot exceed 25000. Narrow the search query with additional filters or date ranges instead of increasing skip.',
-          { reason: 'pagination_limit_reached', endpoint },
+          {
+            reason: 'pagination_limit_reached',
+            endpoint,
+            ...ctx.recoveryFor('pagination_limit_reached'),
+          },
         );
       }
       throw validationError(
         `openFDA query error: ${errorMessage}. Check field names and query syntax — use AND/OR for boolean operators, quotes for exact match.`,
-        { reason: 'query_error', endpoint },
+        { reason: 'query_error', endpoint, ...ctx.recoveryFor('query_error') },
       );
     }
 

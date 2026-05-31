@@ -84,6 +84,35 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       when: 'The recall endpoint was requested for a non-device category.',
       recovery: 'Set endpoint=enforcement for drug and food categories; recall is device-only.',
     },
+    {
+      reason: 'rate_limited',
+      code: JsonRpcErrorCode.RateLimited,
+      when: 'The openFDA daily or per-minute request limit is exceeded.',
+      retryable: true,
+      recovery:
+        'Wait briefly and retry, or configure OPENFDA_API_KEY to raise the daily limit to 120K requests.',
+    },
+    {
+      reason: 'upstream_error',
+      code: JsonRpcErrorCode.ServiceUnavailable,
+      when: 'The openFDA API returned a 5xx server error.',
+      retryable: true,
+      recovery: 'Retry after a short wait; if the error persists check api.fda.gov status.',
+    },
+    {
+      reason: 'query_error',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'The search query was rejected by openFDA (malformed field name, invalid syntax).',
+      recovery:
+        'Verify field names using the openFDA field reference and correct boolean operators (AND/OR, quoted phrases).',
+    },
+    {
+      reason: 'pagination_limit_reached',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'skip exceeds the 25000 record pagination ceiling.',
+      recovery:
+        'Narrow the search query with additional filters or date ranges instead of increasing skip.',
+    },
   ],
 
   async handler(input, ctx) {

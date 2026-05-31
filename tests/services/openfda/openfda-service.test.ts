@@ -180,6 +180,48 @@ describe('OpenFdaService', () => {
       );
     });
 
+    it('throws Unauthorized McpError on 401', async () => {
+      mockFetch.mockResolvedValue(mockResponse(401, { error: { message: 'Unauthorized' } }));
+
+      const err = await service.query('drug/event', {}, ctx).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(McpError);
+      const mcpErr = err as McpError;
+      // Code -32006 = Unauthorized
+      expect(mcpErr.code).toBe(-32006);
+      expect(mcpErr.data).toMatchObject({ reason: 'unauthorized' });
+    });
+
+    it('throws Forbidden McpError on 403', async () => {
+      mockFetch.mockResolvedValue(mockResponse(403, { error: { message: 'Forbidden' } }));
+
+      const err = await service.query('drug/event', {}, ctx).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(McpError);
+      const mcpErr = err as McpError;
+      // Code -32005 = Forbidden
+      expect(mcpErr.code).toBe(-32005);
+      expect(mcpErr.data).toMatchObject({ reason: 'forbidden' });
+    });
+
+    it('401/403 errors are non-transient — withRetry would not retry them', async () => {
+      // withRetry only retries McpError with codes RateLimited(-32003), ServiceUnavailable(-32000),
+      // or Timeout(-32004). Unauthorized(-32006) and Forbidden(-32005) are outside that set.
+      // Verify the thrown error codes are correct so the caller (withRetry) won't retry.
+      const TRANSIENT_CODES = new Set([-32000, -32003, -32004]);
+
+      mockFetch.mockResolvedValue(mockResponse(401, { error: { message: 'Unauthorized' } }));
+      const err401 = (await service
+        .query('drug/event', {}, ctx)
+        .catch((e: unknown) => e)) as McpError;
+      expect(TRANSIENT_CODES.has(err401.code)).toBe(false);
+
+      mockFetch.mockReset();
+      mockFetch.mockResolvedValue(mockResponse(403, { error: { message: 'Forbidden' } }));
+      const err403 = (await service
+        .query('drug/event', {}, ctx)
+        .catch((e: unknown) => e)) as McpError;
+      expect(TRANSIENT_CODES.has(err403.code)).toBe(false);
+    });
+
     it('throws generic Error on unexpected status', async () => {
       mockFetch.mockResolvedValue(mockResponse(418, { error: { message: "I'm a teapot" } }));
 
