@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.18](changelog/0.1.x/0.1.18.md) — 2026-06-02
+
+@cyanheads/mcp-ts-core ^0.9.16 → ^0.9.21; per-request log context, secret-stripping, retryable flag; skills sync; release:github script
+
 ## [0.1.17](changelog/0.1.x/0.1.17.md) — 2026-05-30
 
 Animal/veterinary adverse events and tobacco product reports; typed errors[] contracts with recovery hints on all tools; 401/403 mapped to Unauthorized/Forbidden in service layer

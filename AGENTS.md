@@ -1,8 +1,8 @@
 # Agent Protocol
 
 **Server:** openfda-mcp-server
-**Version:** 0.1.17
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.9.16`
+**Version:** 0.1.18
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.9.21`
 **Engines:** Bun ≥1.3.0, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/sdk` ^1.29.0
 **Zod:** ^4.4.3
@@ -240,6 +240,8 @@ Available skills:
 | `api-testing` | createMockContext, test patterns |
 | `api-utils` | Formatting, parsing, security, pagination, scheduling, telemetry helpers |
 | `api-workers` | Cloudflare Workers runtime |
+| `api-mirror` | MirrorService: persistent, self-refreshing local mirror of a bulk upstream dataset (embedded SQLite + FTS5) |
+| `orchestrations` | Chain task skills into a gated multi-phase pipeline — build-out, QA-fix, update-ship — when you can spawn sub-agents |
 
 When you complete a skill's checklist, check the boxes and add a completion timestamp at the end (e.g., `Completed: 2026-03-11`).
 
@@ -261,6 +263,7 @@ When you complete a skill's checklist, check the boxes and add a completion time
 | `bun run changelog:build` | Regenerate `CHANGELOG.md` from `changelog/*.md` |
 | `bun run changelog:check` | Verify `CHANGELOG.md` is in sync (used by devcheck) |
 | `bun run bundle` | Build and pack as `.mcpb` for one-click Claude Desktop install |
+| `bun run release:github` | Create a GitHub Release from the latest annotated tag |
 | `bun run start:stdio` | Production mode (stdio, after build) |
 | `bun run start:http` | Production mode (HTTP, after build) |
 

@@ -1,6 +1,6 @@
 # openfda-mcp-server - Directory Structure
 
-Generated on: 2026-05-31 02:55:55
+Generated on: 2026-06-02 14:42:56
 
 ```text
 openfda-mcp-server/
@@ -29,12 +29,14 @@ openfda-mcp-server/
 │   ├── build.ts
 │   ├── check-docs-sync.ts
 │   ├── check-framework-antipatterns.ts
+│   ├── check-skill-versions.ts
 │   ├── check-skills-sync.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
 │   ├── list-skills.ts
+│   ├── release-github.ts
 │   ├── split-changelog.ts
 │   └── tree.ts
 ├── skills/
@@ -61,6 +63,8 @@ openfda-mcp-server/
 │   ├── api-errors/
 │   │   └── SKILL.md
 │   ├── api-linter/
+│   │   └── SKILL.md
+│   ├── api-mirror/
 │   │   └── SKILL.md
 │   ├── api-services/
 │   │   ├── references/
@@ -89,6 +93,13 @@ openfda-mcp-server/
 │   ├── git-wrapup/
 │   │   └── SKILL.md
 │   ├── maintenance/
+│   │   └── SKILL.md
+│   ├── orchestrations/
+│   │   ├── workflows/
+│   │   │   ├── field-test-fix.md
+│   │   │   ├── fix-wrapup-release.md
+│   │   │   ├── greenfield-build.md
+│   │   │   └── maintenance-release.md
 │   │   └── SKILL.md
 │   ├── polish-docs-meta/
 │   │   ├── references/
