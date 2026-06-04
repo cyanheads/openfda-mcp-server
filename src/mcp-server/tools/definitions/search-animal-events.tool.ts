@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import { emptyResultMessage, formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
@@ -123,10 +124,11 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
     ctx.enrich({ totalResults: response.meta.total });
     if (input.search) ctx.enrich.echo(input.search);
     if (response.results.length === 0) {
+      const fieldHint = formatFieldHint('animalandveterinary/event');
       ctx.enrich.notice(
         emptyResultMessage(
           response.meta.skip,
-          `No animal adverse event reports matched${input.search ? ` search: ${input.search}` : ''}. Try broader filters — use animal.species, drug.brand_name, or reaction.veddra_term_name fields.`,
+          `No animal adverse event reports matched${input.search ? ` search: ${input.search}` : ''}. Try broader filters — use animal.species, drug.brand_name, or reaction.veddra_term_name fields. ${fieldHint}`,
         ),
       );
     }

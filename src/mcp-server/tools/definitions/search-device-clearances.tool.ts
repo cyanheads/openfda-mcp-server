@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import { emptyResultMessage, formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
@@ -100,9 +101,10 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
   ],
 
   async handler(input, ctx) {
+    const endpoint = `device/${input.pathway}`;
     const service = getOpenFdaService();
     const response = await service.query(
-      `device/${input.pathway}`,
+      endpoint,
       {
         search: input.search,
         sort: input.sort,
@@ -121,10 +123,11 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
     ctx.enrich({ totalResults: response.meta.total });
     if (input.search) ctx.enrich.echo(input.search);
     if (response.results.length === 0) {
+      const fieldHint = formatFieldHint(endpoint);
       ctx.enrich.notice(
         emptyResultMessage(
           response.meta.skip,
-          'No matching device clearances found. Try broadening the search — use applicant, product_code, advisory_committee_description, or openfda.device_name fields.',
+          `No matching device clearances found. Try broadening the search — use applicant, product_code, advisory_committee_description, or openfda.device_name fields. ${fieldHint}`,
         ),
       );
     }

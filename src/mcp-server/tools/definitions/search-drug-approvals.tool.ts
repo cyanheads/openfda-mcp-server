@@ -6,6 +6,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import { emptyResultMessage, formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
@@ -127,10 +128,11 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
     ctx.enrich({ totalResults: response.meta.total });
     if (input.search) ctx.enrich.echo(input.search);
     if (response.results.length === 0) {
+      const fieldHint = formatFieldHint('drug/drugsfda');
       ctx.enrich.notice(
         emptyResultMessage(
           response.meta.skip,
-          'No drug approvals matched the query. Try broader terms, check field names (e.g. openfda.brand_name, sponsor_name), or remove filters.',
+          `No drug approvals matched the query. Try broader terms, check field names (e.g. openfda.brand_name, sponsor_name), or remove filters. ${fieldHint}`,
         ),
       );
     }

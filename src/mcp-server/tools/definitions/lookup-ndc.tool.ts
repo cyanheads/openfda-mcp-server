@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import { emptyResultMessage, formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
@@ -112,10 +113,11 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
 
     ctx.enrich({ totalResults: response.meta.total, effectiveQuery: input.search });
     if (response.results.length === 0) {
+      const fieldHint = formatFieldHint('drug/ndc');
       ctx.enrich.notice(
         emptyResultMessage(
           response.meta.skip,
-          'No NDC records matched the query. Try broadening the search — use brand_name, generic_name, or active_ingredients.name fields.',
+          `No NDC records matched the query. Try broadening the search — use brand_name, generic_name, or active_ingredients.name fields. ${fieldHint}`,
         ),
       );
     }

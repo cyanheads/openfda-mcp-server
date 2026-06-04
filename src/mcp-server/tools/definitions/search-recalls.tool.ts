@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
   emptyResultMessage,
   formatRemainingFields,
@@ -126,9 +127,10 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       );
     }
 
+    const resolvedEndpoint = `${input.category}/${endpointValue}`;
     const service = getOpenFdaService();
     const response = await service.query(
-      `${input.category}/${endpointValue}`,
+      resolvedEndpoint,
       {
         search: input.search,
         sort: input.sort,
@@ -147,10 +149,11 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
     ctx.enrich({ totalResults: response.meta.total });
     if (input.search) ctx.enrich.echo(input.search);
     if (response.results.length === 0) {
+      const fieldHint = formatFieldHint(resolvedEndpoint);
       ctx.enrich.notice(
         emptyResultMessage(
           response.meta.skip,
-          `No recall/enforcement records matched${input.search ? ` search: ${input.search}` : ''} in ${input.category}/${endpointValue}. Try broadening filters or check field names (e.g. classification, recalling_firm, reason_for_recall).`,
+          `No recall/enforcement records matched${input.search ? ` search: ${input.search}` : ''} in ${resolvedEndpoint}. Try broadening filters or check field names (e.g. classification, recalling_firm, reason_for_recall). ${fieldHint}`,
         ),
       );
     }

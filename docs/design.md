@@ -63,11 +63,10 @@ Aggregate and tally unique values for any field across any openFDA endpoint. Use
 
 **Returns:** Array of `{term, count}` objects sorted by count descending. Example: `[{"term": "NAUSEA", "count": 752664}, {"term": "FATIGUE", "count": 742326}]`.
 
-**Count-only endpoints.** Several endpoints are reachable via `openfda_count` but have no dedicated search tool. `animalandveterinary/event` and `tobacco/problem` both now have dedicated search tools (`openfda_search_animal_events` and `openfda_search_tobacco_reports` respectively) and are no longer count-only:
+**Count-only endpoints.** Several endpoints are reachable via `openfda_count` but have no dedicated search tool. `animalandveterinary/event`, `tobacco/problem`, and `drug/shortages` all now have dedicated search tools and are no longer count-only:
 
 | Endpoint | Reason no search tool |
 |---|---|
-| `drug/shortages` | Small dataset (1.7K records). Count queries cover the main use case (shortage trends by category/company). If individual record lookup proves needed, add a tool later. |
 | `device/registrationlisting` | Registration/listing data (320K records). Primarily useful for facility lookups -- low priority vs. the higher-signal 510(k)/PMA/recall tools. |
 | `device/udi` | Large dataset (4.9M records) but very granular device identifier data. UDI lookups are niche -- most device research uses 510(k) or classification. |
 | `device/covid19serology` | Narrow domain. Count-only unless serology test data becomes a priority. |
@@ -140,6 +139,31 @@ Search adverse event reports for veterinary drugs and devices. Use to investigat
 | `skip` | number | No | Pagination offset (max 25000). |
 
 **Returns:** Animal adverse event records: `unique_aer_id_number`, `original_receive_date`, `serious_ae`, `animal` (species, gender, breed, age, weight), `drug[]` (brand_name, active_ingredients, route, dose, administered_by), `reaction[]` (veddra_term_name, number_of_animals_affected), `outcome[]` (medical_status), `primary_reporter`, `type_of_information`.
+
+### `openfda_search_drug_shortages`
+
+Search FDA drug shortage records. Returns per-product shortage status, availability notes, therapeutic category, dosage form, manufacturer, and timeline. The `openfda` block carries cross-reference IDs for chaining into `openfda_get_drug_label` or `openfda_lookup_ndc`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `search` | string | No | Elasticsearch query. Examples: `status:"Current"`, `therapeutic_category:"Oncology"`, `generic_name:"carboplatin"`, `company_name:"pfizer"`. Omit to browse all. |
+| `sort` | string | No | Sort field and direction. Example: `update_date:desc`. |
+| `limit` | number | No | Results to return (1-1000, default 10). |
+| `skip` | number | No | Pagination offset (max 25000). |
+
+**Returns:** Shortage records with `generic_name`, `status` (Current/Resolved), `availability`, `therapeutic_category`, `dosage_form`, `presentation`, `package_ndc`, `company_name`, `contact_info`, `initial_posting_date`, `update_date`, `update_type`, plus `openfda` block (`brand_name`, `product_ndc`, `rxcui`, `spl_set_id`).
+
+### `openfda_describe_fields`
+
+Return the searchable field paths for an openFDA endpoint, grouped by category with type and description. Use before constructing a search query to discover correct dotted field names. Covers 15 endpoints.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `endpoint` | enum | Yes | One of the cataloged endpoint paths (e.g. `drug/event`, `drug/shortages`, `device/510k`). |
+
+**Returns:** `groups[]` with `label`, `fields[]` (path, type, note); plus `queryTips` covering syntax reminders.
+
+**Reactive enrichment.** All search tools populate the `notice` enrichment field with a compact field hint when results are empty or a query is rejected — same catalog, reactive path. This catches agents that don't call `openfda_describe_fields` proactively.
 
 ### `openfda_search_tobacco_reports`
 

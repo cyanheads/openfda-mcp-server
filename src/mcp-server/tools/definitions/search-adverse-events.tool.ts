@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
   emptyResultMessage,
   formatRemainingFields,
@@ -132,10 +133,11 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
     ctx.enrich({ totalResults: response.meta.total });
     if (input.search) ctx.enrich.echo(input.search);
     if (response.results.length === 0) {
+      const fieldHint = formatFieldHint(endpoint);
       ctx.enrich.notice(
         emptyResultMessage(
           response.meta.skip,
-          `No adverse event reports matched${input.search ? ` search: ${input.search}` : ''} in ${input.category}/event. Try broadening filters, checking field names (use openfda.brand_name for product searches), or removing date constraints.`,
+          `No adverse event reports matched${input.search ? ` search: ${input.search}` : ''} in ${endpoint}. Try broadening filters or checking field names (use openfda.brand_name for product searches). ${fieldHint}`,
         ),
       );
     }

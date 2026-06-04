@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import { emptyResultMessage, humanizeField } from '@/mcp-server/tools/format-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
@@ -123,10 +124,11 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
 
     ctx.enrich({ totalResults: response.meta.total, effectiveQuery: input.search });
     if (response.results.length === 0) {
+      const fieldHint = formatFieldHint('drug/label');
       ctx.enrich.notice(
         emptyResultMessage(
           response.meta.skip,
-          `No labels matched${input.search ? ` search: ${input.search}` : ''}. Try broader terms or check field names (e.g. openfda.brand_name, openfda.generic_name, openfda.manufacturer_name).`,
+          `No labels matched${input.search ? ` search: ${input.search}` : ''}. Try broader terms or check field names (e.g. openfda.brand_name, openfda.generic_name, openfda.manufacturer_name). ${fieldHint}`,
         ),
       );
     }

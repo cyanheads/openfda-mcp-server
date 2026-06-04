@@ -5,6 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import { emptyResultMessage, formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
@@ -123,10 +124,11 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
     ctx.enrich({ totalResults: response.meta.total });
     if (input.search) ctx.enrich.echo(input.search);
     if (response.results.length === 0) {
+      const fieldHint = formatFieldHint('tobacco/problem');
       ctx.enrich.notice(
         emptyResultMessage(
           response.meta.skip,
-          `No tobacco problem reports matched${input.search ? ` search: ${input.search}` : ''}. Try broader filters — use tobacco_products, reported_health_problems, or nonuser_affected fields.`,
+          `No tobacco problem reports matched${input.search ? ` search: ${input.search}` : ''}. Try broader filters — use tobacco_products, reported_health_problems, or nonuser_affected fields. ${fieldHint}`,
         ),
       );
     }
