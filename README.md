@@ -1,13 +1,13 @@
 <div align="center">
   <h1>@cyanheads/openfda-mcp-server</h1>
   <p><b>Query FDA data on drugs, food, devices, and recalls via openFDA. STDIO or Streamable HTTP.</b>
-  <div>9 Tools</div>
+  <div>11 Tools</div>
   </p>
 </div>
 
 <div align="center">
 
-[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.1.18-blue.svg?style=flat-square)](./CHANGELOG.md) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.11-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.1.19-blue.svg?style=flat-square)](./CHANGELOG.md) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.11-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -29,15 +29,17 @@
 
 ## Tools
 
-Nine tools for querying FDA data across drugs, food, devices, animal/veterinary products, and recalls:
+Eleven tools for querying FDA data across drugs, food, devices, animal/veterinary products, and recalls:
 
 | Tool | Description |
 |:---|:---|
 | `openfda_search_adverse_events` | Search adverse event reports across drugs, food, and devices |
 | `openfda_search_animal_events` | Search adverse event reports for veterinary drugs and devices |
+| `openfda_search_drug_shortages` | Search FDA drug shortage records — status, availability, therapeutic category, manufacturer |
 | `openfda_search_tobacco_reports` | Search problem reports for tobacco products, e-cigarettes, and vaping devices |
 | `openfda_search_recalls` | Search enforcement reports and recall actions across drugs, food, and devices |
 | `openfda_count` | Aggregate and tally unique values for any field across any openFDA endpoint |
+| `openfda_describe_fields` | Return searchable field paths for an openFDA endpoint, grouped by category |
 | `openfda_get_drug_label` | Look up FDA drug labeling (package inserts / SPL documents) |
 | `openfda_search_drug_approvals` | Search the Drugs@FDA database for NDA/ANDA application approvals |
 | `openfda_search_device_clearances` | Search FDA device premarket notifications — 510(k) clearances and PMA approvals |
@@ -133,6 +135,26 @@ Search problem reports submitted to the FDA for tobacco products, including e-ci
 
 - Filter by product type, reported health problems (e.g. seizure, chest pain), product problems (e.g. battery explosion), or non-user involvement
 - Formatted output surfaces products, health effects, product defects, and report counts
+
+---
+
+### `openfda_search_drug_shortages`
+
+Search FDA drug shortage records (1,700+ entries, refreshed daily). Returns shortage status, availability notes, therapeutic category, dosage form, manufacturer, and timeline.
+
+- Filter by status (`Current`, `Resolved`), therapeutic category, generic name, or manufacturer
+- The `openfda` block carries `brand_name`, `product_ndc`, and `rxcui` for chaining into `openfda_get_drug_label` or `openfda_lookup_ndc`
+- Pagination via `limit` (up to 1000) and `skip` (up to 25000)
+
+---
+
+### `openfda_describe_fields`
+
+Return the searchable field paths for an openFDA endpoint, grouped by category with type and description. Use before constructing a search query to discover the correct dotted field paths.
+
+- Covers all major endpoints: `drug/event`, `drug/label`, `drug/shortages`, `drug/drugsfda`, `drug/ndc`, `drug/enforcement`, `food/event`, `food/enforcement`, `device/event`, `device/510k`, `device/pma`, `device/recall`, `device/enforcement`, `animalandveterinary/event`, `tobacco/problem`
+- Returns fields grouped by category (identifiers, dates, clinical fields, etc.) with data type and one-line description
+- Complements the reactive field hints that appear in `notice` enrichment when a search returns empty
 
 ## Features
 

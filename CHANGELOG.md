@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.19](changelog/0.1.x/0.1.19.md) — 2026-06-04
+
+Two new tools: openfda_search_drug_shortages (drug/shortages endpoint) and openfda_describe_fields (field path discovery); reactive field hints on empty results across all 9 search tools
+
 ## [0.1.18](changelog/0.1.x/0.1.18.md) — 2026-06-02
 
 @cyanheads/mcp-ts-core ^0.9.16 → ^0.9.21; per-request log context, secret-stripping, retryable flag; skills sync; release:github script

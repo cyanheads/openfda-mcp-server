@@ -1,6 +1,6 @@
 # openfda-mcp-server - Directory Structure
 
-Generated on: 2026-06-02 14:42:56
+Generated on: 2026-06-04 09:09:52
 
 ```text
 openfda-mcp-server/
@@ -127,6 +127,7 @@ openfda-mcp-server/
 │   │   └── tools/
 │   │       ├── definitions/
 │   │       │   ├── count.tool.ts
+│   │       │   ├── describe-fields.tool.ts
 │   │       │   ├── get-drug-label.tool.ts
 │   │       │   ├── index.ts
 │   │       │   ├── lookup-ndc.tool.ts
@@ -134,8 +135,10 @@ openfda-mcp-server/
 │   │       │   ├── search-animal-events.tool.ts
 │   │       │   ├── search-device-clearances.tool.ts
 │   │       │   ├── search-drug-approvals.tool.ts
+│   │       │   ├── search-drug-shortages.tool.ts
 │   │       │   ├── search-recalls.tool.ts
 │   │       │   └── search-tobacco-reports.tool.ts
+│   │       ├── field-catalog.ts
 │   │       └── format-utils.ts
 │   ├── services/
 │   │   └── openfda/
@@ -149,6 +152,7 @@ openfda-mcp-server/
 │   │   └── tools/
 │   │       ├── definitions/
 │   │       │   ├── count.tool.test.ts
+│   │       │   ├── describe-fields.tool.test.ts
 │   │       │   ├── get-drug-label.tool.test.ts
 │   │       │   ├── input-validation.test.ts
 │   │       │   ├── lookup-ndc.tool.test.ts
@@ -157,6 +161,7 @@ openfda-mcp-server/
 │   │       │   ├── search-animal-events.tool.test.ts
 │   │       │   ├── search-device-clearances.tool.test.ts
 │   │       │   ├── search-drug-approvals.tool.test.ts
+│   │       │   ├── search-drug-shortages.tool.test.ts
 │   │       │   ├── search-recalls.tool.test.ts
 │   │       │   ├── search-tobacco-reports.tool.test.ts
 │   │       │   └── tools-edge-cases.test.ts
