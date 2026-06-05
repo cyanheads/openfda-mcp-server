@@ -5,6 +5,7 @@
 
 import { countTool } from './count.tool.js';
 import { describeFieldsTool } from './describe-fields.tool.js';
+import { drugProfileTool } from './drug-profile.tool.js';
 import { getDrugLabelTool } from './get-drug-label.tool.js';
 import { lookupNdcTool } from './lookup-ndc.tool.js';
 import { searchAdverseEventsTool } from './search-adverse-events.tool.js';
@@ -27,4 +28,5 @@ export const allToolDefinitions = [
   searchDrugApprovalsTool,
   searchDeviceClearancesTool,
   lookupNdcTool,
+  drugProfileTool,
 ];

@@ -1,13 +1,13 @@
 <div align="center">
   <h1>@cyanheads/openfda-mcp-server</h1>
   <p><b>Query FDA data on drugs, food, devices, and recalls via openFDA. STDIO or Streamable HTTP.</b>
-  <div>11 Tools</div>
+  <div>12 Tools</div>
   </p>
 </div>
 
 <div align="center">
 
-[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.1.19-blue.svg?style=flat-square)](./CHANGELOG.md) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.11-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.1.20-blue.svg?style=flat-square)](./CHANGELOG.md) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.11-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -29,10 +29,11 @@
 
 ## Tools
 
-Eleven tools for querying FDA data across drugs, food, devices, animal/veterinary products, and recalls:
+Twelve tools for querying FDA data across drugs, food, devices, animal/veterinary products, and recalls:
 
 | Tool | Description |
 |:---|:---|
+| `openfda_drug_profile` | One drug name → consolidated FDA profile: identity, label, adverse events, recalls, approval, shortage |
 | `openfda_search_adverse_events` | Search adverse event reports across drugs, food, and devices |
 | `openfda_search_animal_events` | Search adverse event reports for veterinary drugs and devices |
 | `openfda_search_drug_shortages` | Search FDA drug shortage records — status, availability, therapeutic category, manufacturer |
@@ -44,6 +45,17 @@ Eleven tools for querying FDA data across drugs, food, devices, animal/veterinar
 | `openfda_search_drug_approvals` | Search the Drugs@FDA database for NDA/ANDA application approvals |
 | `openfda_search_device_clearances` | Search FDA device premarket notifications — 510(k) clearances and PMA approvals |
 | `openfda_lookup_ndc` | Look up drugs in the NDC (National Drug Code) Directory |
+
+### `openfda_drug_profile`
+
+Resolve one drug name to its FDA identity, then return a consolidated profile in a single call — replacing four or five chained lookups.
+
+- Resolves a brand or generic name to canonical FDA identifiers once (generic name, NDC, RxCUI, SPL set ID), then keys every sub-query off that identity to avoid the identifier drift that breaks naive tool chaining
+- Single-ingredient resolution: a single-drug query won't resolve to a combination product
+- Sections: label highlights, adverse-event summary (top reactions, serious count), recall history, Drugs@FDA approval, and current shortage status
+- Best-effort — a miss on any section returns `null` rather than failing the whole call; use the dedicated tool for a deep dive into any area
+
+---
 
 ### `openfda_search_adverse_events`
 
@@ -321,7 +333,7 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 | `src/index.ts` | Entry point — `createApp()` with tool registration and service setup. |
 | `src/config/` | Server-specific env var parsing and validation with Zod. |
 | `src/services/openfda/` | openFDA API client with retry, rate-limit handling, and error normalization. |
-| `src/mcp-server/tools/definitions/` | Tool definitions (`*.tool.ts`). Seven openFDA tools. |
+| `src/mcp-server/tools/definitions/` | Tool definitions (`*.tool.ts`). Twelve openFDA tools. |
 
 ## Development Guide
 

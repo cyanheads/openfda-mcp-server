@@ -21,6 +21,18 @@ All endpoints share a uniform query interface (`search`, `count`, `sort`, `limit
 
 ## Tools
 
+### `openfda_drug_profile`
+
+Resolve one drug name to its FDA identity, then fan out in parallel to the bounded per-drug endpoints and merge into a single consolidated profile. Replaces chaining `openfda_get_drug_label`, `openfda_search_adverse_events`, `openfda_search_recalls`, `openfda_search_drug_approvals`, and `openfda_search_drug_shortages`, and reconciles the identifier drift between endpoints that makes that chaining error-prone.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `drug` | string | Yes | Drug name — brand or generic (e.g. `metformin`, `Humira`). Resolved once to canonical FDA identifiers, which then key every sub-query. |
+
+**Behavior.** Resolves the name against `drug/label` (falling back to `drug/ndc`), picking the best single-ingredient match — combination products are de-prioritized so a single-drug query doesn't resolve to a combo. Structured endpoints (`drug/enforcement`, `drug/drugsfda`, `drug/shortages`) then query by the canonical `openfda.generic_name`; the free-text adverse-event field (`drug/event` `patient.drug.medicinalproduct`) queries by the supplied term for better recall. Each section is best-effort: a failed or empty sub-query yields `null` (or `[]` for recalls) rather than failing the whole call.
+
+**Returns:** `meta` (echoed `drug`, `resolvedVia`) + `identity` (`brand_names`, `generic_name`, `product_ndc`, `rxcui`, `spl_set_id`) + `label` (`indications`, `warnings`, `dosage`) + `adverse_events` (`total`, `seriousCount`, `topReactions[]`) + `recalls[]` (`classification`, `reason`, `recalling_firm`, `date`) + `approval` (`applicationNumber`, `sponsor`, `marketingStatus`) + `shortage` (`status`, `availability`). Sections are `null` when unavailable.
+
 ### `openfda_search_adverse_events`
 
 Search adverse event reports across drugs, food, and devices. Use to investigate safety signals, find reports for a specific product, or explore reactions by demographics. The primary research tool for safety data.

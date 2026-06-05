@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.1.20](changelog/0.1.x/0.1.20.md) — 2026-06-05
+
+New composite tool openfda_drug_profile: single-call consolidated FDA drug profile resolving identity once and fanning out across label, adverse events, recalls, approvals, and shortage
+
 ## [0.1.19](changelog/0.1.x/0.1.19.md) — 2026-06-04
 
 Two new tools: openfda_search_drug_shortages (drug/shortages endpoint) and openfda_describe_fields (field path discovery); reactive field hints on empty results across all 9 search tools
