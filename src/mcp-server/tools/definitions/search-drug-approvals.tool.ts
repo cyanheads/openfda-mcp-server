@@ -13,7 +13,7 @@ import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 /** Exported tool definition for searching drug approvals. */
 export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
   description:
-    'Search the Drugs@FDA database for drug application approvals (NDAs and ANDAs). Returns application details, sponsor info, and full submission history. Pair with openfda_get_drug_label to read the approved label, or openfda_count to aggregate by sponsor_name, product_type, or route.',
+    'Search the Drugs@FDA database for drug application approvals (NDAs and ANDAs). Returns application details, sponsor info, and full submission history. Pair with openfda_get_drug_label to read the approved label, or openfda_count_values to aggregate by sponsor_name, product_type, or route.',
   annotations: { readOnlyHint: true },
 
   input: z.object({

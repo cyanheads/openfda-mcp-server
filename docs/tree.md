@@ -1,6 +1,6 @@
 # openfda-mcp-server - Directory Structure
 
-Generated on: 2026-06-05 08:07:59
+Generated on: 2026-06-09 01:07:39
 
 ```text
 openfda-mcp-server/
@@ -20,6 +20,7 @@ openfda-mcp-server/
 │   └── settings.json
 ├── changelog/
 │   ├── 0.1.x/
+│   ├── 0.2.x/
 │   └── template.md
 ├── claude-plans/
 ├── docs/
@@ -126,7 +127,7 @@ openfda-mcp-server/
 │   ├── mcp-server/
 │   │   └── tools/
 │   │       ├── definitions/
-│   │       │   ├── count.tool.ts
+│   │       │   ├── count-values.tool.ts
 │   │       │   ├── describe-fields.tool.ts
 │   │       │   ├── drug-profile.tool.ts
 │   │       │   ├── get-drug-label.tool.ts
@@ -152,7 +153,7 @@ openfda-mcp-server/
 │   ├── mcp-server/
 │   │   └── tools/
 │   │       ├── definitions/
-│   │       │   ├── count.tool.test.ts
+│   │       │   ├── count-values.tool.test.ts
 │   │       │   ├── describe-fields.tool.test.ts
 │   │       │   ├── drug-profile.tool.test.ts
 │   │       │   ├── get-drug-label.tool.test.ts

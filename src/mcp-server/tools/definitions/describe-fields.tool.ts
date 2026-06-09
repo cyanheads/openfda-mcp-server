@@ -67,7 +67,7 @@ export const describeFieldsTool = tool('openfda_describe_fields', {
       'Use field:value syntax (e.g. generic_name:"carboplatin"). ' +
       'Phrase matching requires double quotes. ' +
       'Combine filters with AND or OR. ' +
-      'Append .exact to string fields for whole-phrase aggregation in openfda_count. ' +
+      'Append .exact to string fields for whole-phrase aggregation in openfda_count_values. ' +
       'Date fields accept YYYYMMDD format and support range syntax [20200101 TO 20221231].';
 
     return { endpoint: input.endpoint, groups, queryTips };

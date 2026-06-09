@@ -62,7 +62,7 @@ Search enforcement reports and recall actions across drugs, food, and devices. U
 
 **Returns:** `meta` (total count) + array of enforcement/recall records: `recall_number`, `classification` (Class I/II/III), `recalling_firm`, `product_description`, `reason_for_recall`, `distribution_pattern`, `status`, `voluntary_mandated`, dates.
 
-### `openfda_count`
+### `openfda_count_values`
 
 Aggregate and tally unique values for any field across any openFDA endpoint. Use for trend analysis, frequency distributions, and "top N" questions. Returns `[{term, count}]` pairs instead of individual records.
 
@@ -75,7 +75,7 @@ Aggregate and tally unique values for any field across any openFDA endpoint. Use
 
 **Returns:** Array of `{term, count}` objects sorted by count descending. Example: `[{"term": "NAUSEA", "count": 752664}, {"term": "FATIGUE", "count": 742326}]`.
 
-**Count-only endpoints.** Several endpoints are reachable via `openfda_count` but have no dedicated search tool. `animalandveterinary/event`, `tobacco/problem`, and `drug/shortages` all now have dedicated search tools and are no longer count-only:
+**Count-only endpoints.** Several endpoints are reachable via `openfda_count_values` but have no dedicated search tool. `animalandveterinary/event`, `tobacco/problem`, and `drug/shortages` all now have dedicated search tools and are no longer count-only:
 
 | Endpoint | Reason no search tool |
 |---|---|

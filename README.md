@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.1.20-blue.svg?style=flat-square)](./CHANGELOG.md) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.11-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.2.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.11-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -39,7 +39,7 @@ Twelve tools for querying FDA data across drugs, food, devices, animal/veterinar
 | `openfda_search_drug_shortages` | Search FDA drug shortage records — status, availability, therapeutic category, manufacturer |
 | `openfda_search_tobacco_reports` | Search problem reports for tobacco products, e-cigarettes, and vaping devices |
 | `openfda_search_recalls` | Search enforcement reports and recall actions across drugs, food, and devices |
-| `openfda_count` | Aggregate and tally unique values for any field across any openFDA endpoint |
+| `openfda_count_values` | Aggregate and tally unique values for any field across any openFDA endpoint |
 | `openfda_describe_fields` | Return searchable field paths for an openFDA endpoint, grouped by category |
 | `openfda_get_drug_label` | Look up FDA drug labeling (package inserts / SPL documents) |
 | `openfda_search_drug_approvals` | Search the Drugs@FDA database for NDA/ANDA application approvals |
@@ -68,7 +68,7 @@ Search adverse event reports across drugs, food, and devices. Use to investigate
 
 ---
 
-### `openfda_count`
+### `openfda_count_values`
 
 Aggregate and tally unique values for any field across any openFDA endpoint. Returns ranked term-count pairs sorted by count descending.
 

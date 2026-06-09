@@ -7,7 +7,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { countTool } from '@/mcp-server/tools/definitions/count.tool.js';
+import { countValuesTool } from '@/mcp-server/tools/definitions/count-values.tool.js';
 import { getDrugLabelTool } from '@/mcp-server/tools/definitions/get-drug-label.tool.js';
 import { lookupNdcTool } from '@/mcp-server/tools/definitions/lookup-ndc.tool.js';
 import { searchAdverseEventsTool } from '@/mcp-server/tools/definitions/search-adverse-events.tool.js';
@@ -17,11 +17,11 @@ import { searchDrugApprovalsTool } from '@/mcp-server/tools/definitions/search-d
 import { searchRecallsTool } from '@/mcp-server/tools/definitions/search-recalls.tool.js';
 import { searchTobaccoReportsTool } from '@/mcp-server/tools/definitions/search-tobacco-reports.tool.js';
 
-// ── openfda_count ────────────────────────────────────────────────────────────
+// ── openfda_count_values ────────────────────────────────────────────────────────────
 
-describe('openfda_count input schema', () => {
+describe('openfda_count_values input schema', () => {
   it('accepts valid minimal input', () => {
-    const input = countTool.input.parse({
+    const input = countValuesTool.input.parse({
       endpoint: 'drug/event',
       count: 'patient.reaction.reactionmeddrapt.exact',
     });
@@ -30,36 +30,42 @@ describe('openfda_count input schema', () => {
   });
 
   it('rejects missing endpoint', () => {
-    expect(() => countTool.input.parse({ count: 'some.field' })).toThrow();
+    expect(() => countValuesTool.input.parse({ count: 'some.field' })).toThrow();
   });
 
   it('rejects unknown endpoint value', () => {
-    expect(() => countTool.input.parse({ endpoint: 'unknown/endpoint', count: 'field' })).toThrow();
+    expect(() =>
+      countValuesTool.input.parse({ endpoint: 'unknown/endpoint', count: 'field' }),
+    ).toThrow();
   });
 
   it('rejects missing count', () => {
-    expect(() => countTool.input.parse({ endpoint: 'drug/event' })).toThrow();
+    expect(() => countValuesTool.input.parse({ endpoint: 'drug/event' })).toThrow();
   });
 
   it('accepts limit=1 (minimum)', () => {
-    const input = countTool.input.parse({ endpoint: 'drug/event', count: 'field', limit: 1 });
+    const input = countValuesTool.input.parse({ endpoint: 'drug/event', count: 'field', limit: 1 });
     expect(input.limit).toBe(1);
   });
 
   it('accepts limit=1000 (maximum)', () => {
-    const input = countTool.input.parse({ endpoint: 'drug/event', count: 'field', limit: 1000 });
+    const input = countValuesTool.input.parse({
+      endpoint: 'drug/event',
+      count: 'field',
+      limit: 1000,
+    });
     expect(input.limit).toBe(1000);
   });
 
   it('rejects limit=0 (below minimum)', () => {
     expect(() =>
-      countTool.input.parse({ endpoint: 'drug/event', count: 'field', limit: 0 }),
+      countValuesTool.input.parse({ endpoint: 'drug/event', count: 'field', limit: 0 }),
     ).toThrow();
   });
 
   it('rejects limit=1001 (above maximum)', () => {
     expect(() =>
-      countTool.input.parse({ endpoint: 'drug/event', count: 'field', limit: 1001 }),
+      countValuesTool.input.parse({ endpoint: 'drug/event', count: 'field', limit: 1001 }),
     ).toThrow();
   });
 
@@ -82,12 +88,12 @@ describe('openfda_count input schema', () => {
     ] as const;
 
     for (const endpoint of validEndpoints) {
-      expect(() => countTool.input.parse({ endpoint, count: 'field.exact' })).not.toThrow();
+      expect(() => countValuesTool.input.parse({ endpoint, count: 'field.exact' })).not.toThrow();
     }
   });
 
   it('accepts optional search param', () => {
-    const input = countTool.input.parse({
+    const input = countValuesTool.input.parse({
       endpoint: 'drug/event',
       count: 'field',
       search: 'patient.drug.medicinalproduct:"aspirin"',
@@ -96,7 +102,7 @@ describe('openfda_count input schema', () => {
   });
 
   it('accepts undefined optional search param', () => {
-    const input = countTool.input.parse({ endpoint: 'drug/event', count: 'field' });
+    const input = countValuesTool.input.parse({ endpoint: 'drug/event', count: 'field' });
     expect(input.search).toBeUndefined();
   });
 });

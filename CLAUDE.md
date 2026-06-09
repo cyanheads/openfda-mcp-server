@@ -1,7 +1,7 @@
 # Agent Protocol
 
 **Server:** openfda-mcp-server
-**Version:** 0.1.20
+**Version:** 0.2.0
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.9.21`
 **Engines:** Bun ≥1.3.0, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/sdk` ^1.29.0
@@ -51,7 +51,7 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
-export const countTool = tool('openfda_count', {
+export const countValuesTool = tool('openfda_count_values', {
   description: 'Aggregate and tally unique values for any field across any openFDA endpoint.',
   annotations: { readOnlyHint: true },
   input: z.object({
@@ -178,13 +178,18 @@ src/
       types.ts                          # Query params and response types
   mcp-server/
     tools/definitions/
-      count.tool.ts                     # openfda_count
+      count-values.tool.ts              # openfda_count_values
+      describe-fields.tool.ts           # openfda_describe_fields
+      drug-profile.tool.ts              # openfda_drug_profile
       get-drug-label.tool.ts            # openfda_get_drug_label
       lookup-ndc.tool.ts                # openfda_lookup_ndc
       search-adverse-events.tool.ts     # openfda_search_adverse_events
+      search-animal-events.tool.ts      # openfda_search_animal_events
       search-device-clearances.tool.ts  # openfda_search_device_clearances
       search-drug-approvals.tool.ts     # openfda_search_drug_approvals
+      search-drug-shortages.tool.ts     # openfda_search_drug_shortages
       search-recalls.tool.ts            # openfda_search_recalls
+      search-tobacco-reports.tool.ts    # openfda_search_tobacco_reports
 ```
 
 ---

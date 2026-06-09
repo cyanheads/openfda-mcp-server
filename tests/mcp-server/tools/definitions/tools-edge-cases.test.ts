@@ -13,7 +13,7 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
   getOpenFdaService: vi.fn(),
 }));
 
-import { countTool } from '@/mcp-server/tools/definitions/count.tool.js';
+import { countValuesTool } from '@/mcp-server/tools/definitions/count-values.tool.js';
 import { getDrugLabelTool } from '@/mcp-server/tools/definitions/get-drug-label.tool.js';
 import { lookupNdcTool } from '@/mcp-server/tools/definitions/lookup-ndc.tool.js';
 import { searchAnimalEventsTool } from '@/mcp-server/tools/definitions/search-animal-events.tool.js';
@@ -25,9 +25,9 @@ import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 const mockQuery = vi.fn();
 
-// ── openfda_count edge cases ──────────────────────────────────────────────────
+// ── openfda_count_values edge cases ──────────────────────────────────────────────────
 
-describe('openfda_count (edge cases)', () => {
+describe('openfda_count_values (edge cases)', () => {
   let ctx: Context;
 
   beforeEach(() => {
@@ -42,7 +42,7 @@ describe('openfda_count (edge cases)', () => {
       results: [],
     });
 
-    await countTool.handler(
+    await countValuesTool.handler(
       { endpoint: 'drug/event', count: 'field', search: 'patient.sex:"female"' },
       ctx,
     );
@@ -57,7 +57,7 @@ describe('openfda_count (edge cases)', () => {
   it('passes limit to service', async () => {
     mockQuery.mockResolvedValue({ meta: { lastUpdated: '' }, results: [] });
 
-    await countTool.handler({ endpoint: 'drug/event', count: 'field', limit: 500 }, ctx);
+    await countValuesTool.handler({ endpoint: 'drug/event', count: 'field', limit: 500 }, ctx);
 
     expect(mockQuery).toHaveBeenCalledWith(
       'drug/event',
@@ -67,7 +67,7 @@ describe('openfda_count (edge cases)', () => {
   });
 
   it('format includes total occurrences in header', () => {
-    const content = countTool.format({
+    const content = countValuesTool.format({
       meta: { lastUpdated: '2026-01-01' },
       results: [
         { term: 'A', count: 300 },
@@ -79,7 +79,7 @@ describe('openfda_count (edge cases)', () => {
   });
 
   it('format includes lastUpdated in header', () => {
-    const content = countTool.format({
+    const content = countValuesTool.format({
       meta: { lastUpdated: '2026-03-15' },
       results: [{ term: 'X', count: 5 }],
     });
@@ -91,7 +91,7 @@ describe('openfda_count (edge cases)', () => {
       term: `TERM_${i}`,
       count: 10 - i,
     }));
-    const content = countTool.format({ meta: { lastUpdated: '' }, results });
+    const content = countValuesTool.format({ meta: { lastUpdated: '' }, results });
     const text = content[0].text;
     for (let i = 0; i < 5; i++) {
       expect(text).toContain(`TERM_${i}`);
@@ -871,7 +871,7 @@ describe('security: tool outputs do not contain API key values', () => {
   });
 
   it('count format output does not contain process env values', () => {
-    const content = countTool.format({
+    const content = countValuesTool.format({
       meta: { lastUpdated: secretKey }, // worst case: key leaks into meta
       results: [{ term: secretKey, count: 1 }],
     });

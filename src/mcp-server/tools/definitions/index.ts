@@ -3,7 +3,7 @@
  * @module mcp-server/tools/definitions
  */
 
-import { countTool } from './count.tool.js';
+import { countValuesTool } from './count-values.tool.js';
 import { describeFieldsTool } from './describe-fields.tool.js';
 import { drugProfileTool } from './drug-profile.tool.js';
 import { getDrugLabelTool } from './get-drug-label.tool.js';
@@ -22,7 +22,7 @@ export const allToolDefinitions = [
   searchDrugShortagesTool,
   searchRecallsTool,
   searchTobaccoReportsTool,
-  countTool,
+  countValuesTool,
   describeFieldsTool,
   getDrugLabelTool,
   searchDrugApprovalsTool,
