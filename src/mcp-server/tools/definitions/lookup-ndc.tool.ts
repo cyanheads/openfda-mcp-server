@@ -4,10 +4,37 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import type { ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import { emptyResultMessage, formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
+import { getCanvas } from '@/services/canvas/canvas-accessor.js';
+import { canvasOutputShape, canvasResult, spillSearch } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+
+/**
+ * Canvas table projection for NDC directory records. Scalars are VARCHAR; route
+ * (an array) and the ingredient/packaging/openfda structures are JSON columns.
+ * All nullable.
+ */
+const NDC_CANVAS_SCHEMA: ColumnSchema[] = [
+  { name: 'product_ndc', type: 'VARCHAR', nullable: true },
+  { name: 'product_id', type: 'VARCHAR', nullable: true },
+  { name: 'brand_name', type: 'VARCHAR', nullable: true },
+  { name: 'generic_name', type: 'VARCHAR', nullable: true },
+  { name: 'labeler_name', type: 'VARCHAR', nullable: true },
+  { name: 'dosage_form', type: 'VARCHAR', nullable: true },
+  { name: 'product_type', type: 'VARCHAR', nullable: true },
+  { name: 'marketing_category', type: 'VARCHAR', nullable: true },
+  { name: 'marketing_start_date', type: 'VARCHAR', nullable: true },
+  { name: 'listing_expiration_date', type: 'VARCHAR', nullable: true },
+  { name: 'dea_schedule', type: 'VARCHAR', nullable: true },
+  { name: 'finished', type: 'VARCHAR', nullable: true },
+  { name: 'route', type: 'JSON', nullable: true },
+  { name: 'active_ingredients', type: 'JSON', nullable: true },
+  { name: 'packaging', type: 'JSON', nullable: true },
+  { name: 'openfda', type: 'JSON', nullable: true },
+];
 
 export const lookupNdcTool = tool('openfda_lookup_ndc', {
   description:
@@ -38,6 +65,12 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
       .max(25000)
       .default(0)
       .describe('Number of records to skip for pagination (0-25000, default 0)'),
+    canvas_id: z
+      .string()
+      .optional()
+      .describe(
+        'DataCanvas session id from a prior call. Omit to start a fresh canvas; the response returns a new one when canvas is enabled. When canvas (CANVAS_PROVIDER_TYPE=duckdb) is enabled the full matched set is staged for SQL and limit/skip apply only to the inline path.',
+      ),
   }),
 
   output: z.object({
@@ -54,6 +87,7 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
       .describe(
         'NDC directory records — product_ndc, brand_name, generic_name, labeler_name, dosage_form, route, marketing_category, active_ingredients[], packaging[], listing_expiration_date.',
       ),
+    ...canvasOutputShape,
   }),
 
   enrichment: {
@@ -102,6 +136,25 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
   ],
 
   async handler(input, ctx) {
+    const canvas = getCanvas();
+    if (canvas) {
+      const spill = await spillSearch({
+        endpoint: 'drug/ndc',
+        search: input.search,
+        sort: input.sort,
+        canvasId: input.canvas_id,
+        schema: NDC_CANVAS_SCHEMA,
+        ctx,
+      });
+      ctx.enrich({ totalResults: spill.total, effectiveQuery: input.search });
+      if (spill.spilled) {
+        ctx.enrich.notice(
+          `Full result set (${spill.total} matched) staged on canvas table "${spill.tableName}". Query it with openfda_dataframe_query using canvas_id "${spill.canvasId}".`,
+        );
+      }
+      return canvasResult(spill);
+    }
+
     const service = getOpenFdaService();
     const response = await service.query('drug/ndc', input, ctx);
 
@@ -136,6 +189,14 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
     const lines: string[] = [
       `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Data updated: ${result.meta.lastUpdated}\n`,
     ];
+
+    if (result.spilled !== undefined) {
+      lines.push(
+        result.canvas_table
+          ? `> Staged ${result.meta.total} matched rows on canvas table \`${result.canvas_table}\` (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled})${result.truncated ? ', truncated at the 25000-row ceiling' : ''} — query with openfda_dataframe_query.\n`
+          : `> Canvas enabled (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled}); ${result.meta.total} rows fit inline.\n`,
+      );
+    }
 
     const rendered = new Set([
       'brand_name',

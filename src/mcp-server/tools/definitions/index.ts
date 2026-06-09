@@ -4,6 +4,8 @@
  */
 
 import { countValuesTool } from './count-values.tool.js';
+import { dataframeDescribeTool } from './dataframe-describe.tool.js';
+import { dataframeQueryTool } from './dataframe-query.tool.js';
 import { describeFieldsTool } from './describe-fields.tool.js';
 import { drugProfileTool } from './drug-profile.tool.js';
 import { getDrugLabelTool } from './get-drug-label.tool.js';
@@ -29,4 +31,6 @@ export const allToolDefinitions = [
   searchDeviceClearancesTool,
   lookupNdcTool,
   drugProfileTool,
+  dataframeDescribeTool,
+  dataframeQueryTool,
 ];

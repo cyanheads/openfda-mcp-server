@@ -4,10 +4,30 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import type { ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import { emptyResultMessage, formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
+import { getCanvas } from '@/services/canvas/canvas-accessor.js';
+import { canvasOutputShape, canvasResult, spillSearch } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+
+/**
+ * Canvas table projection for tobacco problem reports. Count fields are stored as
+ * VARCHAR (CAST in SQL for numeric math); the reported-problem arrays are JSON
+ * columns. All nullable.
+ */
+const TOBACCO_REPORTS_CANVAS_SCHEMA: ColumnSchema[] = [
+  { name: 'report_id', type: 'VARCHAR', nullable: true },
+  { name: 'date_submitted', type: 'VARCHAR', nullable: true },
+  { name: 'nonuser_affected', type: 'VARCHAR', nullable: true },
+  { name: 'number_tobacco_products', type: 'VARCHAR', nullable: true },
+  { name: 'number_health_problems', type: 'VARCHAR', nullable: true },
+  { name: 'number_product_problems', type: 'VARCHAR', nullable: true },
+  { name: 'tobacco_products', type: 'JSON', nullable: true },
+  { name: 'reported_health_problems', type: 'JSON', nullable: true },
+  { name: 'reported_product_problems', type: 'JSON', nullable: true },
+];
 
 export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
   description:
@@ -39,6 +59,12 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
       .max(25000)
       .default(0)
       .describe('Number of records to skip for pagination (0-25000, default 0)'),
+    canvas_id: z
+      .string()
+      .optional()
+      .describe(
+        'DataCanvas session id from a prior call. Omit to start a fresh canvas; the response returns a new one when canvas is enabled. When canvas (CANVAS_PROVIDER_TYPE=duckdb) is enabled the full matched set is staged for SQL and limit/skip apply only to the inline path.',
+      ),
   }),
 
   output: z.object({
@@ -55,6 +81,7 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
       .describe(
         'Tobacco problem report records. Key fields: report_id, date_submitted, tobacco_products[] (product type description), reported_health_problems[] (health effects), reported_product_problems[] (device/product defects), number_tobacco_products, number_health_problems, number_product_problems, nonuser_affected.',
       ),
+    ...canvasOutputShape,
   }),
 
   enrichment: {
@@ -104,6 +131,26 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
   ],
 
   async handler(input, ctx) {
+    const canvas = getCanvas();
+    if (canvas) {
+      const spill = await spillSearch({
+        endpoint: 'tobacco/problem',
+        search: input.search,
+        sort: input.sort,
+        canvasId: input.canvas_id,
+        schema: TOBACCO_REPORTS_CANVAS_SCHEMA,
+        ctx,
+      });
+      ctx.enrich({ totalResults: spill.total });
+      if (input.search) ctx.enrich.echo(input.search);
+      if (spill.spilled) {
+        ctx.enrich.notice(
+          `Full result set (${spill.total} matched) staged on canvas table "${spill.tableName}". Query it with openfda_dataframe_query using canvas_id "${spill.canvasId}".`,
+        );
+      }
+      return canvasResult(spill);
+    }
+
     const svc = getOpenFdaService();
     const response = await svc.query(
       'tobacco/problem',
@@ -144,6 +191,14 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
     const lines: string[] = [
       `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Data updated: ${result.meta.lastUpdated}\n`,
     ];
+
+    if (result.spilled !== undefined) {
+      lines.push(
+        result.canvas_table
+          ? `> Staged ${result.meta.total} matched rows on canvas table \`${result.canvas_table}\` (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled})${result.truncated ? ', truncated at the 25000-row ceiling' : ''} — query with openfda_dataframe_query.\n`
+          : `> Canvas enabled (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled}); ${result.meta.total} rows fit inline.\n`,
+      );
+    }
 
     const rendered = new Set([
       'report_id',

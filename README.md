@@ -1,13 +1,13 @@
 <div align="center">
   <h1>@cyanheads/openfda-mcp-server</h1>
   <p><b>Query FDA data on drugs, food, devices, and recalls via openFDA. STDIO or Streamable HTTP.</b>
-  <div>12 Tools</div>
+  <div>14 Tools</div>
   </p>
 </div>
 
 <div align="center">
 
-[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.2.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.11-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.3.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^6.0.3-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.11-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -29,7 +29,7 @@
 
 ## Tools
 
-Twelve tools for querying FDA data across drugs, food, devices, animal/veterinary products, and recalls:
+Fourteen tools for querying FDA data across drugs, food, devices, animal/veterinary products, and recalls — plus an optional DataCanvas SQL surface for large result sets:
 
 | Tool | Description |
 |:---|:---|
@@ -45,6 +45,8 @@ Twelve tools for querying FDA data across drugs, food, devices, animal/veterinar
 | `openfda_search_drug_approvals` | Search the Drugs@FDA database for NDA/ANDA application approvals |
 | `openfda_search_device_clearances` | Search FDA device premarket notifications — 510(k) clearances and PMA approvals |
 | `openfda_lookup_ndc` | Look up drugs in the NDC (National Drug Code) Directory |
+| `openfda_dataframe_query` | Run read-only SQL over a result set staged on a DataCanvas (opt-in) |
+| `openfda_dataframe_describe` | List tables and column schemas staged on a DataCanvas (opt-in) |
 
 ### `openfda_drug_profile`
 
@@ -168,6 +170,16 @@ Return the searchable field paths for an openFDA endpoint, grouped by category w
 - Returns fields grouped by category (identifiers, dates, clinical fields, etc.) with data type and one-line description
 - Complements the reactive field hints that appear in `notice` enrichment when a search returns empty
 
+---
+
+### `openfda_dataframe_query` · `openfda_dataframe_describe`
+
+A DataCanvas SQL surface over staged result sets — **opt-in**, enabled with `CANVAS_PROVIDER_TYPE=duckdb`.
+
+- With canvas enabled, the multi-row search tools page the full matched set (up to openFDA's 25,000-row ceiling) into a DuckDB table and return an inline preview plus a `canvas_id` and `canvas_table`. `openfda_dataframe_query` runs read-only `SELECT` (GROUP BY, SUM/COUNT, joins) across the staged rows; `openfda_dataframe_describe` lists the table and column schemas needed to write valid SQL.
+- Scalar fields are stored as text (`CAST` for numeric math); nested openFDA blocks (`openfda`, `patient`, `products`, …) are JSON columns. Pass a `canvas_id` back into a search tool to accumulate result sets on one canvas for cross-table joins.
+- Off by default — without `CANVAS_PROVIDER_TYPE=duckdb` the search tools return inline results exactly as before and the two dataframe tools report that canvas is disabled. Requires the optional `@duckdb/node-api` dependency; unsupported on Cloudflare Workers.
+
 ## Features
 
 Built on [`@cyanheads/mcp-ts-core`](https://www.npmjs.com/package/@cyanheads/mcp-ts-core):
@@ -184,6 +196,7 @@ openFDA-specific:
 - Generic API client for all openFDA endpoints with retry (exponential backoff) and rate-limit awareness
 - Automatic error normalization — 404 returns empty results, 429/5xx retries, 400 provides actionable messages
 - Optional API key support — works without a key (1K requests/day), increases to 120K/day with a free key
+- Optional DataCanvas spillover (`CANVAS_PROVIDER_TYPE=duckdb`) — stage large result sets as DuckDB tables and run SQL via `openfda_dataframe_query`
 
 ## Getting Started
 
@@ -302,6 +315,7 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 | `STORAGE_PROVIDER_TYPE` | Storage backend: `in-memory`, `filesystem`, `supabase`, `cloudflare-kv/r2/d1` | `in-memory` |
 | `OPENFDA_API_KEY` | Free API key from [open.fda.gov](https://open.fda.gov/apis/authentication/). Increases daily limit from 1K to 120K requests. | none |
 | `OPENFDA_BASE_URL` | Base URL override for testing against a proxy or mock. | `https://api.fda.gov` |
+| `CANVAS_PROVIDER_TYPE` | Set to `duckdb` to enable DataCanvas spillover — analytical SQL over staged result sets via `openfda_dataframe_query`. Requires the optional `@duckdb/node-api` dependency; unsupported on Cloudflare Workers. | `none` (disabled) |
 | `OTEL_ENABLED` | Enable OpenTelemetry | `false` |
 
 ## Running the Server
@@ -333,7 +347,7 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 | `src/index.ts` | Entry point — `createApp()` with tool registration and service setup. |
 | `src/config/` | Server-specific env var parsing and validation with Zod. |
 | `src/services/openfda/` | openFDA API client with retry, rate-limit handling, and error normalization. |
-| `src/mcp-server/tools/definitions/` | Tool definitions (`*.tool.ts`). Twelve openFDA tools. |
+| `src/mcp-server/tools/definitions/` | Tool definitions (`*.tool.ts`). Fourteen openFDA tools. |
 
 ## Development Guide
 

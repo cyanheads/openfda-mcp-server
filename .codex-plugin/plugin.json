@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/openfda-mcp-server",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Query FDA data on drugs, food, devices, and recalls via openFDA. STDIO or Streamable HTTP.",
   "author": {
     "name": "cyanheads",

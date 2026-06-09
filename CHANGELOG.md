@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.0](changelog/0.3.x/0.3.0.md) — 2026-06-08
+
+DataCanvas spillover for tabular search results — opt-in DuckDB SQL surface across all multi-row search tools
+
 ## [0.2.0](changelog/0.2.x/0.2.0.md) — 2026-06-08 · ⚠️ Breaking
 
 Breaking: openfda_count renamed to openfda_count_values; openfda_drug_profile surfaces meta.fanOutKey for identifier reconciliation

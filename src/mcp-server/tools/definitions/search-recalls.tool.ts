@@ -4,6 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import type { ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
@@ -11,7 +12,37 @@ import {
   formatRemainingFields,
   truncate,
 } from '@/mcp-server/tools/format-utils.js';
+import { getCanvas } from '@/services/canvas/canvas-accessor.js';
+import { canvasOutputShape, canvasResult, spillSearch } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+
+/**
+ * Canvas table projection for enforcement/recall records. Scalars are VARCHAR
+ * (CAST in SQL for math); the openfda block is a JSON column. All nullable — the
+ * field set differs between the enforcement and device recall endpoints, and
+ * records are sparse.
+ */
+const RECALLS_CANVAS_SCHEMA: ColumnSchema[] = [
+  { name: 'recall_number', type: 'VARCHAR', nullable: true },
+  { name: 'event_id', type: 'VARCHAR', nullable: true },
+  { name: 'status', type: 'VARCHAR', nullable: true },
+  { name: 'classification', type: 'VARCHAR', nullable: true },
+  { name: 'product_type', type: 'VARCHAR', nullable: true },
+  { name: 'recalling_firm', type: 'VARCHAR', nullable: true },
+  { name: 'product_description', type: 'VARCHAR', nullable: true },
+  { name: 'reason_for_recall', type: 'VARCHAR', nullable: true },
+  { name: 'voluntary_mandated', type: 'VARCHAR', nullable: true },
+  { name: 'distribution_pattern', type: 'VARCHAR', nullable: true },
+  { name: 'product_quantity', type: 'VARCHAR', nullable: true },
+  { name: 'recall_initiation_date', type: 'VARCHAR', nullable: true },
+  { name: 'report_date', type: 'VARCHAR', nullable: true },
+  { name: 'state', type: 'VARCHAR', nullable: true },
+  { name: 'country', type: 'VARCHAR', nullable: true },
+  { name: 'city', type: 'VARCHAR', nullable: true },
+  { name: 'product_code', type: 'VARCHAR', nullable: true },
+  { name: 'res_event_number', type: 'VARCHAR', nullable: true },
+  { name: 'openfda', type: 'JSON', nullable: true },
+];
 
 const Category = z.enum(['drug', 'food', 'device']).describe('Product category');
 
@@ -46,6 +77,12 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       .default(10)
       .describe('Maximum number of records to return (1-1000).'),
     skip: z.number().min(0).max(25000).default(0).describe('Pagination offset (0-25000).'),
+    canvas_id: z
+      .string()
+      .optional()
+      .describe(
+        'DataCanvas session id from a prior call. Omit to start a fresh canvas; the response returns a new one when canvas is enabled. When canvas (CANVAS_PROVIDER_TYPE=duckdb) is enabled the full matched set is staged for SQL and limit/skip apply only to the inline path.',
+      ),
   }),
 
   output: z.object({
@@ -62,6 +99,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       .describe(
         'Enforcement or recall records — recall_number, classification, recalling_firm, product_description, reason_for_recall, status, voluntary_mandated, distribution_pattern, report_date. Field set varies between enforcement and recall endpoints.',
       ),
+    ...canvasOutputShape,
   }),
 
   enrichment: {
@@ -128,6 +166,27 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
     }
 
     const resolvedEndpoint = `${input.category}/${endpointValue}`;
+
+    const canvas = getCanvas();
+    if (canvas) {
+      const spill = await spillSearch({
+        endpoint: resolvedEndpoint,
+        search: input.search,
+        sort: input.sort,
+        canvasId: input.canvas_id,
+        schema: RECALLS_CANVAS_SCHEMA,
+        ctx,
+      });
+      ctx.enrich({ totalResults: spill.total });
+      if (input.search) ctx.enrich.echo(input.search);
+      if (spill.spilled) {
+        ctx.enrich.notice(
+          `Full result set (${spill.total} matched) staged on canvas table "${spill.tableName}". Query it with openfda_dataframe_query using canvas_id "${spill.canvasId}".`,
+        );
+      }
+      return canvasResult(spill);
+    }
+
     const service = getOpenFdaService();
     const response = await service.query(
       resolvedEndpoint,
@@ -195,7 +254,13 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
     });
 
     const body = records.join('\n\n---\n\n');
+    const canvasHint =
+      result.spilled === undefined
+        ? ''
+        : result.canvas_table
+          ? `> Staged ${result.meta.total} matched rows on canvas table \`${result.canvas_table}\` (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled})${result.truncated ? ', truncated at the 25000-row ceiling' : ''} — query with openfda_dataframe_query.\n\n`
+          : `> Canvas enabled (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled}); ${result.meta.total} rows fit inline.\n\n`;
 
-    return [{ type: 'text' as const, text: `${header}\n${body}` }];
+    return [{ type: 'text' as const, text: `${header}\n${canvasHint}${body}` }];
   },
 });

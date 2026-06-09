@@ -4,6 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import type { ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
@@ -11,7 +12,30 @@ import {
   formatRemainingFields,
   truncate,
 } from '@/mcp-server/tools/format-utils.js';
+import { getCanvas } from '@/services/canvas/canvas-accessor.js';
+import { canvasOutputShape, canvasResult, spillSearch } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+
+/**
+ * Canvas table projection for drug shortage records. Scalars are VARCHAR (CAST
+ * in SQL for math); the openfda cross-link block is a JSON column. All nullable.
+ */
+const DRUG_SHORTAGES_CANVAS_SCHEMA: ColumnSchema[] = [
+  { name: 'generic_name', type: 'VARCHAR', nullable: true },
+  { name: 'status', type: 'VARCHAR', nullable: true },
+  { name: 'availability', type: 'VARCHAR', nullable: true },
+  { name: 'therapeutic_category', type: 'VARCHAR', nullable: true },
+  { name: 'dosage_form', type: 'VARCHAR', nullable: true },
+  { name: 'presentation', type: 'VARCHAR', nullable: true },
+  { name: 'package_ndc', type: 'VARCHAR', nullable: true },
+  { name: 'company_name', type: 'VARCHAR', nullable: true },
+  { name: 'initial_posting_date', type: 'VARCHAR', nullable: true },
+  { name: 'update_date', type: 'VARCHAR', nullable: true },
+  { name: 'update_type', type: 'VARCHAR', nullable: true },
+  { name: 'shortage_reason', type: 'VARCHAR', nullable: true },
+  { name: 'contact_info', type: 'VARCHAR', nullable: true },
+  { name: 'openfda', type: 'JSON', nullable: true },
+];
 
 export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
   description:
@@ -43,6 +67,12 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       .max(25000)
       .default(0)
       .describe('Number of records to skip for pagination (0-25000, default 0)'),
+    canvas_id: z
+      .string()
+      .optional()
+      .describe(
+        'DataCanvas session id from a prior call. Omit to start a fresh canvas; the response returns a new one when canvas is enabled. When canvas (CANVAS_PROVIDER_TYPE=duckdb) is enabled the full matched set is staged for SQL and limit/skip apply only to the inline path.',
+      ),
   }),
 
   output: z.object({
@@ -59,6 +89,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       .describe(
         'Drug shortage records. Key fields: generic_name, status ("Current"/"Resolved"), availability, therapeutic_category, dosage_form, presentation, package_ndc, company_name, contact_info, initial_posting_date, update_date, update_type. openfda block contains brand_name, product_ndc, rxcui, spl_set_id for cross-linking.',
       ),
+    ...canvasOutputShape,
   }),
 
   enrichment: {
@@ -108,6 +139,26 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
   ],
 
   async handler(input, ctx) {
+    const canvas = getCanvas();
+    if (canvas) {
+      const spill = await spillSearch({
+        endpoint: 'drug/shortages',
+        search: input.search,
+        sort: input.sort,
+        canvasId: input.canvas_id,
+        schema: DRUG_SHORTAGES_CANVAS_SCHEMA,
+        ctx,
+      });
+      ctx.enrich({ totalResults: spill.total });
+      if (input.search) ctx.enrich.echo(input.search);
+      if (spill.spilled) {
+        ctx.enrich.notice(
+          `Full result set (${spill.total} matched) staged on canvas table "${spill.tableName}". Query it with openfda_dataframe_query using canvas_id "${spill.canvasId}".`,
+        );
+      }
+      return canvasResult(spill);
+    }
+
     const svc = getOpenFdaService();
     const response = await svc.query(
       'drug/shortages',
@@ -149,6 +200,14 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
     const lines: string[] = [
       `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Data updated: ${result.meta.lastUpdated}\n`,
     ];
+
+    if (result.spilled !== undefined) {
+      lines.push(
+        result.canvas_table
+          ? `> Staged ${result.meta.total} matched rows on canvas table \`${result.canvas_table}\` (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled})${result.truncated ? ', truncated at the 25000-row ceiling' : ''} — query with openfda_dataframe_query.\n`
+          : `> Canvas enabled (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled}); ${result.meta.total} rows fit inline.\n`,
+      );
+    }
 
     const rendered = new Set([
       'generic_name',

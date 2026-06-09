@@ -1,6 +1,6 @@
 # openfda-mcp-server - Directory Structure
 
-Generated on: 2026-06-09 01:07:39
+Generated on: 2026-06-09 03:21:22
 
 ```text
 openfda-mcp-server/
@@ -21,6 +21,7 @@ openfda-mcp-server/
 ├── changelog/
 │   ├── 0.1.x/
 │   ├── 0.2.x/
+│   ├── 0.3.x/
 │   └── template.md
 ├── claude-plans/
 ├── docs/
@@ -128,6 +129,8 @@ openfda-mcp-server/
 │   │   └── tools/
 │   │       ├── definitions/
 │   │       │   ├── count-values.tool.ts
+│   │       │   ├── dataframe-describe.tool.ts
+│   │       │   ├── dataframe-query.tool.ts
 │   │       │   ├── describe-fields.tool.ts
 │   │       │   ├── drug-profile.tool.ts
 │   │       │   ├── get-drug-label.tool.ts
@@ -143,7 +146,10 @@ openfda-mcp-server/
 │   │       ├── field-catalog.ts
 │   │       └── format-utils.ts
 │   ├── services/
+│   │   ├── canvas/
+│   │   │   └── canvas-accessor.ts
 │   │   └── openfda/
+│   │       ├── canvas-spill.ts
 │   │       ├── openfda-service.ts
 │   │       └── types.ts
 │   └── index.ts
@@ -154,6 +160,8 @@ openfda-mcp-server/
 │   │   └── tools/
 │   │       ├── definitions/
 │   │       │   ├── count-values.tool.test.ts
+│   │       │   ├── dataframe-describe.tool.test.ts
+│   │       │   ├── dataframe-query.tool.test.ts
 │   │       │   ├── describe-fields.tool.test.ts
 │   │       │   ├── drug-profile.tool.test.ts
 │   │       │   ├── get-drug-label.tool.test.ts
@@ -165,12 +173,14 @@ openfda-mcp-server/
 │   │       │   ├── search-device-clearances.tool.test.ts
 │   │       │   ├── search-drug-approvals.tool.test.ts
 │   │       │   ├── search-drug-shortages.tool.test.ts
+│   │       │   ├── search-recalls-canvas.test.ts
 │   │       │   ├── search-recalls.tool.test.ts
 │   │       │   ├── search-tobacco-reports.tool.test.ts
 │   │       │   └── tools-edge-cases.test.ts
 │   │       └── format-utils.test.ts
 │   └── services/
 │       └── openfda/
+│           ├── canvas-spill.test.ts
 │           ├── openfda-service-security.test.ts
 │           └── openfda-service.test.ts
 ├── .dockerignore

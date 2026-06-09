@@ -4,10 +4,33 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import type { ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import { emptyResultMessage, formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
+import { getCanvas } from '@/services/canvas/canvas-accessor.js';
+import { canvasOutputShape, canvasResult, spillSearch } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+
+/**
+ * Canvas table projection for veterinary adverse event records. Scalars are
+ * VARCHAR (CAST in SQL for math); the animal/drug/reaction/outcome structures are
+ * JSON columns. All nullable.
+ */
+const ANIMAL_EVENTS_CANVAS_SCHEMA: ColumnSchema[] = [
+  { name: 'unique_aer_id_number', type: 'VARCHAR', nullable: true },
+  { name: 'original_receive_date', type: 'VARCHAR', nullable: true },
+  { name: 'serious_ae', type: 'VARCHAR', nullable: true },
+  { name: 'primary_reporter', type: 'VARCHAR', nullable: true },
+  { name: 'type_of_information', type: 'VARCHAR', nullable: true },
+  { name: 'number_of_animals_affected', type: 'VARCHAR', nullable: true },
+  { name: 'number_of_animals_treated', type: 'VARCHAR', nullable: true },
+  { name: 'foreign_or_domestic', type: 'VARCHAR', nullable: true },
+  { name: 'animal', type: 'JSON', nullable: true },
+  { name: 'drug', type: 'JSON', nullable: true },
+  { name: 'reaction', type: 'JSON', nullable: true },
+  { name: 'outcome', type: 'JSON', nullable: true },
+];
 
 export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
   description:
@@ -39,6 +62,12 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       .max(25000)
       .default(0)
       .describe('Number of records to skip for pagination (0-25000, default 0)'),
+    canvas_id: z
+      .string()
+      .optional()
+      .describe(
+        'DataCanvas session id from a prior call. Omit to start a fresh canvas; the response returns a new one when canvas is enabled. When canvas (CANVAS_PROVIDER_TYPE=duckdb) is enabled the full matched set is staged for SQL and limit/skip apply only to the inline path.',
+      ),
   }),
 
   output: z.object({
@@ -55,6 +84,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       .describe(
         'Animal adverse event records. Key fields: unique_aer_id_number, original_receive_date, serious_ae, animal (species, gender, breed, age, weight), drug[] (brand_name, active_ingredients, route, dose, administered_by), reaction[] (veddra_term_name, number_of_animals_affected), outcome[] (medical_status), primary_reporter, type_of_information.',
       ),
+    ...canvasOutputShape,
   }),
 
   enrichment: {
@@ -104,6 +134,26 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
   ],
 
   async handler(input, ctx) {
+    const canvas = getCanvas();
+    if (canvas) {
+      const spill = await spillSearch({
+        endpoint: 'animalandveterinary/event',
+        search: input.search,
+        sort: input.sort,
+        canvasId: input.canvas_id,
+        schema: ANIMAL_EVENTS_CANVAS_SCHEMA,
+        ctx,
+      });
+      ctx.enrich({ totalResults: spill.total });
+      if (input.search) ctx.enrich.echo(input.search);
+      if (spill.spilled) {
+        ctx.enrich.notice(
+          `Full result set (${spill.total} matched) staged on canvas table "${spill.tableName}". Query it with openfda_dataframe_query using canvas_id "${spill.canvasId}".`,
+        );
+      }
+      return canvasResult(spill);
+    }
+
     const svc = getOpenFdaService();
     const response = await svc.query(
       'animalandveterinary/event',
@@ -144,6 +194,14 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
     const lines: string[] = [
       `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Data updated: ${result.meta.lastUpdated}\n`,
     ];
+
+    if (result.spilled !== undefined) {
+      lines.push(
+        result.canvas_table
+          ? `> Staged ${result.meta.total} matched rows on canvas table \`${result.canvas_table}\` (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled})${result.truncated ? ', truncated at the 25000-row ceiling' : ''} — query with openfda_dataframe_query.\n`
+          : `> Canvas enabled (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled}); ${result.meta.total} rows fit inline.\n`,
+      );
+    }
 
     for (const r of result.results) {
       lines.push(`### Report ${r.unique_aer_id_number ?? 'N/A'}`);

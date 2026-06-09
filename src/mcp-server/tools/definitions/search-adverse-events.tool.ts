@@ -4,6 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import type { ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
@@ -11,7 +12,52 @@ import {
   formatRemainingFields,
   truncate,
 } from '@/mcp-server/tools/format-utils.js';
+import { getCanvas } from '@/services/canvas/canvas-accessor.js';
+import { canvasOutputShape, canvasResult, spillSearch } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+
+/**
+ * Canvas table projections per category — each call stages one category, so the
+ * schema is selected by `input.category`. Scalars are VARCHAR (openFDA returns
+ * most values as strings; CAST in SQL for math); nested objects/arrays are JSON
+ * columns. All nullable — openFDA records are sparse.
+ */
+const ADVERSE_EVENT_SCHEMAS: Record<'drug' | 'food' | 'device', ColumnSchema[]> = {
+  drug: [
+    { name: 'safetyreportid', type: 'VARCHAR', nullable: true },
+    { name: 'receivedate', type: 'VARCHAR', nullable: true },
+    { name: 'receiptdate', type: 'VARCHAR', nullable: true },
+    { name: 'serious', type: 'VARCHAR', nullable: true },
+    { name: 'seriousnessdeath', type: 'VARCHAR', nullable: true },
+    { name: 'seriousnesshospitalization', type: 'VARCHAR', nullable: true },
+    { name: 'occurcountry', type: 'VARCHAR', nullable: true },
+    { name: 'primarysourcecountry', type: 'VARCHAR', nullable: true },
+    { name: 'companynumb', type: 'VARCHAR', nullable: true },
+    { name: 'patient', type: 'JSON', nullable: true },
+    { name: 'openfda', type: 'JSON', nullable: true },
+  ],
+  food: [
+    { name: 'report_number', type: 'VARCHAR', nullable: true },
+    { name: 'date_created', type: 'VARCHAR', nullable: true },
+    { name: 'date_started', type: 'VARCHAR', nullable: true },
+    { name: 'outcomes', type: 'JSON', nullable: true },
+    { name: 'reactions', type: 'JSON', nullable: true },
+    { name: 'products', type: 'JSON', nullable: true },
+    { name: 'consumer', type: 'JSON', nullable: true },
+  ],
+  device: [
+    { name: 'report_number', type: 'VARCHAR', nullable: true },
+    { name: 'mdr_report_key', type: 'VARCHAR', nullable: true },
+    { name: 'event_type', type: 'VARCHAR', nullable: true },
+    { name: 'date_received', type: 'VARCHAR', nullable: true },
+    { name: 'date_of_event', type: 'VARCHAR', nullable: true },
+    { name: 'manufacturer_name', type: 'VARCHAR', nullable: true },
+    { name: 'device', type: 'JSON', nullable: true },
+    { name: 'patient', type: 'JSON', nullable: true },
+    { name: 'mdr_text', type: 'JSON', nullable: true },
+    { name: 'openfda', type: 'JSON', nullable: true },
+  ],
+};
 
 export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
   description:
@@ -46,6 +92,12 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       .max(25000)
       .default(0)
       .describe('Number of records to skip for pagination (0-25000, default 0)'),
+    canvas_id: z
+      .string()
+      .optional()
+      .describe(
+        'DataCanvas session id from a prior call. Omit to start a fresh canvas; the response returns a new one when canvas is enabled. When canvas (CANVAS_PROVIDER_TYPE=duckdb) is enabled the full matched set is staged for SQL and limit/skip apply only to the inline path.',
+      ),
   }),
 
   output: z.object({
@@ -62,6 +114,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       .describe(
         'Adverse event records — fields vary by category (drug: patient/reactions/drugs, device: device details/event type, food: products/outcomes)',
       ),
+    ...canvasOutputShape,
   }),
 
   enrichment: {
@@ -111,8 +164,29 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
   ],
 
   async handler(input, ctx) {
-    const svc = getOpenFdaService();
     const endpoint = `${input.category}/event`;
+
+    const canvas = getCanvas();
+    if (canvas) {
+      const spill = await spillSearch({
+        endpoint,
+        search: input.search,
+        sort: input.sort,
+        canvasId: input.canvas_id,
+        schema: ADVERSE_EVENT_SCHEMAS[input.category],
+        ctx,
+      });
+      ctx.enrich({ totalResults: spill.total });
+      if (input.search) ctx.enrich.echo(input.search);
+      if (spill.spilled) {
+        ctx.enrich.notice(
+          `Full result set (${spill.total} matched) staged on canvas table "${spill.tableName}". Query it with openfda_dataframe_query using canvas_id "${spill.canvasId}".`,
+        );
+      }
+      return canvasResult(spill);
+    }
+
+    const svc = getOpenFdaService();
     const response = await svc.query(
       endpoint,
       {
@@ -153,6 +227,14 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
     const lines: string[] = [
       `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Data updated: ${result.meta.lastUpdated}\n`,
     ];
+
+    if (result.spilled !== undefined) {
+      lines.push(
+        result.canvas_table
+          ? `> Staged ${result.meta.total} matched rows on canvas table \`${result.canvas_table}\` (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled})${result.truncated ? ', truncated at the 25000-row ceiling' : ''} — query with openfda_dataframe_query.\n`
+          : `> Canvas enabled (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled}); ${result.meta.total} rows fit inline.\n`,
+      );
+    }
 
     for (const r of result.results) {
       // Drug adverse events

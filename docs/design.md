@@ -190,6 +190,42 @@ Search problem reports submitted to the FDA for tobacco products, including e-ci
 
 **Returns:** Tobacco problem reports: `report_id`, `date_submitted`, `tobacco_products[]` (product type description), `reported_health_problems[]` (health effects), `reported_product_problems[]` (device/product defects), `number_tobacco_products`, `number_health_problems`, `number_product_problems`, `nonuser_affected`.
 
+### `openfda_dataframe_query`
+
+Run a read-only SQL `SELECT` against a DataCanvas table staged by a search tool's spillover (see [DataCanvas spillover](#datacanvas-spillover-analytical-sql)). Enables `GROUP BY`, `COUNT/SUM/AVG`, time-series, and joins across the full result set without re-paging the API.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `canvas_id` | string | Yes | Canvas ID from a search tool response. |
+| `query` | string | Yes | SQL `SELECT`. Use the table name from `openfda_dataframe_describe`. Scalar columns are text (`CAST` for numeric math); nested objects/arrays are JSON columns (e.g. `json_extract_string(openfda, '$.brand_name[0]')`). |
+
+**Returns:** `rows[]` (capped at the canvas row limit), `row_count`, `canvas_id`. Only `SELECT` is allowed — DDL/DML/COPY/file-reading functions are rejected by the framework's four-layer SQL gate.
+
+### `openfda_dataframe_describe`
+
+List the tables and column schemas on a DataCanvas. Call before `openfda_dataframe_query` to discover the exact table and column names. `row_count` is the full staged set, not the inline preview.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `canvas_id` | string | Yes | Canvas ID from a search tool response. |
+
+**Returns:** `tables[]` (`name`, `kind`, `row_count`, `columns[]` of `name`/`type`/`nullable`), `canvas_id`.
+
+---
+
+## DataCanvas spillover (analytical SQL)
+
+**Opt-in, off by default.** Set `CANVAS_PROVIDER_TYPE=duckdb` to enable; otherwise the search tools behave exactly as documented above (single page, inline preview) and the two dataframe tools report that canvas is disabled. Requires the optional `@duckdb/node-api` dependency and is unavailable on the Workers runtime (no DuckDB build → fails closed at init).
+
+When canvas is enabled, every multi-row search tool — `openfda_search_adverse_events`, `_recalls`, `_drug_approvals`, `_device_clearances`, `_animal_events`, `_drug_shortages`, `_tobacco_reports`, and `openfda_lookup_ndc` — gains:
+
+- An optional `canvas_id` input — omit to mint a fresh canvas, or pass one back to accumulate successive queries into the same canvas for cross-table joins.
+- Output fields `canvas_id`, `canvas_table`, `spilled`, `truncated` (all absent when canvas is disabled).
+
+The handler pages the full matched set — lazily, at the API's 1000-row cap, bounded by the 25,000-row `skip` ceiling — into `spillover()` from `@cyanheads/mcp-ts-core/canvas`: a character-budgeted inline preview plus, when the result overflows, a staged DuckDB table the agent queries with `openfda_dataframe_query`. `truncated: true` signals that more rows matched upstream than the ceiling staged. In canvas mode `limit`/`skip` govern only the inline (non-canvas) path.
+
+**Canvas table shape.** Each endpoint registers an explicit, all-nullable column projection (`src/services/openfda/canvas-spill.ts` plus a per-tool `*_CANVAS_SCHEMA` constant): high-value scalar fields as `VARCHAR` (openFDA returns most values as strings — `CAST` in SQL for numeric math) and nested objects/arrays (`openfda`, `patient`, `products`, `submissions`, …) as `JSON` columns read with DuckDB json functions. Fields outside the projection are dropped from the table but remain in the inline preview; absent fields register as `NULL`. The drain feeds the raw records straight to the appender, which projects them onto the schema — so sparse, heterogeneous records ingest without NOT-NULL failures.
+
 ---
 
 ## Implementation Notes
@@ -242,6 +278,7 @@ openFDA returns JSON error objects with `code`, `message`, and sometimes `detail
 |---|---|---|
 | `OPENFDA_API_KEY` | No | Free API key from [open.fda.gov](https://open.fda.gov/apis/authentication/). Increases daily limit from 1K to 120K requests. Passed as `api_key` query parameter. |
 | `OPENFDA_BASE_URL` | No | Base URL override. Default: `https://api.fda.gov`. Useful for testing against a proxy or mock server. |
+| `CANVAS_PROVIDER_TYPE` | No | Set to `duckdb` to enable [DataCanvas spillover](#datacanvas-spillover-analytical-sql) — analytical SQL over staged result sets via `openfda_dataframe_query`. Default `none` (disabled). Requires the optional `@duckdb/node-api` dependency; unsupported on Cloudflare Workers. |
 
 ---
 

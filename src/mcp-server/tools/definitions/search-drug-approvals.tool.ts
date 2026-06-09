@@ -5,10 +5,27 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import type { ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import { emptyResultMessage, formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
+import { getCanvas } from '@/services/canvas/canvas-accessor.js';
+import { canvasOutputShape, canvasResult, spillSearch } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+
+/**
+ * Canvas table projection for Drugs@FDA application records. The analytical
+ * dimensions (brand/generic/route, marketing status, submission history) live in
+ * the nested openfda/products/submissions blocks, carried as JSON columns and
+ * read with DuckDB json functions. All nullable.
+ */
+const DRUG_APPROVALS_CANVAS_SCHEMA: ColumnSchema[] = [
+  { name: 'application_number', type: 'VARCHAR', nullable: true },
+  { name: 'sponsor_name', type: 'VARCHAR', nullable: true },
+  { name: 'openfda', type: 'JSON', nullable: true },
+  { name: 'products', type: 'JSON', nullable: true },
+  { name: 'submissions', type: 'JSON', nullable: true },
+];
 
 /** Exported tool definition for searching drug approvals. */
 export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
@@ -41,6 +58,12 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       .max(25000)
       .default(0)
       .describe('Number of records to skip for pagination (0-25000, default 0)'),
+    canvas_id: z
+      .string()
+      .optional()
+      .describe(
+        'DataCanvas session id from a prior call. Omit to start a fresh canvas; the response returns a new one when canvas is enabled. When canvas (CANVAS_PROVIDER_TYPE=duckdb) is enabled the full matched set is staged for SQL and limit/skip apply only to the inline path.',
+      ),
   }),
 
   output: z.object({
@@ -57,6 +80,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       .describe(
         'Drug application records — application_number, sponsor_name, openfda block (brand_name, generic_name, route, product_type, substance_name), products[] (active_ingredients, dosage_form, marketing_status), submissions[] (submission_type, submission_status, submission_status_date, review_priority).',
       ),
+    ...canvasOutputShape,
   }),
 
   enrichment: {
@@ -106,6 +130,26 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
   ],
 
   async handler(input, ctx) {
+    const canvas = getCanvas();
+    if (canvas) {
+      const spill = await spillSearch({
+        endpoint: 'drug/drugsfda',
+        search: input.search,
+        sort: input.sort,
+        canvasId: input.canvas_id,
+        schema: DRUG_APPROVALS_CANVAS_SCHEMA,
+        ctx,
+      });
+      ctx.enrich({ totalResults: spill.total });
+      if (input.search) ctx.enrich.echo(input.search);
+      if (spill.spilled) {
+        ctx.enrich.notice(
+          `Full result set (${spill.total} matched) staged on canvas table "${spill.tableName}". Query it with openfda_dataframe_query using canvas_id "${spill.canvasId}".`,
+        );
+      }
+      return canvasResult(spill);
+    }
+
     const service = getOpenFdaService();
 
     const response = await service.query(
@@ -151,6 +195,14 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
     const lines: string[] = [
       `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Data updated: ${result.meta.lastUpdated}\n`,
     ];
+
+    if (result.spilled !== undefined) {
+      lines.push(
+        result.canvas_table
+          ? `> Staged ${result.meta.total} matched rows on canvas table \`${result.canvas_table}\` (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled})${result.truncated ? ', truncated at the 25000-row ceiling' : ''} — query with openfda_dataframe_query.\n`
+          : `> Canvas enabled (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled}); ${result.meta.total} rows fit inline.\n`,
+      );
+    }
 
     const rendered = new Set([
       'openfda',
