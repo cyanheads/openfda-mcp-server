@@ -181,6 +181,11 @@ export const drugProfileTool = tool('openfda_drug_profile', {
           .describe(
             'Which endpoint resolved the canonical identity: drug/label, drug/ndc, or none.',
           ),
+        fanOutKey: z
+          .string()
+          .describe(
+            'Canonical key the structured sub-queries (recall/enforcement, Drugs@FDA approval, shortage) ran against — the resolved generic name, falling back to a brand name, then the input term. The adverse-event sub-query instead keys off the raw input term to match heterogeneous reporter-entered values.',
+          ),
       })
       .describe('Request metadata.'),
     identity: z
@@ -189,7 +194,9 @@ export const drugProfileTool = tool('openfda_drug_profile', {
         generic_name: z
           .string()
           .nullable()
-          .describe('Canonical generic name (openfda.generic_name) — the key used for fan-out.'),
+          .describe(
+            'Canonical generic name (openfda.generic_name) — the primary source for meta.fanOutKey.',
+          ),
         product_ndc: z.string().nullable().describe('Representative product NDC, when available.'),
         rxcui: z.string().nullable().describe('RxNorm concept unique identifier, when available.'),
         spl_set_id: z
@@ -465,7 +472,7 @@ export const drugProfileTool = tool('openfda_drug_profile', {
     }
 
     return {
-      meta: { drug: input.drug, resolvedVia },
+      meta: { drug: input.drug, resolvedVia, fanOutKey: key },
       identity,
       label,
       adverse_events,
@@ -479,7 +486,7 @@ export const drugProfileTool = tool('openfda_drug_profile', {
     const { identity, label, adverse_events, recalls, approval, shortage, meta } = result;
     const lines: string[] = [
       `# Drug profile: ${meta.drug}`,
-      `_Resolved via: ${meta.resolvedVia}_`,
+      `_Resolved via: ${meta.resolvedVia} · fan-out key: ${meta.fanOutKey}_`,
       '',
     ];
 

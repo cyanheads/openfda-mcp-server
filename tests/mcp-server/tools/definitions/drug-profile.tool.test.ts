@@ -112,6 +112,7 @@ describe('openfda_drug_profile', () => {
     const result = await drugProfileTool.handler({ drug: 'metformin' }, ctx);
 
     expect(result.meta.resolvedVia).toBe('label');
+    expect(result.meta.fanOutKey).toBe('metformin hydrochloride');
     expect(result.identity.generic_name).toBe('metformin hydrochloride');
     expect(result.identity.brand_names).toContain('Glucophage');
     expect(result.identity.rxcui).toBe('860975');
@@ -191,6 +192,7 @@ describe('openfda_drug_profile', () => {
     const result = await drugProfileTool.handler({ drug: 'Tylenol' }, ctx);
 
     expect(result.meta.resolvedVia).toBe('ndc');
+    expect(result.meta.fanOutKey).toBe('acetaminophen');
     expect(result.identity.generic_name).toBe('acetaminophen');
     expect(result.identity.product_ndc).toBe('50580-449');
     expect(result.identity.rxcui).toBe('198440');
@@ -203,6 +205,7 @@ describe('openfda_drug_profile', () => {
     const result = await drugProfileTool.handler({ drug: 'notadrug' }, ctx);
 
     expect(result.meta.resolvedVia).toBe('none');
+    expect(result.meta.fanOutKey).toBe('notadrug');
     expect(result.identity.generic_name).toBeNull();
     expect(result.identity.brand_names).toEqual([]);
     expect(getEnrichment(ctx).sectionsFound).toBe(0);
@@ -211,7 +214,7 @@ describe('openfda_drug_profile', () => {
 
   it('renders every section header in format(), even when sections are null', () => {
     const content = drugProfileTool.format({
-      meta: { drug: 'mystery', resolvedVia: 'none' },
+      meta: { drug: 'mystery', resolvedVia: 'none', fanOutKey: 'mystery' },
       identity: {
         brand_names: [],
         generic_name: null,
@@ -238,5 +241,6 @@ describe('openfda_drug_profile', () => {
       expect(text).toContain(header);
     }
     expect(text).toContain('Drug profile: mystery');
+    expect(text).toContain('fan-out key: mystery');
   });
 });
