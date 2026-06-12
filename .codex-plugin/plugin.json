@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/openfda-mcp-server",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Query FDA data on drugs, food, devices, and recalls via openFDA. STDIO or Streamable HTTP.",
   "author": {
     "name": "cyanheads",
@@ -13,7 +13,7 @@
   "keywords": ["mcp", "mcp-server", "model-context-protocol", "openfda", "fda", "drug-safety", "adverse-events"],
   "mcpServers": "./.codex-plugin/mcp.json",
   "interface": {
-    "displayName": "@cyanheads/openfda-mcp-server",
+    "displayName": "openfda-mcp-server",
     "shortDescription": "Query FDA data on drugs, food, devices, and recalls via openFDA.",
     "longDescription": "Query the openFDA public API for drugs, food, devices, and animal/veterinary products. Search adverse events, drug approvals, device clearances, and recalls; look up NDC codes; fetch drug labels; aggregate field counts.",
     "developerName": "cyanheads",
