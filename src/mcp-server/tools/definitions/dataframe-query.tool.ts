@@ -64,7 +64,10 @@ export const dataframeQueryTool = tool('openfda_dataframe_query', {
     }
 
     const instance = await canvas.acquire(input.canvas_id, ctx);
-    const result = await instance.query(input.query, { signal: ctx.signal });
+    const result = await instance.query(input.query, {
+      signal: ctx.signal,
+      denySystemCatalogs: true,
+    });
 
     ctx.log.info('DataCanvas query complete', {
       canvasId: input.canvas_id,
