@@ -45,6 +45,32 @@ describe('openfda_get_drug_label', () => {
     expect(enrichment.effectiveQuery).toBe('openfda.brand_name:"aspirin"');
   });
 
+  it('discloses truncation when more labels matched than the page returned', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 42, skip: 0, limit: 5, lastUpdated: '2026-01-01' },
+      results: Array.from({ length: 5 }, () => ({ openfda: { brand_name: ['Aspirin'] } })),
+    });
+
+    await getDrugLabelTool.handler({ search: 'openfda.generic_name:"aspirin"', limit: 5 }, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.truncated).toBe(true);
+    expect(enrichment.shown).toBe(5);
+    expect(enrichment.cap).toBe(5);
+  });
+
+  it('omits truncation when the full result set fit on the page', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 3, skip: 0, limit: 5, lastUpdated: '2026-01-01' },
+      results: Array.from({ length: 3 }, () => ({ openfda: { brand_name: ['Aspirin'] } })),
+    });
+
+    await getDrugLabelTool.handler({ search: 'openfda.generic_name:"aspirin"', limit: 5 }, ctx);
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.truncated).toBeUndefined();
+  });
+
   it('sets enrichment.notice when results are empty', async () => {
     mockQuery.mockResolvedValue({
       meta: { total: 0, skip: 0, limit: 5, lastUpdated: '' },

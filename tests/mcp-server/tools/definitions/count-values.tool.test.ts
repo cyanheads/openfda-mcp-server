@@ -77,6 +77,42 @@ describe('openfda_count_values', () => {
     expect(enrichment.termCount).toBe(2);
   });
 
+  it('discloses truncation when the term list is capped at the limit', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { lastUpdated: '2026-01-01' },
+      results: [
+        { term: 'NAUSEA', count: 100 },
+        { term: 'FATIGUE', count: 50 },
+      ],
+    });
+
+    await countValuesTool.handler(
+      { endpoint: 'drug/event', count: 'patient.reaction.reactionmeddrapt.exact', limit: 2 },
+      ctx,
+    );
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.truncated).toBe(true);
+    expect(enrichment.shown).toBe(2);
+    expect(enrichment.cap).toBe(2);
+    expect(enrichment.truncationCeiling).toBe(50);
+  });
+
+  it('omits truncation when fewer terms than the limit are returned', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { lastUpdated: '2026-01-01' },
+      results: [{ term: 'NAUSEA', count: 100 }],
+    });
+
+    await countValuesTool.handler(
+      { endpoint: 'drug/event', count: 'patient.reaction.reactionmeddrapt.exact', limit: 100 },
+      ctx,
+    );
+
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.truncated).toBeUndefined();
+  });
+
   it('sets enrichment.notice and returns empty results when no terms match', async () => {
     mockQuery.mockResolvedValue({ meta: { lastUpdated: '' }, results: [] });
 

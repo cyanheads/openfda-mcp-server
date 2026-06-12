@@ -78,6 +78,16 @@ export const countValuesTool = tool('openfda_count_values', {
 
   enrichment: {
     termCount: z.number().describe('Number of distinct terms returned'),
+    truncated: z
+      .boolean()
+      .optional()
+      .describe('True when the term list was capped at the limit — more distinct terms may exist.'),
+    shown: z.number().optional().describe('Number of terms returned in this response.'),
+    cap: z.number().optional().describe('The limit applied to the term list.'),
+    truncationCeiling: z
+      .number()
+      .optional()
+      .describe('Count of the lowest-ranked term returned — omitted terms fall at or below it.'),
     notice: z
       .string()
       .optional()
@@ -146,6 +156,14 @@ export const countValuesTool = tool('openfda_count_values', {
       ctx.enrich.notice(
         `No count results for ${input.count} on ${input.endpoint}${input.search ? ` with search: ${input.search}` : ''}. Verify the field name exists for this endpoint and check .exact suffix usage.`,
       );
+    } else if (results.length >= input.limit) {
+      const lowestCount = results.at(-1)?.count;
+      ctx.enrich.truncated({
+        shown: results.length,
+        cap: input.limit,
+        ...(lowestCount !== undefined ? { ceiling: lowestCount } : {}),
+        guidance: `Showing the top ${input.limit} terms by count; more distinct values may exist. Raise limit (max 1000) or narrow with search.`,
+      });
     }
 
     return { meta: { lastUpdated: response.meta.lastUpdated }, results };

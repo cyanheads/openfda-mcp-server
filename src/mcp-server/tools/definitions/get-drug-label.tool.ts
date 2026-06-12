@@ -63,6 +63,14 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
     effectiveQuery: z
       .string()
       .describe('Search filter applied to the drug label query, as submitted to openFDA'),
+    truncated: z
+      .boolean()
+      .optional()
+      .describe(
+        'True when more labels matched than this page returned — page with skip for the rest.',
+      ),
+    shown: z.number().optional().describe('Number of labels returned in this response.'),
+    cap: z.number().optional().describe('The limit applied to this page.'),
     notice: z
       .string()
       .optional()
@@ -131,6 +139,12 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
           `No labels matched${input.search ? ` search: ${input.search}` : ''}. Try broader terms or check field names (e.g. openfda.brand_name, openfda.generic_name, openfda.manufacturer_name). ${fieldHint}`,
         ),
       );
+    } else if (response.meta.skip + response.results.length < response.meta.total) {
+      ctx.enrich.truncated({
+        shown: response.results.length,
+        cap: input.limit,
+        guidance: `${response.meta.total} labels matched; this page returned ${response.results.length}. Page with skip (e.g. skip=${response.meta.skip + response.results.length}) or narrow the search.`,
+      });
     }
 
     return {
