@@ -1,5 +1,5 @@
 {
-  "@cyanheads/openfda-mcp-server": {
+  "openfda-mcp-server": {
     "command": "npx",
     "args": ["-y", "@cyanheads/openfda-mcp-server"],
     "env": {
