@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.2](changelog/0.3.x/0.3.2.md) — 2026-06-20
+
+@cyanheads/mcp-ts-core ^0.10.6 → ^0.10.9; new check-dependency-specifiers devcheck step + plugin-manifest packaging checks; fresh-scaffold devcheck guards; re-synced framework scripts and skills
+
 ## [0.3.1](changelog/0.3.x/0.3.1.md) — 2026-06-12
 
 @cyanheads/mcp-ts-core ^0.9.21 → ^0.10.6; truncation disclosure on count_values and get_drug_label; DataCanvas system-catalog lockout; explicit server identity; bundle agent-doc strip
