@@ -506,6 +506,249 @@ const FIELD_CATALOG: Record<string, FieldGroup[]> = {
     },
   ],
 
+  'device/classification': [
+    {
+      label: 'Classification',
+      fields: [
+        { path: 'product_code', type: 'string', note: 'FDA 3-letter product code (e.g. "LWP")' },
+        { path: 'device_name', type: 'string', note: 'Classification device name' },
+        {
+          path: 'device_class',
+          type: 'string',
+          note: 'Device class: "1", "2", "3", or "U" (unclassified)',
+        },
+        {
+          path: 'regulation_number',
+          type: 'string',
+          note: 'CFR regulation number (e.g. "878.4800")',
+        },
+        {
+          path: 'medical_specialty_description',
+          type: 'string',
+          note: 'Review panel / medical specialty (e.g. "General, Plastic Surgery")',
+        },
+      ],
+    },
+    {
+      label: 'Regulatory flags',
+      fields: [
+        { path: 'implant_flag', type: 'string', note: '"Y" if the device is an implant' },
+        {
+          path: 'life_sustain_support_flag',
+          type: 'string',
+          note: '"Y" if life-sustaining or life-supporting',
+        },
+        {
+          path: 'gmp_exempt_flag',
+          type: 'string',
+          note: '"Y" if exempt from Good Manufacturing Practice',
+        },
+        {
+          path: 'third_party_flag',
+          type: 'string',
+          note: '"Y" if eligible for third-party 510(k) review',
+        },
+      ],
+    },
+    {
+      label: 'OpenFDA cross-references',
+      fields: [
+        {
+          path: 'openfda.k_number',
+          type: 'string',
+          note: '510(k) numbers mapped to this product code',
+        },
+        {
+          path: 'openfda.registration_number',
+          type: 'string',
+          note: 'Registration numbers for this product code',
+        },
+        {
+          path: 'openfda.fei_number',
+          type: 'string',
+          note: 'FDA Establishment Identifier numbers',
+        },
+      ],
+    },
+  ],
+
+  'device/registrationlisting': [
+    {
+      label: 'Establishment',
+      fields: [
+        {
+          path: 'registration.registration_number',
+          type: 'string',
+          note: 'FDA establishment registration number',
+        },
+        {
+          path: 'registration.fei_number',
+          type: 'string',
+          note: 'FDA Establishment Identifier (FEI)',
+        },
+        { path: 'registration.name', type: 'string', note: 'Registered establishment name' },
+        {
+          path: 'registration.iso_country_code',
+          type: 'string',
+          note: 'ISO country code of the establishment',
+        },
+        {
+          path: 'establishment_type',
+          type: 'string',
+          note: 'Activity performed (e.g. "Manufacture Medical Device")',
+        },
+      ],
+    },
+    {
+      label: 'Owner / operator',
+      fields: [
+        {
+          path: 'registration.owner_operator.firm_name',
+          type: 'string',
+          note: 'Owner/operator firm name',
+        },
+        {
+          path: 'registration.owner_operator.owner_operator_number',
+          type: 'string',
+          note: 'Owner/operator number',
+        },
+        {
+          path: 'proprietary_name',
+          type: 'string',
+          note: 'Proprietary/brand names listed by the establishment',
+        },
+      ],
+    },
+    {
+      label: 'Listed products',
+      fields: [
+        {
+          path: 'products.product_code',
+          type: 'string',
+          note: 'FDA 3-letter product code of a listed device',
+        },
+        {
+          path: 'products.openfda.device_name',
+          type: 'string',
+          note: 'Normalized device name of the listed product',
+        },
+        {
+          path: 'products.openfda.device_class',
+          type: 'string',
+          note: 'Device class of the listed product ("1", "2", "3")',
+        },
+        {
+          path: 'k_number',
+          type: 'string',
+          note: '510(k) number, when the listed device was cleared via 510(k)',
+        },
+        {
+          path: 'pma_number',
+          type: 'string',
+          note: 'PMA number, when the listed device was approved via PMA',
+        },
+      ],
+    },
+  ],
+
+  'device/udi': [
+    {
+      label: 'Device',
+      fields: [
+        { path: 'brand_name', type: 'string', note: 'Device brand/trade name' },
+        { path: 'company_name', type: 'string', note: 'Labeler company name' },
+        { path: 'catalog_number', type: 'string', note: 'Manufacturer catalog number' },
+        { path: 'version_or_model_number', type: 'string', note: 'Version or model number' },
+      ],
+    },
+    {
+      label: 'Identifiers and classification',
+      fields: [
+        { path: 'identifiers.id', type: 'string', note: 'Device Identifier (DI) value' },
+        {
+          path: 'identifiers.issuing_agency',
+          type: 'string',
+          note: 'DI issuing agency (GS1, HIBCC, ICCBBA)',
+        },
+        { path: 'product_codes.code', type: 'string', note: 'FDA 3-letter product code' },
+        { path: 'product_codes.name', type: 'string', note: 'Product code device name' },
+        {
+          path: 'product_codes.openfda.device_class',
+          type: 'string',
+          note: 'Device class ("1", "2", "3")',
+        },
+        { path: 'gmdn_terms.name', type: 'string', note: 'GMDN term name for the device type' },
+      ],
+    },
+    {
+      label: 'Status and flags',
+      fields: [
+        {
+          path: 'commercial_distribution_status',
+          type: 'string',
+          note: '"In Commercial Distribution" or "Not in Commercial Distribution"',
+        },
+        { path: 'record_status', type: 'string', note: 'GUDID record status (e.g. "Published")' },
+        { path: 'is_rx', type: 'string', note: '"true" if prescription use' },
+        { path: 'is_otc', type: 'string', note: '"true" if over-the-counter' },
+        { path: 'is_single_use', type: 'string', note: '"true" if labeled single-use' },
+        {
+          path: 'sterilization.is_sterile',
+          type: 'string',
+          note: '"true" if the device is sterile',
+        },
+      ],
+    },
+  ],
+
+  'device/covid19serology': [
+    {
+      label: 'Test device',
+      fields: [
+        { path: 'device', type: 'string', note: 'Serology test device name' },
+        { path: 'manufacturer', type: 'string', note: 'Test manufacturer' },
+        { path: 'type', type: 'string', note: 'Sample type (e.g. "Serum", "Plasma")' },
+        { path: 'lot_number', type: 'string', note: 'Test lot number' },
+      ],
+    },
+    {
+      label: 'Evaluation',
+      fields: [
+        { path: 'panel', type: 'string', note: 'Evaluation panel (e.g. "Panel 1")' },
+        {
+          path: 'group',
+          type: 'string',
+          note: 'Sample truth group (e.g. "Positive", "Negative")',
+        },
+        { path: 'control', type: 'string', note: 'Control result ("Pass"/"Fail")' },
+        { path: 'sample_id', type: 'string', note: 'Evaluation sample identifier' },
+        {
+          path: 'days_from_symptom',
+          type: 'string',
+          note: 'Days from symptom onset to sample collection — numeric string, or "NA" when not reported',
+        },
+        {
+          path: 'date_performed',
+          type: 'string',
+          note: 'Date the evaluation was performed (M/D/YYYY)',
+        },
+      ],
+    },
+    {
+      label: 'Results',
+      fields: [
+        { path: 'igg_result', type: 'string', note: 'IgG antibody result' },
+        { path: 'igm_result', type: 'string', note: 'IgM antibody result' },
+        {
+          path: 'igg_agree',
+          type: 'string',
+          note: 'Whether the IgG result agreed with the truth panel',
+        },
+        { path: 'antibody_truth', type: 'string', note: 'Reference antibody truth for the sample' },
+      ],
+    },
+  ],
+
   'animalandveterinary/event': [
     {
       label: 'Report',
@@ -604,6 +847,62 @@ const FIELD_CATALOG: Record<string, FieldGroup[]> = {
         },
         { path: 'number_health_problems', type: 'integer', note: 'Number of health problems' },
         { path: 'number_product_problems', type: 'integer', note: 'Number of product problems' },
+      ],
+    },
+  ],
+
+  'other/substance': [
+    {
+      label: 'Substance identity',
+      fields: [
+        { path: 'unii', type: 'string', note: 'FDA Unique Ingredient Identifier (UNII)' },
+        {
+          path: 'substance_class',
+          type: 'string',
+          note: 'Substance class (e.g. "chemical", "protein", "mixture")',
+        },
+        {
+          path: 'definition_type',
+          type: 'string',
+          note: 'Definition type ("PRIMARY", "ALTERNATIVE")',
+        },
+        {
+          path: 'definition_level',
+          type: 'string',
+          note: 'Definition completeness level (e.g. "COMPLETE")',
+        },
+      ],
+    },
+    {
+      label: 'Names and codes',
+      fields: [
+        {
+          path: 'names.name',
+          type: 'string',
+          note: 'Substance name (systematic, brand, or common)',
+        },
+        {
+          path: 'names.type',
+          type: 'string',
+          note: 'Name type code (e.g. "cn" common, "sys" systematic)',
+        },
+        { path: 'codes.code', type: 'string', note: 'External registry code value' },
+        {
+          path: 'codes.code_system',
+          type: 'string',
+          note: 'Code system (e.g. "CAS", "FDA UNII", "EC")',
+        },
+      ],
+    },
+    {
+      label: 'Structure',
+      fields: [
+        { path: 'structure.formula', type: 'string', note: 'Molecular formula (e.g. "C20H13NO4")' },
+        {
+          path: 'structure.molecular_weight',
+          type: 'string',
+          note: 'Molecular weight (numeric string)',
+        },
       ],
     },
   ],

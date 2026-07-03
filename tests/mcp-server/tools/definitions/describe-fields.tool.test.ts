@@ -83,4 +83,32 @@ describe('openfda_describe_fields', () => {
     expect(result.queryTips).toContain('.exact');
     expect(result.queryTips).toContain('AND');
   });
+
+  // Issue #16 — the count-only endpoints exposed by openfda_count_values now have
+  // field catalogs, so openfda_describe_fields accepts them too.
+  const countOnlyEndpoints: Array<[string, string]> = [
+    ['device/classification', 'product_code'],
+    ['device/registrationlisting', 'registration.registration_number'],
+    ['device/udi', 'identifiers.id'],
+    ['device/covid19serology', 'igg_result'],
+    ['other/substance', 'unii'],
+  ];
+
+  it('accepts the five count-only endpoints in its input enum (issue #16)', () => {
+    for (const [endpoint] of countOnlyEndpoints) {
+      expect(() => describeFieldsTool.input.parse({ endpoint })).not.toThrow();
+    }
+  });
+
+  it.each(
+    countOnlyEndpoints,
+  )('returns a representative field group for %s (issue #16)', async (endpoint, expectedPath) => {
+    const input = describeFieldsTool.input.parse({ endpoint });
+    const result = await describeFieldsTool.handler(input, ctx);
+
+    expect(result.endpoint).toBe(endpoint);
+    expect(result.groups.length).toBeGreaterThan(0);
+    const allPaths = result.groups.flatMap((g) => g.fields.map((f) => f.path));
+    expect(allPaths).toContain(expectedPath);
+  });
 });
