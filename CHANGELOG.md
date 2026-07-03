@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.0](changelog/0.4.x/0.4.0.md) — 2026-07-03
+
+openfda_describe_fields reaches 20-endpoint parity with openfda_count_values (5 new count-only endpoints), and openfda_drug_profile now surfaces Rx boxed-warning safety text instead of null
+
 ## [0.3.3](changelog/0.3.x/0.3.3.md) — 2026-07-03 · 🛡️ Security
 
 Reclassifies openFDA 5xx query errors as non-retryable, types the disabled-DataCanvas error, fixes canvas-spill preview limit/skip, adopts fetchWithTimeout, and clears 8 security advisories via bundled dependency bumps

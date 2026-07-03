@@ -1,6 +1,6 @@
 # openfda-mcp-server - Directory Structure
 
-Generated on: 2026-06-20 17:30:03
+Generated on: 2026-07-03 09:59:38
 
 ```text
 openfda-mcp-server/
@@ -22,6 +22,7 @@ openfda-mcp-server/
 │   ├── 0.1.x/
 │   ├── 0.2.x/
 │   ├── 0.3.x/
+│   ├── 0.4.x/
 │   └── template.md
 ├── claude-plans/
 ├── docs/
