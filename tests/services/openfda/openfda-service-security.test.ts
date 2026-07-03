@@ -10,9 +10,11 @@ import { McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@cyanheads/mcp-ts-core/utils', () => ({
-  withRetry: vi.fn((fn: () => Promise<unknown>) => fn()),
-}));
+// Keep the real `fetchWithTimeout`; only collapse `withRetry` to a single attempt.
+vi.mock('@cyanheads/mcp-ts-core/utils', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@cyanheads/mcp-ts-core/utils')>();
+  return { ...actual, withRetry: vi.fn((fn: () => Promise<unknown>) => fn()) };
+});
 
 import { OpenFdaService } from '@/services/openfda/openfda-service.js';
 
@@ -30,12 +32,18 @@ describe('OpenFdaService security', () => {
     vi.unstubAllGlobals();
   });
 
+  // Re-readable Response fake — `fetchWithTimeout` reads `.text()`/`.headers` on
+  // the error path; the success path reads `.json()`.
   function mockResponse(status: number, body: unknown): Response {
+    const text = typeof body === 'string' ? body : JSON.stringify(body);
     return {
       ok: status >= 200 && status < 300,
       status,
-      json: () => Promise.resolve(body),
-    } as Response;
+      statusText: '',
+      headers: new Headers(),
+      text: () => Promise.resolve(text),
+      json: () => Promise.resolve(typeof body === 'string' ? JSON.parse(body) : body),
+    } as unknown as Response;
   }
 
   describe('API key protection', () => {
@@ -128,7 +136,8 @@ describe('OpenFdaService security', () => {
       const abortError = new DOMException('Aborted', 'AbortError');
       mockFetch.mockRejectedValue(abortError);
 
-      await expect(service.query('drug/event', {}, ctx)).rejects.toThrow('Aborted');
+      // fetchWithTimeout surfaces a caller abort as an "… was aborted." McpError.
+      await expect(service.query('drug/event', {}, ctx)).rejects.toThrow(/aborted/i);
     });
 
     it('propagates fetch TimeoutError', async () => {
@@ -150,15 +159,11 @@ describe('OpenFdaService security', () => {
       await expect(service.query('drug/event', {}, ctx)).rejects.toThrow();
     });
 
-    it('handles json() rejection on error status returning empty results', async () => {
+    it('returns empty results for a 404 with an unparseable body', async () => {
       const service = new OpenFdaService({ baseUrl: 'https://api.fda.gov' });
-      mockFetch.mockResolvedValue({
-        ok: false,
-        status: 404,
-        json: () => Promise.reject(new SyntaxError('Unexpected token')),
-      } as unknown as Response);
+      // Non-JSON error body — the 404 still normalizes to an empty result set.
+      mockFetch.mockResolvedValue(mockResponse(404, 'Not Found'));
 
-      // 404 with malformed json still returns empty results
       const result = await service.query('drug/event', {}, ctx);
       expect(result.results).toEqual([]);
       expect(result.meta.total).toBe(0);

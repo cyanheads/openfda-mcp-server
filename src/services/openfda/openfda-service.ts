@@ -6,16 +6,34 @@
 import type { Context } from '@cyanheads/mcp-ts-core';
 import {
   forbidden,
+  McpError,
   rateLimited,
   serviceUnavailable,
   unauthorized,
   validationError,
 } from '@cyanheads/mcp-ts-core/errors';
-import { withRetry } from '@cyanheads/mcp-ts-core/utils';
+import { fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig, type ServerConfig } from '@/config/server-config.js';
 import type { OpenFdaQueryParams, OpenFdaResponse } from './types.js';
 
 const REQUEST_TIMEOUT_MS = 15_000;
+
+/**
+ * openFDA surfaces deterministic, user-fixable query failures as HTTP 5xx whose body
+ * names the underlying Lucene/ES exception in `error.details`: a malformed search is a
+ * `token_mgr_error` / lexical error, a `count` on a non-keyword text field an
+ * `illegal_argument_exception`. These never succeed on retry, so a 5xx carrying one is
+ * reclassified to a non-retryable `query_error`.
+ *
+ * Keyed on the specific exception names only — NOT openFDA's generic "Check your request
+ * and try again" message, which rides on every application-level SERVER_ERROR including
+ * transient ES failures (circuit breaker, thread-pool rejection, recovering shards).
+ * A 5xx with no specific marker — generic message, transient ES exception, or a
+ * gateway/HTML outage page — stays a retryable `upstream_error`. The markers sit at the
+ * head of `error.details`, inside the ~500-byte body `fetchWithTimeout` captures, so
+ * truncation never hides them.
+ */
+const OPENFDA_QUERY_ERROR_5XX = /token_mgr_error|lexical error|illegal_argument_exception/i;
 
 export class OpenFdaService {
   private readonly baseUrl: string;
@@ -31,8 +49,13 @@ export class OpenFdaService {
   /**
    * Execute a query against any openFDA endpoint.
    *
-   * Handles retry with exponential backoff for transient errors (429, 5xx).
-   * Returns an empty result set for 404 (valid query, zero matches).
+   * Uses the framework's `fetchWithTimeout` (which throws a status-mapped
+   * `McpError` on any non-2xx, redacts the api_key-bearing URL from logs/errors,
+   * and emits the fleet-standard `http.client.request.duration` metric). The
+   * classification happens inside the `withRetry` callback so a reclassified
+   * non-retryable error (`query_error`) stops the retry loop while a genuine
+   * `upstream_error` / `rate_limited` is retried. Returns an empty result set for
+   * 404 (valid query, zero matches).
    */
   async query<T = Record<string, unknown>>(
     endpoint: string,
@@ -44,17 +67,22 @@ export class OpenFdaService {
         const url = this.buildUrl(endpoint, params);
         ctx.log.debug('Querying openFDA', { endpoint, params });
 
-        const response = await fetch(url.toString(), {
-          signal: AbortSignal.any([ctx.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]),
-          headers: { Accept: 'application/json' },
-        });
-
-        if (response.ok) {
+        // fetchWithTimeout wants a RequestContext (log bindings); carry the
+        // correlation id + operation so its logs/metrics join the request trace.
+        const requestContext = {
+          requestId: ctx.requestId,
+          timestamp: ctx.timestamp,
+          operation: `openFDA:${endpoint}`,
+        };
+        try {
+          const response = await fetchWithTimeout(url, REQUEST_TIMEOUT_MS, requestContext, {
+            signal: ctx.signal,
+          });
           const data = (await response.json()) as Record<string, unknown>;
           return this.normalizeResponse<T>(data, endpoint);
+        } catch (error) {
+          return this.classifyError<T>(error, endpoint, params, ctx);
         }
-
-        return this.handleErrorResponse<T>(response, endpoint, params, ctx);
       },
       {
         operation: `openFDA:${endpoint}`,
@@ -97,17 +125,33 @@ export class OpenFdaService {
     };
   }
 
-  private async handleErrorResponse<T>(
-    response: Response,
+  /**
+   * Classify an error thrown from the fetch/parse pipeline into openFDA's typed
+   * failure surface. Keyed on the HTTP status and body `fetchWithTimeout` attaches
+   * to `error.data`. Non-`McpError` throws (network errors, JSON parse failures)
+   * and status-less `McpError`s (timeout, abort) propagate unchanged — they are
+   * already correctly classified. The reclassified reasons match the calling
+   * tools' `errors[]` contracts so `ctx.recoveryFor` carries the recovery hint.
+   */
+  private classifyError<T>(
+    error: unknown,
     endpoint: string,
     params: OpenFdaQueryParams,
     ctx: Context,
-  ): Promise<OpenFdaResponse<T>> {
-    const body = (await response.json().catch(() => null)) as Record<string, unknown> | null;
-    const errorObj = body?.error as Record<string, unknown> | undefined;
-    const errorMessage = (errorObj?.message as string) ?? `HTTP ${response.status}`;
+  ): OpenFdaResponse<T> {
+    if (!(error instanceof McpError)) throw error;
 
-    if (response.status === 404) {
+    const data = error.data as { statusCode?: number; responseBody?: string } | undefined;
+    // No HTTP status → timeout / abort / network error from fetchWithTimeout; it is
+    // already classified (ServiceUnavailable / Timeout — retryable). Let it bubble.
+    if (data?.statusCode === undefined) throw error;
+
+    const status = data.statusCode;
+    const body = data.responseBody ?? '';
+    const message = this.upstreamMessage(body, status);
+
+    // 404 → valid query, zero matches. Return an empty result set (not an error).
+    if (status === 404) {
       return {
         meta: {
           total: 0,
@@ -119,7 +163,7 @@ export class OpenFdaService {
       };
     }
 
-    if (response.status === 429) {
+    if (status === 429) {
       throw rateLimited(
         this.apiKey
           ? 'openFDA rate limit exceeded (240 req/min or 120K/day with key). Retry after a brief wait.'
@@ -128,31 +172,22 @@ export class OpenFdaService {
       );
     }
 
-    if (response.status >= 500) {
-      throw serviceUnavailable(`openFDA upstream error: ${errorMessage}`, {
-        reason: 'upstream_error',
-        endpoint,
-        status: response.status,
-        ...ctx.recoveryFor('upstream_error'),
-      });
-    }
-
-    if (response.status === 401) {
+    if (status === 401) {
       throw unauthorized(
         'openFDA API key is missing or invalid. Provide a valid key via OPENFDA_API_KEY.',
         { reason: 'unauthorized', endpoint },
       );
     }
 
-    if (response.status === 403) {
+    if (status === 403) {
       throw forbidden(
         'Access to this openFDA endpoint is forbidden. Check that the API key has the required permissions.',
         { reason: 'forbidden', endpoint },
       );
     }
 
-    if (response.status === 400) {
-      if (/25000/i.test(errorMessage)) {
+    if (status === 400) {
+      if (/25000/i.test(body)) {
         throw validationError(
           'Pagination limit reached: skip cannot exceed 25000. Narrow the search query with additional filters or date ranges instead of increasing skip.',
           {
@@ -163,12 +198,50 @@ export class OpenFdaService {
         );
       }
       throw validationError(
-        `openFDA query error: ${errorMessage}. Check field names and query syntax — use AND/OR for boolean operators, quotes for exact match.`,
+        `openFDA query error: ${message}. Check field names and query syntax — use AND/OR for boolean operators, quotes for exact match.`,
         { reason: 'query_error', endpoint, ...ctx.recoveryFor('query_error') },
       );
     }
 
-    throw new Error(`openFDA returned HTTP ${response.status}: ${errorMessage}`);
+    if (status >= 500) {
+      // openFDA reports deterministic, user-fixable query failures (malformed
+      // syntax, aggregation on a non-keyword field) as HTTP 5xx. Reclassify those
+      // as non-retryable query errors; genuine outages stay retryable.
+      if (OPENFDA_QUERY_ERROR_5XX.test(body)) {
+        throw validationError(
+          `openFDA query error: ${message}. Check field names and query syntax — use AND/OR for boolean operators, quotes for exact match.`,
+          { reason: 'query_error', endpoint, ...ctx.recoveryFor('query_error') },
+        );
+      }
+      throw serviceUnavailable(`openFDA upstream error: ${message}`, {
+        reason: 'upstream_error',
+        endpoint,
+        status,
+        ...ctx.recoveryFor('upstream_error'),
+      });
+    }
+
+    // Unexpected HTTP status (e.g. 418) — fetchWithTimeout already produced a typed
+    // McpError; propagate it unchanged rather than inventing a classification.
+    throw error;
+  }
+
+  /**
+   * Best-effort human-readable message from an openFDA error body. Prefers the
+   * specific `error.details` (e.g. the parser location or the "use a keyword
+   * field" hint) then `error.message`, falling back to the raw (possibly
+   * truncated) body or the bare HTTP status.
+   */
+  private upstreamMessage(body: string, status: number): string {
+    if (!body) return `HTTP ${status}`;
+    try {
+      const parsed = JSON.parse(body) as { error?: { message?: string; details?: string } };
+      const detail = parsed.error?.details ?? parsed.error?.message;
+      if (detail) return detail;
+    } catch {
+      // Truncated or non-JSON body — fall through to the raw text.
+    }
+    return body;
   }
 }
 

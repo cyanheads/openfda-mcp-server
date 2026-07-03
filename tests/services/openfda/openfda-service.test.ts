@@ -3,9 +3,14 @@ import { McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@cyanheads/mcp-ts-core/utils', () => ({
-  withRetry: vi.fn((fn: () => Promise<unknown>) => fn()),
-}));
+// Keep the real `fetchWithTimeout` so classification runs against the actual
+// helper (it throws the status-mapped McpError the service reclassifies); only
+// collapse `withRetry` to a single attempt so a reclassified error surfaces
+// directly instead of retrying against the stubbed fetch.
+vi.mock('@cyanheads/mcp-ts-core/utils', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@cyanheads/mcp-ts-core/utils')>();
+  return { ...actual, withRetry: vi.fn((fn: () => Promise<unknown>) => fn()) };
+});
 
 import { OpenFdaService } from '@/services/openfda/openfda-service.js';
 
@@ -25,12 +30,19 @@ describe('OpenFdaService', () => {
     vi.unstubAllGlobals();
   });
 
+  // `fetchWithTimeout` reads `.text()` + `.headers` on the error path while the
+  // service's success path reads `.json()`. Return a re-readable fake (not a real
+  // single-use Response) so one stub value can back tests that call query twice.
   function mockResponse(status: number, body: unknown): Response {
+    const text = typeof body === 'string' ? body : JSON.stringify(body);
     return {
       ok: status >= 200 && status < 300,
       status,
-      json: () => Promise.resolve(body),
-    } as Response;
+      statusText: '',
+      headers: new Headers(),
+      text: () => Promise.resolve(text),
+      json: () => Promise.resolve(typeof body === 'string' ? JSON.parse(body) : body),
+    } as unknown as Response;
   }
 
   describe('query', () => {
@@ -222,10 +234,106 @@ describe('OpenFdaService', () => {
       expect(TRANSIENT_CODES.has(err403.code)).toBe(false);
     });
 
-    it('throws generic Error on unexpected status', async () => {
+    it('throws a typed McpError on an unexpected status', async () => {
       mockFetch.mockResolvedValue(mockResponse(418, { error: { message: "I'm a teapot" } }));
 
-      await expect(service.query('drug/event', {}, ctx)).rejects.toThrow(/HTTP 418/);
+      const err = await service.query('drug/event', {}, ctx).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(McpError);
+      expect((err as McpError).message).toMatch(/418/);
+    });
+  });
+
+  describe('5xx query-error reclassification (#14)', () => {
+    // withRetry retries only ServiceUnavailable(-32000), RateLimited(-32003), and
+    // Timeout(-32004). A reclassified query_error (ValidationError -32007) is
+    // outside that set, so it fails fast instead of retrying a deterministic
+    // upstream parse failure.
+    const TRANSIENT_CODES = new Set([-32000, -32003, -32004]);
+
+    // Verbatim openFDA 500 body for a malformed search (unbalanced quote).
+    const PARSER_500 = JSON.stringify({
+      error: {
+        code: 'SERVER_ERROR',
+        message: 'Check your request and try again',
+        details:
+          '[token_mgr_error] token_mgr_error: Lexical error at line 1, column 39.  Encountered: <EOF> after : "\\"aspirin"',
+      },
+    });
+    // Verbatim openFDA 500 body for a count on a non-keyword text field.
+    const AGGREGATION_500 = JSON.stringify({
+      error: {
+        code: 'SERVER_ERROR',
+        message: 'Check your request and try again',
+        details:
+          '[illegal_argument_exception] Text fields are not optimised for operations that require per-document field data like aggregations and sorting, so these operations are disabled by default. Please use a keyword field instead.',
+      },
+    });
+
+    it('reclassifies a malformed-search 500 as a non-retryable query_error', async () => {
+      mockFetch.mockResolvedValue(mockResponse(500, PARSER_500));
+
+      const err = (await service
+        .query('drug/event', { search: 'patient.drug.medicinalproduct:"aspirin' }, ctx)
+        .catch((e: unknown) => e)) as McpError;
+
+      expect(err).toBeInstanceOf(McpError);
+      expect(err.data).toMatchObject({ reason: 'query_error' });
+      expect(err.code).toBe(-32007); // ValidationError
+      expect(TRANSIENT_CODES.has(err.code)).toBe(false);
+      expect(err.message).toMatch(/lexical error/i); // parser detail preserved
+    });
+
+    it('reclassifies a count-on-non-keyword 500 as a non-retryable query_error (count_values case)', async () => {
+      mockFetch.mockResolvedValue(mockResponse(500, AGGREGATION_500));
+
+      const err = (await service
+        .query('device/classification', { count: 'device_class' }, ctx)
+        .catch((e: unknown) => e)) as McpError;
+
+      expect(err.data).toMatchObject({ reason: 'query_error' });
+      expect(err.code).toBe(-32007);
+      expect(TRANSIENT_CODES.has(err.code)).toBe(false);
+      expect(err.message).toMatch(/keyword field/i); // openFDA's fix hint preserved
+    });
+
+    it('leaves a marker-free 500 as a retryable upstream_error', async () => {
+      mockFetch.mockResolvedValue(
+        mockResponse(500, { error: { message: 'Internal server error' } }),
+      );
+
+      const err = (await service.query('drug/event', {}, ctx).catch((e: unknown) => e)) as McpError;
+
+      expect(err.data).toMatchObject({ reason: 'upstream_error' });
+      expect(err.code).toBe(-32000); // ServiceUnavailable
+      expect(TRANSIENT_CODES.has(err.code)).toBe(true);
+    });
+
+    it('leaves a generic-message 500 with no specific marker as a retryable upstream_error', async () => {
+      // openFDA's generic SERVER_ERROR wrapper carries "Check your request and try again"
+      // on every application-level failure, including transient ES conditions. Without a
+      // specific Lucene/ES exception marker it is indistinguishable from a recoverable
+      // outage, so it must stay retryable rather than pinning as a query_error.
+      mockFetch.mockResolvedValue(
+        mockResponse(500, {
+          error: { code: 'SERVER_ERROR', message: 'Check your request and try again' },
+        }),
+      );
+
+      const err = (await service.query('drug/event', {}, ctx).catch((e: unknown) => e)) as McpError;
+
+      expect(err.data).toMatchObject({ reason: 'upstream_error' });
+      expect(err.code).toBe(-32000); // ServiceUnavailable
+      expect(TRANSIENT_CODES.has(err.code)).toBe(true);
+    });
+
+    it('leaves a gateway 502 with no openFDA error body as a retryable upstream_error', async () => {
+      mockFetch.mockResolvedValue(mockResponse(502, '<html>502 Bad Gateway</html>'));
+
+      const err = (await service.query('drug/event', {}, ctx).catch((e: unknown) => e)) as McpError;
+
+      expect(err.data).toMatchObject({ reason: 'upstream_error' });
+      expect(err.code).toBe(-32000);
+      expect(TRANSIENT_CODES.has(err.code)).toBe(true);
     });
   });
 });
