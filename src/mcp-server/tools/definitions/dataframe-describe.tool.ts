@@ -58,6 +58,13 @@ export const dataframeDescribeTool = tool('openfda_dataframe_describe', {
   }),
   errors: [
     {
+      reason: 'canvas_disabled',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'DataCanvas is disabled — CANVAS_PROVIDER_TYPE is unset.',
+      recovery:
+        'Set CANVAS_PROVIDER_TYPE=duckdb to enable DataCanvas SQL, or use an openFDA search tool directly (its inline results need no canvas).',
+    },
+    {
       reason: 'canvas_not_found',
       code: JsonRpcErrorCode.NotFound,
       when: 'The canvas_id does not correspond to an active canvas session.',
@@ -69,8 +76,10 @@ export const dataframeDescribeTool = tool('openfda_dataframe_describe', {
   async handler(input, ctx) {
     const canvas = getCanvas();
     if (!canvas) {
-      throw new Error(
+      throw ctx.fail(
+        'canvas_disabled',
         'DataCanvas is not enabled. Set CANVAS_PROVIDER_TYPE=duckdb to use openfda_dataframe_describe.',
+        { ...ctx.recoveryFor('canvas_disabled') },
       );
     }
 

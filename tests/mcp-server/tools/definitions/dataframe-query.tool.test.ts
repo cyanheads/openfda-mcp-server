@@ -3,6 +3,7 @@
  * @module tests/mcp-server/tools/definitions/dataframe-query.tool.test
  */
 
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { dataframeQueryTool } from '@/mcp-server/tools/definitions/dataframe-query.tool.js';
@@ -52,12 +53,16 @@ describe('openfda_dataframe_query', () => {
     expect(result.rows[0]).toMatchObject({ classification: 'Class I' });
   });
 
-  it('throws when canvas is not enabled', async () => {
+  it('throws a typed canvas_disabled error (not -32603) when canvas is not enabled', async () => {
     await setCanvasMock(undefined);
     const ctx = createMockContext({ errors: dataframeQueryTool.errors });
     const input = dataframeQueryTool.input.parse({ canvas_id: 'cv_abc123', query: 'SELECT 1' });
-    await expect(dataframeQueryTool.handler(input, ctx)).rejects.toThrow(
-      'DataCanvas is not enabled',
+    const err = (await dataframeQueryTool.handler(input, ctx).catch((e) => e)) as McpError;
+    expect(err).toBeInstanceOf(McpError);
+    expect(err.code).toBe(JsonRpcErrorCode.ValidationError); // typed, not InternalError (-32603)
+    expect(err.data).toMatchObject({ reason: 'canvas_disabled' });
+    expect((err.data as { recovery?: { hint?: string } }).recovery?.hint).toContain(
+      'CANVAS_PROVIDER_TYPE',
     );
   });
 
