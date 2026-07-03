@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.3.3](changelog/0.3.x/0.3.3.md) — 2026-07-03 · 🛡️ Security
+
+Reclassifies openFDA 5xx query errors as non-retryable, types the disabled-DataCanvas error, fixes canvas-spill preview limit/skip, adopts fetchWithTimeout, and clears 8 security advisories via bundled dependency bumps
+
 ## [0.3.2](changelog/0.3.x/0.3.2.md) — 2026-06-20
 
 @cyanheads/mcp-ts-core ^0.10.6 → ^0.10.9; new check-dependency-specifiers devcheck step + plugin-manifest packaging checks; fresh-scaffold devcheck guards; re-synced framework scripts and skills
