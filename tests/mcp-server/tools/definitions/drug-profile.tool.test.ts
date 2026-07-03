@@ -243,4 +243,75 @@ describe('openfda_drug_profile', () => {
     expect(text).toContain('Drug profile: mystery');
     expect(text).toContain('fan-out key: mystery');
   });
+
+  // Issue #19 — Rx labels carry safety text in boxed_warning / warnings_and_cautions,
+  // not the OTC-monograph `warnings` field. The label.warnings mapping falls back
+  // through those sections so major Rx drugs stop returning warnings: null.
+  const labelOnly = (rec: Record<string, unknown>) => async (endpoint: string) =>
+    endpoint === 'drug/label'
+      ? { meta: meta({ total: 1 }), results: [rec] }
+      : { meta: meta(), results: [] };
+
+  it('populates label.warnings from boxed_warning, which wins over other sections (#19)', async () => {
+    mockQuery.mockImplementation(
+      labelOnly({
+        set_id: 'spl-metformin',
+        openfda: { generic_name: ['metformin hydrochloride'], brand_name: ['Glucophage'] },
+        indications_and_usage: ['Improve glycemic control.'],
+        boxed_warning: ['WARNING: LACTIC ACIDOSIS. Postmarketing cases reported.'],
+        warnings_and_cautions: ['Monitor renal function.'],
+        warnings: ['Generic OTC warning text.'],
+        dosage_and_administration: ['Start 500 mg twice daily.'],
+      }),
+    );
+
+    const result = await drugProfileTool.handler({ drug: 'metformin' }, ctx);
+
+    expect(result.label?.warnings).toContain('LACTIC ACIDOSIS');
+    expect(result.label?.warnings).not.toContain('OTC warning');
+    expect(result.label?.indications).toContain('glycemic');
+    expect(result.label?.dosage).toContain('500 mg');
+  });
+
+  it('falls back to warnings_and_cautions when the label has no boxed_warning (#19)', async () => {
+    mockQuery.mockImplementation(
+      labelOnly({
+        openfda: { generic_name: ['adalimumab'], brand_name: ['Humira'] },
+        warnings_and_cautions: ['Serious infections leading to hospitalization.'],
+        // no boxed_warning, no `warnings`
+      }),
+    );
+
+    const result = await drugProfileTool.handler({ drug: 'Humira' }, ctx);
+
+    expect(result.label?.warnings).toContain('Serious infections');
+  });
+
+  it('still surfaces the OTC-monograph warnings section when it is all the label has (#19)', async () => {
+    mockQuery.mockImplementation(
+      labelOnly({
+        openfda: { generic_name: ['ibuprofen'], brand_name: ['Advil'] },
+        warnings: ['Stomach bleeding warning.'],
+        // no boxed_warning, no warnings_and_cautions (OTC monograph shape)
+      }),
+    );
+
+    const result = await drugProfileTool.handler({ drug: 'ibuprofen' }, ctx);
+
+    expect(result.label?.warnings).toContain('Stomach bleeding');
+  });
+
+  it('leaves warnings null when the label carries no warning section at all (#19)', async () => {
+    mockQuery.mockImplementation(
+      labelOnly({
+        openfda: { generic_name: ['placebo'], brand_name: ['Placebo'] },
+        indications_and_usage: ['No active ingredient.'],
+      }),
+    );
+
+    const result = await drugProfileTool.handler({ drug: 'placebo' }, ctx);
+
+    expect(result.label?.warnings).toBeNull();
+    expect(result.label?.indications).toContain('No active');
+  });
 });

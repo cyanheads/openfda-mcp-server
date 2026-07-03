@@ -210,7 +210,12 @@ export const drugProfileTool = tool('openfda_drug_profile', {
     label: z
       .object({
         indications: z.string().nullable().describe('Indications and usage (truncated).'),
-        warnings: z.string().nullable().describe('Warnings (truncated).'),
+        warnings: z
+          .string()
+          .nullable()
+          .describe(
+            'Warnings (truncated) — boxed warning or warnings_and_cautions for Rx labels, falling back to the OTC-monograph warnings section.',
+          ),
         dosage: z.string().nullable().describe('Dosage and administration (truncated).'),
       })
       .nullable()
@@ -391,7 +396,12 @@ export const drugProfileTool = tool('openfda_drug_profile', {
     const label = labelRecord
       ? {
           indications: section(labelRecord.indications_and_usage),
-          warnings: section(labelRecord.warnings),
+          // Rx SPL labels carry safety text in boxed_warning / warnings_and_cautions;
+          // the bare `warnings` field is the OTC-monograph section and is null for
+          // most prescription drugs. Fall back through the Rx sections first.
+          warnings: section(
+            labelRecord.boxed_warning ?? labelRecord.warnings_and_cautions ?? labelRecord.warnings,
+          ),
           dosage: section(labelRecord.dosage_and_administration),
         }
       : null;
