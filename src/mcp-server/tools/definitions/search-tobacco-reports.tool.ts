@@ -139,6 +139,8 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
         sort: input.sort,
         canvasId: input.canvas_id,
         schema: TOBACCO_REPORTS_CANVAS_SCHEMA,
+        limit: input.limit,
+        skip: input.skip,
         ctx,
       });
       ctx.enrich({ totalResults: spill.total });

@@ -160,4 +160,54 @@ describe('spillSearch', () => {
     expect(result.preview).toHaveLength(3);
     expect(instance.registerTable).not.toHaveBeenCalled();
   });
+
+  it('caps the inline preview at the caller limit while staging the full set (#18)', async () => {
+    const svc = makeSvc(2500);
+    await setSvcMock(svc);
+    const { canvas } = makeCanvas();
+    await setCanvasMock(canvas);
+
+    const ctx = createMockContext();
+    // The default char budget fits far more than 3 rows — limit must bind.
+    const result = await spillSearch({ endpoint: 'drug/event', schema: SCHEMA, ctx, limit: 3 });
+
+    expect(result.spilled).toBe(true);
+    expect(result.preview).toHaveLength(3); // inline capped at limit
+    expect(result.skip).toBe(0);
+    expect(result.total).toBe(2500); // full matched set still staged on the canvas
+  });
+
+  it('honors skip as the inline preview window offset (#18)', async () => {
+    const svc = makeSvc(2500);
+    await setSvcMock(svc);
+    const { canvas } = makeCanvas();
+    await setCanvasMock(canvas);
+
+    const ctx = createMockContext();
+    const result = await spillSearch({
+      endpoint: 'drug/event',
+      schema: SCHEMA,
+      ctx,
+      limit: 3,
+      skip: 5,
+    });
+
+    expect(result.skip).toBe(5);
+    expect(result.preview).toHaveLength(3);
+    expect(result.preview.map((r) => r.id)).toEqual(['r5', 'r6', 'r7']);
+  });
+
+  it('keeps the full budget-fit preview when no limit is given', async () => {
+    const svc = makeSvc(2500);
+    await setSvcMock(svc);
+    const { canvas } = makeCanvas();
+    await setCanvasMock(canvas);
+
+    const ctx = createMockContext();
+    const capped = await spillSearch({ endpoint: 'drug/event', schema: SCHEMA, ctx, limit: 3 });
+    const uncapped = await spillSearch({ endpoint: 'drug/event', schema: SCHEMA, ctx });
+
+    // Undefined limit preserves the budget-fit preview — larger than the capped one.
+    expect(uncapped.preview.length).toBeGreaterThan(capped.preview.length);
+  });
 });

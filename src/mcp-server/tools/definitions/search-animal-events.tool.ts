@@ -142,6 +142,8 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
         sort: input.sort,
         canvasId: input.canvas_id,
         schema: ANIMAL_EVENTS_CANVAS_SCHEMA,
+        limit: input.limit,
+        skip: input.skip,
         ctx,
       });
       ctx.enrich({ totalResults: spill.total });

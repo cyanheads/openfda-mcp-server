@@ -144,6 +144,8 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
         sort: input.sort,
         canvasId: input.canvas_id,
         schema: NDC_CANVAS_SCHEMA,
+        limit: input.limit,
+        skip: input.skip,
         ctx,
       });
       ctx.enrich({ totalResults: spill.total, effectiveQuery: input.search });

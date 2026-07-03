@@ -116,6 +116,23 @@ describe('openfda_search_recalls — canvas spillover', () => {
     expect(enrichment.notice).toContain('openfda_dataframe_query');
   });
 
+  it('bounds the inline preview to the caller limit; meta.limit is the inline count (#18)', async () => {
+    await setSvcMock(makeSvc(2500));
+    const ctx = createMockContext({ errors: searchRecallsTool.errors });
+    const input = searchRecallsTool.input.parse({
+      category: 'drug',
+      search: 'classification:"Class I"',
+      limit: 3,
+    });
+    const result = await searchRecallsTool.handler(input, ctx);
+
+    expect(result.spilled).toBe(true);
+    expect(result.meta.total).toBe(2500); // full set staged on the canvas
+    expect(result.results).toHaveLength(3); // inline capped at limit, not the char budget
+    expect(result.meta.limit).toBe(3); // meta.limit reflects the inline count
+    expect(result.meta.limit).toBe(result.results.length);
+  });
+
   it('still resolves the endpoint and enforces the recall/device guard', async () => {
     await setSvcMock(makeSvc(5));
     const ctx = createMockContext({ errors: searchRecallsTool.errors });

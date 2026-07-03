@@ -58,8 +58,10 @@ export interface OpenFdaSpillResult {
   canvasId: string;
   /** Dataset `last_updated` date from upstream metadata. */
   lastUpdated: string;
-  /** Inline preview rows — raw records, identical in shape to the non-canvas path. */
+  /** Inline preview rows — raw records, identical in shape to the non-canvas path, bounded by the caller's limit/skip. */
   preview: Record<string, unknown>[];
+  /** Pagination offset applied to the inline preview window (the full set is staged regardless). */
+  skip: number;
   /** True when the full result set was staged on the canvas. */
   spilled: boolean;
   /** Canvas table holding the staged rows; empty string when the result fit inline. */
@@ -78,6 +80,10 @@ export interface OpenFdaSpillResult {
  * as NULL, fields outside the schema are ignored, and nested objects/arrays are
  * stored as JSON columns (queryable with DuckDB's json functions). Caller must
  * confirm `getCanvas()` is defined before invoking.
+ *
+ * The full matched set is always staged on the canvas; `limit`/`skip` bound only
+ * the inline preview window (`preview.slice(skip, skip + limit)`), so an agent can
+ * cap its inline context while the complete result stays queryable via SQL.
  */
 export async function spillSearch(opts: {
   endpoint: string;
@@ -87,6 +93,10 @@ export async function spillSearch(opts: {
   schema: ColumnSchema[];
   ctx: Context;
   previewChars?: number | undefined;
+  /** Upper bound on inline preview rows. Undefined keeps the full budget-fit preview. */
+  limit?: number | undefined;
+  /** Pagination offset into the inline preview window. Defaults to 0. */
+  skip?: number | undefined;
 }): Promise<OpenFdaSpillResult> {
   const { endpoint, search, sort, canvasId, schema, ctx } = opts;
   const canvas = getCanvas();
@@ -133,9 +143,18 @@ export async function spillSearch(opts: {
     signal: ctx.signal,
   });
 
+  // `stagedCount` reflects the full staged set — every matched row is on the
+  // canvas. `limit`/`skip` bound only the inline preview window below, never the
+  // staged data, so the truncation signal stays keyed to the complete result.
   const stagedCount = result.spilled ? result.handle.rowCount : result.previewRows.length;
+  const previewStart = opts.skip ?? 0;
+  const preview =
+    opts.limit === undefined
+      ? result.previewRows.slice(previewStart)
+      : result.previewRows.slice(previewStart, previewStart + opts.limit);
   return {
-    preview: result.previewRows,
+    preview,
+    skip: previewStart,
     total,
     lastUpdated,
     canvasId: instance.canvasId,
@@ -154,7 +173,7 @@ export function canvasResult(spill: OpenFdaSpillResult) {
   return {
     meta: {
       total: spill.total,
-      skip: 0,
+      skip: spill.skip,
       limit: spill.preview.length,
       lastUpdated: spill.lastUpdated,
     },

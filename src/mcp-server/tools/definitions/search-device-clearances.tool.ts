@@ -148,6 +148,8 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
         sort: input.sort,
         canvasId: input.canvas_id,
         schema: DEVICE_CLEARANCES_CANVAS_SCHEMA,
+        limit: input.limit,
+        skip: input.skip,
         ctx,
       });
       ctx.enrich({ totalResults: spill.total });

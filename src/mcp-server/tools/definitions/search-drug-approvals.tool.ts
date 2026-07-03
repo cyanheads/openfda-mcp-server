@@ -138,6 +138,8 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
         sort: input.sort,
         canvasId: input.canvas_id,
         schema: DRUG_APPROVALS_CANVAS_SCHEMA,
+        limit: input.limit,
+        skip: input.skip,
         ctx,
       });
       ctx.enrich({ totalResults: spill.total });

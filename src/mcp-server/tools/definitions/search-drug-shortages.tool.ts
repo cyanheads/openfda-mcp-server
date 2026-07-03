@@ -147,6 +147,8 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
         sort: input.sort,
         canvasId: input.canvas_id,
         schema: DRUG_SHORTAGES_CANVAS_SCHEMA,
+        limit: input.limit,
+        skip: input.skip,
         ctx,
       });
       ctx.enrich({ totalResults: spill.total });

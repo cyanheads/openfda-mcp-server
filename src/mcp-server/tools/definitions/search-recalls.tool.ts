@@ -175,6 +175,8 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
         sort: input.sort,
         canvasId: input.canvas_id,
         schema: RECALLS_CANVAS_SCHEMA,
+        limit: input.limit,
+        skip: input.skip,
         ctx,
       });
       ctx.enrich({ totalResults: spill.total });

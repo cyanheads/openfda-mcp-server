@@ -174,6 +174,8 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
         sort: input.sort,
         canvasId: input.canvas_id,
         schema: ADVERSE_EVENT_SCHEMAS[input.category],
+        limit: input.limit,
+        skip: input.skip,
         ctx,
       });
       ctx.enrich({ totalResults: spill.total });
