@@ -4,15 +4,17 @@
 # This stage installs all dependencies (including dev), builds the TypeScript
 # source code into JavaScript, and prepares the production assets.
 # ==============================================================================
-FROM oven/bun:1.3 AS build
+FROM oven/bun:1.3.14 AS build
 
 WORKDIR /usr/src/app
 
 # Copy dependency manifests for optimized layer caching
 COPY package.json bun.lock ./
 
-# Install all dependencies (including dev dependencies for building)
-RUN bun install --frozen-lockfile
+# Install all dependencies (including dev). --ignore-scripts skips lifecycle
+# scripts (native postinstalls); the build only runs tsc, and @duckdb/node-api
+# ships its native binary via prebuilt platform packages, not a postinstall.
+RUN bun install --frozen-lockfile --ignore-scripts
 
 # Copy the rest of the source code
 COPY . .
@@ -28,7 +30,7 @@ RUN bun run build
 # application. It uses a slim base image and only includes production
 # dependencies and build artifacts.
 # ==============================================================================
-FROM oven/bun:1.3-slim AS production
+FROM oven/bun:1.3.14-slim AS production
 
 WORKDIR /usr/src/app
 
