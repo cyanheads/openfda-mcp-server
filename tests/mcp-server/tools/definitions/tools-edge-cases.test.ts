@@ -628,7 +628,7 @@ describe('openfda_search_device_clearances (edge cases)', () => {
     expect(text).toContain('This device is intended');
   });
 
-  it('format truncates long statement_or_summary to 500 chars', () => {
+  it('format renders long statement_or_summary in full (no truncation)', () => {
     const long = 'x'.repeat(600);
     const content = searchDeviceClearancesTool.format({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
@@ -644,8 +644,9 @@ describe('openfda_search_device_clearances (edge cases)', () => {
     });
 
     const text = content[0].text;
-    expect(text).toContain('...');
-    expect(text.length).toBeLessThan(long.length + 200);
+    // Full 600-char summary present — previously capped at 500 with an ellipsis.
+    expect(text).toContain(long);
+    expect(text).not.toContain('...');
   });
 
   it('format handles PMA record with trade_name and generic_name', () => {

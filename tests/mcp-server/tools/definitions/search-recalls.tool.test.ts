@@ -112,4 +112,30 @@ describe('openfda_search_recalls', () => {
     expect(text).toContain('Acme Corp');
     expect(text).toContain('Contamination');
   });
+
+  it('renders full product_description and reason_for_recall — parity with structuredContent (no truncation)', () => {
+    const reason = `Class I recall. ${'Detailed contamination finding. '.repeat(20)}`;
+    const product = `Product monograph. ${'Formulation detail. '.repeat(20)}`;
+    const structured = {
+      meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
+      results: [
+        {
+          recall_number: 'R-LONG',
+          classification: 'Class I',
+          recalling_firm: 'Acme Corp',
+          product_description: product,
+          reason_for_recall: reason,
+          status: 'Ongoing',
+        },
+      ],
+    };
+
+    const text = searchRecallsTool.format(structured)[0].text;
+    // content[] carries the identical full field values that structuredContent exposes.
+    expect(text).toContain(structured.results[0].reason_for_recall);
+    expect(text).toContain(structured.results[0].product_description);
+    expect(reason.length).toBeGreaterThan(300);
+    expect(product.length).toBeGreaterThan(300);
+    expect(text).not.toContain('...');
+  });
 });

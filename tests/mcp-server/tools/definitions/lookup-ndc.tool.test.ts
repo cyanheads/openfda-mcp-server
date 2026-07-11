@@ -83,7 +83,7 @@ describe('openfda_lookup_ndc', () => {
     expect(text).toContain('100 TABLET');
   });
 
-  it('caps packaging at 5 items in format', () => {
+  it('renders every packaging entry in format — parity with structuredContent (no cap)', () => {
     const packaging = Array.from({ length: 8 }, (_, i) => ({
       package_ndc: `0000-0000-0${i}`,
       description: `Package ${i}`,
@@ -95,6 +95,11 @@ describe('openfda_lookup_ndc', () => {
     });
 
     const text = content[0].text;
-    expect(text).toContain('... and 3 more');
+    // All 8 packaging entries render — entries 6–8 were previously capped at slice(0, 5).
+    for (const p of packaging) {
+      expect(text).toContain(p.package_ndc);
+      expect(text).toContain(p.description);
+    }
+    expect(text).not.toContain('...');
   });
 });

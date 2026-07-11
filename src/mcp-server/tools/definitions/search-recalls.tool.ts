@@ -7,11 +7,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import type { ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
-import {
-  emptyResultMessage,
-  formatRemainingFields,
-  truncate,
-} from '@/mcp-server/tools/format-utils.js';
+import { emptyResultMessage, formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import { canvasOutputShape, canvasResult, spillSearch } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
@@ -244,8 +240,8 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       const lines = [
         `**Recall #${r.recall_number ?? 'N/A'}** — ${r.classification ?? 'Unclassified'}`,
         `Firm: ${r.recalling_firm ?? 'N/A'}`,
-        `Product: ${truncate(r.product_description as string | undefined, 300)}`,
-        `Reason: ${truncate(r.reason_for_recall as string | undefined, 300)}`,
+        `Product: ${(r.product_description as string | undefined) || 'N/A'}`,
+        `Reason: ${(r.reason_for_recall as string | undefined) || 'N/A'}`,
         `Status: ${r.status ?? 'N/A'} | ${r.voluntary_mandated ?? 'N/A'}`,
       ];
       if (r.distribution_pattern) {

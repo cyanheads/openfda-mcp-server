@@ -93,6 +93,26 @@ describe('openfda_search_adverse_events (edge cases)', () => {
       expect(text).toContain('Device malfunctioned');
     });
 
+    it('renders full device mdr_text narrative — parity with structuredContent (no truncation)', () => {
+      const narrative = `Device event narrative. ${'Detailed procedural step. '.repeat(30)}`;
+      const content = searchAdverseEventsTool.format({
+        meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
+        results: [
+          {
+            report_number: 'MDR-LONG',
+            device: [{ brand_name: 'InfusionPump' }],
+            mdr_text: [{ text_type_code: 'N', text: narrative }],
+          },
+        ],
+      });
+
+      const text = content[0].text;
+      // Full narrative present — previously capped at 500 chars with an ellipsis.
+      expect(text).toContain(narrative);
+      expect(narrative.length).toBeGreaterThan(500);
+      expect(text).not.toContain('...');
+    });
+
     it('formats food adverse event records', () => {
       const content = searchAdverseEventsTool.format({
         meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },

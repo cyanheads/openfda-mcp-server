@@ -7,11 +7,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import type { ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
-import {
-  emptyResultMessage,
-  formatRemainingFields,
-  truncate,
-} from '@/mcp-server/tools/format-utils.js';
+import { emptyResultMessage, formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import { canvasOutputShape, canvasResult, spillSearch } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
@@ -232,13 +228,12 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       lines.push(`### ${name}`);
       lines.push(`**Status:** ${status}`);
 
-      if (r.availability)
-        lines.push(`**Availability:** ${truncate(r.availability as string, 400)}`);
+      if (r.availability) lines.push(`**Availability:** ${r.availability as string}`);
       if (r.therapeutic_category) lines.push(`**Therapeutic category:** ${r.therapeutic_category}`);
       if (r.dosage_form) lines.push(`**Dosage form:** ${r.dosage_form}`);
       if (r.presentation) lines.push(`**Presentation:** ${r.presentation}`);
       if (r.company_name) lines.push(`**Manufacturer:** ${r.company_name}`);
-      if (r.contact_info) lines.push(`**Contact:** ${truncate(r.contact_info as string, 200)}`);
+      if (r.contact_info) lines.push(`**Contact:** ${r.contact_info as string}`);
 
       const dates = [
         r.initial_posting_date ? `first posted ${r.initial_posting_date}` : null,

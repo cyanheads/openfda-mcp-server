@@ -137,13 +137,12 @@ describe('formatRemainingFields', () => {
     expect(lines[0]).toContain('state=WA');
   });
 
-  it('truncates long values to maxLen', () => {
+  it('renders long values in full without truncation', () => {
     const longValue = 'x'.repeat(500);
     const record = { description: longValue };
-    const lines = formatRemainingFields(record, new Set(), 100);
-    expect(lines[0]).toContain('...');
-    // "**Description:** " (17 chars) + 100 chars + "..." (3 chars) = 120 chars max
-    expect(lines[0].length).toBeLessThanOrEqual(120);
+    const lines = formatRemainingFields(record, new Set());
+    expect(lines[0]).toBe(`**Description:** ${longValue}`);
+    expect(lines[0]).not.toContain('...');
   });
 
   it('returns empty array for empty record', () => {

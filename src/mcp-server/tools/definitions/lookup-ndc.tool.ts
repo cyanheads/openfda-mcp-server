@@ -234,10 +234,9 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
       const packaging = r.packaging ?? [];
       if (packaging.length > 0) {
         lines.push(`**Packaging:**`);
-        for (const p of packaging.slice(0, 5)) {
+        for (const p of packaging) {
           lines.push(`- ${p.package_ndc ?? ''}: ${p.description ?? 'N/A'}`);
         }
-        if (packaging.length > 5) lines.push(`- ... and ${packaging.length - 5} more`);
       }
 
       if (r.listing_expiration_date)

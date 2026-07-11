@@ -252,8 +252,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
           lines.push(`**Advisory committee:** ${r.advisory_committee_description}`);
         if (r.clearance_type) lines.push(`**Clearance type:** ${r.clearance_type}`);
         if (r.statement_or_summary) {
-          const text = String(r.statement_or_summary);
-          lines.push(`**Summary:** ${text.length > 500 ? `${text.slice(0, 500)}...` : text}`);
+          lines.push(`**Summary:** ${String(r.statement_or_summary)}`);
         }
         lines.push(...formatRemainingFields(r, rendered510k));
       }
@@ -275,7 +274,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       // Fallback
       else {
         lines.push(`### Record`);
-        lines.push(`\`\`\`json\n${JSON.stringify(r, null, 2).slice(0, 500)}\n\`\`\``);
+        lines.push(`\`\`\`json\n${JSON.stringify(r, null, 2)}\n\`\`\``);
       }
       lines.push('');
     }

@@ -261,7 +261,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       const submissions = r.submissions ?? [];
       if (submissions.length > 0) {
         lines.push('**Submissions:**');
-        for (const s of submissions.slice(0, 10)) {
+        for (const s of submissions) {
           const parts = [
             s.submission_type,
             s.submission_number ? `#${s.submission_number}` : null,
@@ -271,7 +271,6 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
           ].filter(Boolean);
           lines.push(`- ${parts.join(' | ')}`);
         }
-        if (submissions.length > 10) lines.push(`- ... and ${submissions.length - 10} more`);
       }
 
       lines.push(...formatRemainingFields(r, rendered));

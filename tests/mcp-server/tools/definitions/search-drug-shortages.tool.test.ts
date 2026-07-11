@@ -223,4 +223,21 @@ describe('openfda_search_drug_shortages', () => {
     const text = content[0].text;
     expect(text).toContain('NDC: 1234-5678');
   });
+
+  it('renders full availability and contact_info — parity with structuredContent (no truncation)', () => {
+    const availability = `Availability note. ${'Supply detail. '.repeat(40)}`;
+    const contact = `Contact info. ${'Reach the manufacturer. '.repeat(15)}`;
+    const content = searchDrugShortagesTool.format({
+      meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
+      results: [{ generic_name: 'Drug Z', status: 'Current', availability, contact_info: contact }],
+    });
+
+    const text = content[0].text;
+    // Full values present — availability was capped at 400, contact_info at 200.
+    expect(text).toContain(availability);
+    expect(text).toContain(contact);
+    expect(availability.length).toBeGreaterThan(400);
+    expect(contact.length).toBeGreaterThan(200);
+    expect(text).not.toContain('...');
+  });
 });

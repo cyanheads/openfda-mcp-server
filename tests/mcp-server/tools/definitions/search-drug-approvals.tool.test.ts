@@ -96,7 +96,7 @@ describe('openfda_search_drug_approvals', () => {
     expect(text).toContain('ORIG');
   });
 
-  it('caps submissions at 10 in format', () => {
+  it('renders every submission in format — parity with structuredContent (no cap)', () => {
     const submissions = Array.from({ length: 15 }, (_, i) => ({
       submission_type: 'SUPPL',
       submission_number: String(i + 1),
@@ -109,6 +109,10 @@ describe('openfda_search_drug_approvals', () => {
     });
 
     const text = content[0].text;
-    expect(text).toContain('... and 5 more');
+    // All 15 submissions render — entries 11–15 were previously capped at slice(0, 10).
+    const submissionLines = text.split('\n').filter((l) => l.startsWith('- SUPPL'));
+    expect(submissionLines).toHaveLength(15);
+    expect(text).toContain('#15');
+    expect(text).not.toContain('...');
   });
 });

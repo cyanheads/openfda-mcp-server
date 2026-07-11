@@ -18,16 +18,16 @@ function isPrimitive(value: unknown): value is string | number | boolean {
   return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
 }
 
-function renderValue(value: unknown, maxLen: number): string | null {
+function renderValue(value: unknown): string | null {
   if (value == null || value === '') return null;
-  if (isPrimitive(value)) return truncate(String(value), maxLen);
+  if (isPrimitive(value)) return String(value);
   if (Array.isArray(value)) {
     if (value.length === 0) return null;
     if (value.every((v) => v == null || isPrimitive(v))) {
       const joined = value.filter((v) => v != null && v !== '').join(', ');
-      return joined ? truncate(joined, maxLen) : null;
+      return joined ? joined : null;
     }
-    return truncate(JSON.stringify(value), maxLen);
+    return JSON.stringify(value);
   }
   if (typeof value === 'object') {
     const entries = Object.entries(value as Record<string, unknown>);
@@ -43,7 +43,7 @@ function renderValue(value: unknown, maxLen: number): string | null {
         parts.push(`${k}=${JSON.stringify(v)}`);
       }
     }
-    return parts.length > 0 ? truncate(parts.join('; '), maxLen) : null;
+    return parts.length > 0 ? parts.join('; ') : null;
   }
   return null;
 }
@@ -57,12 +57,11 @@ function renderValue(value: unknown, maxLen: number): string | null {
 export function formatRemainingFields(
   record: Record<string, unknown>,
   rendered: ReadonlySet<string>,
-  maxLen = 300,
 ): string[] {
   const lines: string[] = [];
   for (const [key, value] of Object.entries(record)) {
     if (rendered.has(key)) continue;
-    const formatted = renderValue(value, maxLen);
+    const formatted = renderValue(value);
     if (formatted == null) continue;
     lines.push(`**${humanizeField(key)}:** ${formatted}`);
   }

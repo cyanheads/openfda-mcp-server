@@ -7,11 +7,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import type { ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
-import {
-  emptyResultMessage,
-  formatRemainingFields,
-  truncate,
-} from '@/mcp-server/tools/format-utils.js';
+import { emptyResultMessage, formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import { canvasOutputShape, canvasResult, spillSearch } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
@@ -318,7 +314,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
         for (const t of (r.mdr_text ?? []) as Record<string, unknown>[]) {
           if (!t.text) continue;
           const label = t.text_type_code ? `Narrative (${t.text_type_code})` : 'Narrative';
-          lines.push(`**${label}:** ${truncate(t.text as string, 500)}`);
+          lines.push(`**${label}:** ${t.text as string}`);
         }
 
         // Remaining top-level fields (date_of_event, source_type, patient, etc.)
@@ -364,7 +360,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       // Fallback — dump full record
       else {
         lines.push(`### Record`);
-        lines.push(`\`\`\`json\n${JSON.stringify(r, null, 2).slice(0, 1000)}\n\`\`\``);
+        lines.push(`\`\`\`json\n${JSON.stringify(r, null, 2)}\n\`\`\``);
       }
       lines.push('');
     }
