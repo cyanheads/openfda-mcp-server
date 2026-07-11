@@ -289,9 +289,9 @@ describe('openfda_search_drug_approvals input schema', () => {
 
   it('accepts valid search query', () => {
     const input = searchDrugApprovalsTool.input.parse({
-      search: 'sponsor_name:"pfizer"',
+      search: 'sponsor_name:"PFIZER"',
     });
-    expect(input.search).toBe('sponsor_name:"pfizer"');
+    expect(input.search).toBe('sponsor_name:"PFIZER"');
   });
 
   it('rejects out-of-range limit', () => {

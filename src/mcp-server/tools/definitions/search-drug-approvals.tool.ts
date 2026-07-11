@@ -38,7 +38,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       .string()
       .optional()
       .describe(
-        'openFDA search query. Examples: openfda.brand_name:"humira", sponsor_name:"pfizer", submissions.submission_type:"ORIG" AND submissions.review_priority:"PRIORITY". Omit to browse recent.',
+        'openFDA search query. Examples: openfda.brand_name:"humira", sponsor_name:"PFIZER", submissions.submission_type:"ORIG" AND submissions.review_priority:"PRIORITY". Exact quoted values can be case-sensitive on some fields — sponsor_name is stored uppercase, so use sponsor_name:"PFIZER" (a lowercase quoted value returns no matches). Omit to browse recent.',
       ),
     sort: z
       .string()

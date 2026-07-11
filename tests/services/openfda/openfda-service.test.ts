@@ -243,7 +243,7 @@ describe('OpenFdaService', () => {
     });
   });
 
-  describe('5xx query-error reclassification (#14)', () => {
+  describe('5xx query-error reclassification (#14, #23)', () => {
     // withRetry retries only ServiceUnavailable(-32000), RateLimited(-32003), and
     // Timeout(-32004). A reclassified query_error (ValidationError -32007) is
     // outside that set, so it fails fast instead of retrying a deterministic
@@ -266,6 +266,17 @@ describe('OpenFdaService', () => {
         message: 'Check your request and try again',
         details:
           '[illegal_argument_exception] Text fields are not optimised for operations that require per-document field data like aggregations and sorting, so these operations are disabled by default. Please use a keyword field instead.',
+      },
+    });
+    // Verbatim openFDA 500 body for a sort/filter on a field absent from the
+    // index mapping — e.g. receivedate:desc on the food/device event indices,
+    // which lack the field. Deterministic and user-fixable, never a real outage.
+    const SHARD_500 = JSON.stringify({
+      error: {
+        code: 'SERVER_ERROR',
+        message: 'Check your request and try again',
+        details:
+          '[query_shard_exception] No mapping found for [receivedate] in order to sort on, index="foodevent"',
       },
     });
 
@@ -294,6 +305,23 @@ describe('OpenFdaService', () => {
       expect(err.code).toBe(-32007);
       expect(TRANSIENT_CODES.has(err.code)).toBe(false);
       expect(err.message).toMatch(/keyword field/i); // openFDA's fix hint preserved
+    });
+
+    it('reclassifies an unmapped-sort 500 (query_shard_exception) as a non-retryable query_error', async () => {
+      // A food/device query sorted by receivedate (a drug-only field) returns
+      // HTTP 500 query_shard_exception. Without this marker it fell through to the
+      // generic 5xx branch and advised a retry that can never succeed (#23).
+      mockFetch.mockResolvedValue(mockResponse(500, SHARD_500));
+
+      const err = (await service
+        .query('food/event', { sort: 'receivedate:desc' }, ctx)
+        .catch((e: unknown) => e)) as McpError;
+
+      expect(err).toBeInstanceOf(McpError);
+      expect(err.data).toMatchObject({ reason: 'query_error' });
+      expect(err.code).toBe(-32007); // ValidationError
+      expect(TRANSIENT_CODES.has(err.code)).toBe(false);
+      expect(err.message).toMatch(/no mapping found for \[receivedate\]/i); // shard detail preserved
     });
 
     it('leaves a marker-free 500 as a retryable upstream_error', async () => {

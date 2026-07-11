@@ -26,7 +26,7 @@ describe('openfda_search_drug_approvals', () => {
       results: [{ application_number: 'NDA012345', sponsor_name: 'Pfizer' }],
     });
 
-    const result = await searchDrugApprovalsTool.handler({ search: 'sponsor_name:"pfizer"' }, ctx);
+    const result = await searchDrugApprovalsTool.handler({ search: 'sponsor_name:"PFIZER"' }, ctx);
 
     expect(mockQuery.mock.calls[0][0]).toBe('drug/drugsfda');
     expect(result.results[0].application_number).toBe('NDA012345');
@@ -38,7 +38,7 @@ describe('openfda_search_drug_approvals', () => {
       results: [{ application_number: 'NDA012345' }],
     });
 
-    await searchDrugApprovalsTool.handler({ search: 'sponsor_name:"pfizer"' }, ctx);
+    await searchDrugApprovalsTool.handler({ search: 'sponsor_name:"PFIZER"' }, ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.totalResults).toBe(15);
@@ -50,10 +50,10 @@ describe('openfda_search_drug_approvals', () => {
       results: [{ application_number: 'NDA012345' }],
     });
 
-    await searchDrugApprovalsTool.handler({ search: 'sponsor_name:"pfizer"' }, ctx);
+    await searchDrugApprovalsTool.handler({ search: 'sponsor_name:"PFIZER"' }, ctx);
 
     const enrichment = getEnrichment(ctx);
-    expect(enrichment.effectiveQuery).toBe('sponsor_name:"pfizer"');
+    expect(enrichment.effectiveQuery).toBe('sponsor_name:"PFIZER"');
   });
 
   it('sets enrichment.notice when empty', async () => {

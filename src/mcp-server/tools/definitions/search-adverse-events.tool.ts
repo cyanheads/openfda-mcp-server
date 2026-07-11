@@ -78,7 +78,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       .string()
       .optional()
       .describe(
-        'Sort expression (field:asc or field:desc). Example: receivedate:desc. Invalid or non-sortable fields cause a query error — use a documented field name.',
+        'Sort expression (field:asc or field:desc). Sortable date fields are category-specific: drug → receivedate:desc (or receiptdate), food → date_created:desc (or date_started), device → date_received:desc (or date_of_event). A field from another category (e.g. receivedate on food or device) causes a query error — use the field for this category.',
       ),
     limit: z
       .number()

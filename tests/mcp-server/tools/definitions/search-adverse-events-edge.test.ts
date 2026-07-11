@@ -290,4 +290,16 @@ describe('openfda_search_adverse_events (edge cases)', () => {
       expect(text).toContain('Sensor');
     });
   });
+
+  describe('sort parameter guidance (#23)', () => {
+    it('sort describe is category-aware — names each category default date field', () => {
+      const sortDescribe = searchAdverseEventsTool.input.shape.sort.description ?? '';
+      // Per-category sortable date defaults, sourced from ADVERSE_EVENT_SCHEMAS.
+      expect(sortDescribe).toMatch(/receivedate/); // drug
+      expect(sortDescribe).toMatch(/date_created/); // food
+      expect(sortDescribe).toMatch(/date_received/); // device
+      // No longer a single drug-only example — it distinguishes by category.
+      expect(sortDescribe).toMatch(/category/i);
+    });
+  });
 });

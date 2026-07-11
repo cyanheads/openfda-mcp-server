@@ -41,7 +41,7 @@ Search adverse event reports across drugs, food, and devices. Use to investigate
 |---|---|---|---|
 | `category` | `"drug"` \| `"food"` \| `"device"` | Yes | Product category. Each has different field schemas -- drug reports include patient demographics and suspect drugs, device reports include device details and event type, food reports include industry and outcomes. |
 | `search` | string | No | Elasticsearch query string. Field-value pairs joined by `+AND+` or `+OR+`. Examples: `patient.drug.medicinalproduct:"aspirin"`, `patient.reaction.reactionmeddrapt:"nausea"+AND+serious:"1"`. Omit to browse recent reports. |
-| `sort` | string | No | Sort field and direction. Example: `receivedate:desc`. |
+| `sort` | string | No | Sort field and direction. Sortable date fields are category-specific: drug → `receivedate:desc` (or `receiptdate`), food → `date_created:desc` (or `date_started`), device → `date_received:desc` (or `date_of_event`). A field from another category (e.g. `receivedate` on food or device) causes a query error. |
 | `limit` | number | No | Results to return (1-1000, default 10). |
 | `skip` | number | No | Offset for pagination (max 25000). For deeper access, narrow the search query instead of increasing skip. |
 
@@ -105,7 +105,7 @@ Search the Drugs@FDA database for drug application approvals, including NDAs and
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `search` | string | Yes | Query string. Examples: `openfda.brand_name:"humira"`, `sponsor_name:"pfizer"`, `submissions.submission_type:"ORIG"+AND+submissions.review_priority:"PRIORITY"`. |
+| `search` | string | Yes | Query string. Examples: `openfda.brand_name:"humira"`, `sponsor_name:"PFIZER"`, `submissions.submission_type:"ORIG"+AND+submissions.review_priority:"PRIORITY"`. Exact quoted values can be case-sensitive on some fields — `sponsor_name` is stored uppercase, so a lowercase quoted value returns no matches. |
 | `sort` | string | No | Sort field and direction. Example: `submissions.submission_status_date:desc`. |
 | `limit` | number | No | Results to return (1-1000, default 10). |
 | `skip` | number | No | Pagination offset (max 25000). |

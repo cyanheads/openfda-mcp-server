@@ -22,7 +22,9 @@ const REQUEST_TIMEOUT_MS = 15_000;
  * openFDA surfaces deterministic, user-fixable query failures as HTTP 5xx whose body
  * names the underlying Lucene/ES exception in `error.details`: a malformed search is a
  * `token_mgr_error` / lexical error, a `count` on a non-keyword text field an
- * `illegal_argument_exception`. These never succeed on retry, so a 5xx carrying one is
+ * `illegal_argument_exception`, and a sort or filter on a field absent from that index's
+ * mapping (e.g. `receivedate:desc` on food/device, which lack the field) a
+ * `query_shard_exception`. These never succeed on retry, so a 5xx carrying one is
  * reclassified to a non-retryable `query_error`.
  *
  * Keyed on the specific exception names only — NOT openFDA's generic "Check your request
@@ -33,7 +35,8 @@ const REQUEST_TIMEOUT_MS = 15_000;
  * head of `error.details`, inside the ~500-byte body `fetchWithTimeout` captures, so
  * truncation never hides them.
  */
-const OPENFDA_QUERY_ERROR_5XX = /token_mgr_error|lexical error|illegal_argument_exception/i;
+const OPENFDA_QUERY_ERROR_5XX =
+  /token_mgr_error|lexical error|illegal_argument_exception|query_shard_exception/i;
 
 export class OpenFdaService {
   private readonly baseUrl: string;
