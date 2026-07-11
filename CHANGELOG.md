@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.1](changelog/0.4.x/0.4.1.md) — 2026-07-11
+
+Corrects sponsor_name and sort-field examples, classifies unmapped-sort 500s as non-retryable query errors, and adopts mcp-ts-core ^0.10.14 template hardening (supply-chain release-age guard, pinned Docker base image, SECURITY.md)
+
 ## [0.4.0](changelog/0.4.x/0.4.0.md) — 2026-07-03
 
 openfda_describe_fields reaches 20-endpoint parity with openfda_count_values (5 new count-only endpoints), and openfda_drug_profile now surfaces Rx boxed-warning safety text instead of null
