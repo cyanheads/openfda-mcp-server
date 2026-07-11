@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.2](changelog/0.4.x/0.4.2.md) — 2026-07-11
+
+Removes content-output truncation across recalls, adverse events, device clearances, drug approvals, drug shortages, and NDC lookup so text output matches the full structuredContent data
+
 ## [0.4.1](changelog/0.4.x/0.4.1.md) — 2026-07-11
 
 Corrects sponsor_name and sort-field examples, classifies unmapped-sort 500s as non-retryable query errors, and adopts mcp-ts-core ^0.10.14 template hardening (supply-chain release-age guard, pinned Docker base image, SECURITY.md)
