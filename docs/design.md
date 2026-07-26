@@ -192,18 +192,18 @@ Search problem reports submitted to the FDA for tobacco products, including e-ci
 
 ### `openfda_dataframe_query`
 
-Run a read-only SQL `SELECT` against a DataCanvas table staged by a search tool's spillover (see [DataCanvas spillover](#datacanvas-spillover-analytical-sql)). Enables `GROUP BY`, `COUNT/SUM/AVG`, time-series, and joins across the full result set without re-paging the API.
+Run a read-only SQL `SELECT` against a DataCanvas table staged by a search tool (see [DataCanvas staging](#datacanvas-staging-analytical-sql)). Enables `GROUP BY`, `COUNT/SUM/AVG`, time-series, and joins across the staged result set without re-paging the API.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `canvas_id` | string | Yes | Canvas ID from a search tool response. |
+| `canvas_id` | string | Yes | Canvas ID from a search tool response (present when the search ran with `stage: true`). |
 | `query` | string | Yes | SQL `SELECT`. Use the table name from `openfda_dataframe_describe`. Scalar columns are text (`CAST` for numeric math); nested objects/arrays are JSON columns (e.g. `json_extract_string(openfda, '$.brand_name[0]')`). |
 
-**Returns:** `rows[]` (capped at the canvas row limit), `row_count`, `canvas_id`. Only `SELECT` is allowed — DDL/DML/COPY/file-reading functions are rejected by the framework's four-layer SQL gate.
+**Returns:** `rows[]`, `row_count`, `truncated`, `canvas_id`. Results are capped at the canvas row limit (10,000 by default); `truncated: true` says rows beyond the cap exist and both response paths point at `ORDER BY` + `LIMIT`/`OFFSET` pagination. Only `SELECT` is allowed — DDL/DML/COPY/file-reading functions are rejected by the framework's four-layer SQL gate, and those rejections are mapped onto the tool's own `invalid_query` / `missing_table` contract so recovery text names MCP tools rather than internal canvas APIs.
 
 ### `openfda_dataframe_describe`
 
-List the tables and column schemas on a DataCanvas. Call before `openfda_dataframe_query` to discover the exact table and column names. `row_count` is the full staged set, not the inline preview.
+List the tables and column schemas on a DataCanvas. Call before `openfda_dataframe_query` to discover the exact table and column names. `row_count` is the full staged set, not the inline page.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -213,18 +213,20 @@ List the tables and column schemas on a DataCanvas. Call before `openfda_datafra
 
 ---
 
-## DataCanvas spillover (analytical SQL)
+## DataCanvas staging (analytical SQL)
 
-**Opt-in, off by default.** Set `CANVAS_PROVIDER_TYPE=duckdb` to enable; otherwise the search tools behave exactly as documented above (single page, inline preview) and the two dataframe tools report that canvas is disabled. Requires the optional `@duckdb/node-api` dependency and is unavailable on the Workers runtime (no DuckDB build → fails closed at init).
+**Opt-in twice over.** The deployment enables the surface with `CANVAS_PROVIDER_TYPE=duckdb` (requires the optional `@duckdb/node-api` dependency; unavailable on the Workers runtime, where it fails closed at init), and the caller asks for staging per call. Without both, a search issues exactly one upstream request and returns one page — identical to a deployment with no canvas at all.
 
-When canvas is enabled, every multi-row search tool — `openfda_search_adverse_events`, `_recalls`, `_drug_approvals`, `_device_clearances`, `_animal_events`, `_drug_shortages`, `_tobacco_reports`, and `openfda_lookup_ndc` — gains:
+Every multi-row search tool — `openfda_search_adverse_events`, `_recalls`, `_drug_approvals`, `_device_clearances`, `_animal_events`, `_drug_shortages`, `_tobacco_reports`, and `openfda_lookup_ndc` — carries:
 
-- An optional `canvas_id` input — omit to mint a fresh canvas, or pass one back to accumulate successive queries into the same canvas for cross-table joins.
-- Output fields `canvas_id`, `canvas_table`, `spilled`, `truncated` (all absent when canvas is disabled).
+- `stage` (boolean, default `false`) — stage the matched set for SQL. Passing a `canvas_id` implies it, so successive searches accumulate onto one canvas for cross-table joins.
+- Output fields `canvas_id`, `canvas_table`, `spilled`, `staged_rows`, `truncated` (all absent unless the call staged).
 
-The handler pages the full matched set — lazily, at the API's 1000-row cap, bounded by the 25,000-row `skip` ceiling — into `spillover()` from `@cyanheads/mcp-ts-core/canvas`: a character-budgeted inline preview plus, when the result overflows, a staged DuckDB table the agent queries with `openfda_dataframe_query`. `truncated: true` signals that more rows matched upstream than the ceiling staged. In canvas mode `limit`/`skip` govern only the inline (non-canvas) path.
+`limit`/`skip` mean the same thing in both modes: a window over the matched set, served from the drain's first page when it covers the window and fetched directly otherwise. A staged call therefore never disagrees with an unstaged one about whether records exist at a given offset, and record size never empties the page.
 
-**Canvas table shape.** Each endpoint registers an explicit, all-nullable column projection (`src/services/openfda/canvas-spill.ts` plus a per-tool `*_CANVAS_SCHEMA` constant): high-value scalar fields as `VARCHAR` (openFDA returns most values as strings — `CAST` in SQL for numeric math) and nested objects/arrays (`openfda`, `patient`, `products`, `submissions`, …) as `JSON` columns read with DuckDB json functions. Fields outside the projection are dropped from the table but remain in the inline preview; absent fields register as `NULL`. The drain feeds the raw records straight to the appender, which projects them onto the schema — so sparse, heterogeneous records ingest without NOT-NULL failures.
+**Bounded drain.** Staging drains from offset 0 until whichever comes first: openFDA's 25,000-row `skip` ceiling, or a ~16 MB serialized-JSON budget (`STAGE_MAX_BYTES`). The budget is converted to a row cap and a page size from a 100-row probe, because record size spans three orders of magnitude across endpoints — a `drug/shortages` row is ~1 KB, a `drug/event` report ~65 KB — so a flat row cap either starves the small endpoints or stalls the large ones. `staged_rows` versus `meta.total` discloses exactly how much of the match reached the table, in `structuredContent` and in `content[]`; `truncated: true` when they differ.
+
+**Canvas table shape.** Each endpoint registers an explicit, all-nullable column projection (`src/services/openfda/canvas-spill.ts` plus a per-tool `*_CANVAS_SCHEMA` constant): high-value scalar fields as `VARCHAR` (openFDA returns most values as strings — `CAST` in SQL for numeric math) and nested objects/arrays (`openfda`, `patient`, `products`, `submissions`, …) as `JSON` columns read with DuckDB json functions. Fields outside the projection are dropped from the table but remain in the inline page; absent fields register as `NULL`. The drain feeds the raw records straight to the appender, which projects them onto the schema — so sparse, heterogeneous records ingest without NOT-NULL failures.
 
 ---
 
@@ -278,7 +280,7 @@ openFDA returns JSON error objects with `code`, `message`, and sometimes `detail
 |---|---|---|
 | `OPENFDA_API_KEY` | No | Free API key from [open.fda.gov](https://open.fda.gov/apis/authentication/). Increases daily limit from 1K to 120K requests. Passed as `api_key` query parameter. |
 | `OPENFDA_BASE_URL` | No | Base URL override. Default: `https://api.fda.gov`. Useful for testing against a proxy or mock server. |
-| `CANVAS_PROVIDER_TYPE` | No | Set to `duckdb` to enable [DataCanvas spillover](#datacanvas-spillover-analytical-sql) — analytical SQL over staged result sets via `openfda_dataframe_query`. Default `none` (disabled). Requires the optional `@duckdb/node-api` dependency; unsupported on Cloudflare Workers. |
+| `CANVAS_PROVIDER_TYPE` | No | Set to `duckdb` to enable [DataCanvas staging](#datacanvas-staging-analytical-sql) — analytical SQL over result sets staged with `stage: true` and queried via `openfda_dataframe_query`. Default `none` (disabled). Requires the optional `@duckdb/node-api` dependency; unsupported on Cloudflare Workers. |
 
 ---
 

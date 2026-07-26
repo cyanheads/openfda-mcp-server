@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.4.3-blue.svg?style=flat-square)](./CHANGELOG.md) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.14-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.5.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.14-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -174,11 +174,12 @@ Return the searchable field paths for an openFDA endpoint, grouped by category w
 
 ### `openfda_dataframe_query` · `openfda_dataframe_describe`
 
-A DataCanvas SQL surface over staged result sets — **opt-in**, enabled with `CANVAS_PROVIDER_TYPE=duckdb`.
+A DataCanvas SQL surface over staged result sets — **opt-in**, enabled with `CANVAS_PROVIDER_TYPE=duckdb` and requested per call with `stage: true`.
 
-- With canvas enabled, the multi-row search tools page the full matched set (up to openFDA's 25,000-row ceiling) into a DuckDB table and return an inline preview plus a `canvas_id` and `canvas_table`. `openfda_dataframe_query` runs read-only `SELECT` (GROUP BY, SUM/COUNT, joins) across the staged rows; `openfda_dataframe_describe` lists the table and column schemas needed to write valid SQL.
+- Call a multi-row search tool with `stage: true` to drain its matched set into a DuckDB table alongside the normal page of results; the response adds `canvas_id`, `canvas_table`, and `staged_rows`. `openfda_dataframe_query` runs read-only `SELECT` (GROUP BY, SUM/COUNT, joins) across the staged rows; `openfda_dataframe_describe` lists the table and column schemas needed to write valid SQL.
+- Staging is bounded by a byte budget and openFDA's 25,000-row ceiling, so a staged call stays quick even on large-record endpoints like `drug/event`. `staged_rows` against the match total says how much reached the table; `truncated` flags the cut.
 - Scalar fields are stored as text (`CAST` for numeric math); nested openFDA blocks (`openfda`, `patient`, `products`, …) are JSON columns. Pass a `canvas_id` back into a search tool to accumulate result sets on one canvas for cross-table joins.
-- Off by default — without `CANVAS_PROVIDER_TYPE=duckdb` the search tools return inline results exactly as before and the two dataframe tools report that canvas is disabled. Requires the optional `@duckdb/node-api` dependency; unsupported on Cloudflare Workers.
+- Off by default at both levels — without `CANVAS_PROVIDER_TYPE=duckdb` and an explicit staging request, a search costs one upstream request and the two dataframe tools report that canvas is disabled. Requires the optional `@duckdb/node-api` dependency; unsupported on Cloudflare Workers.
 
 ## Features
 
@@ -196,7 +197,7 @@ openFDA-specific:
 - Generic API client for all openFDA endpoints with retry (exponential backoff) and rate-limit awareness
 - Automatic error normalization — 404 returns empty results, 429/5xx retries, 400 provides actionable messages
 - Optional API key support — works without a key (1K requests/day), increases to 120K/day with a free key
-- Optional DataCanvas spillover (`CANVAS_PROVIDER_TYPE=duckdb`) — stage large result sets as DuckDB tables and run SQL via `openfda_dataframe_query`
+- Optional DataCanvas staging (`CANVAS_PROVIDER_TYPE=duckdb`, per call with `stage: true`) — stage large result sets as DuckDB tables and run SQL via `openfda_dataframe_query`
 
 ## Getting Started
 
@@ -315,7 +316,7 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 | `STORAGE_PROVIDER_TYPE` | Storage backend: `in-memory`, `filesystem`, `supabase`, `cloudflare-kv/r2/d1` | `in-memory` |
 | `OPENFDA_API_KEY` | Free API key from [open.fda.gov](https://open.fda.gov/apis/authentication/). Increases daily limit from 1K to 120K requests. | none |
 | `OPENFDA_BASE_URL` | Base URL override for testing against a proxy or mock. | `https://api.fda.gov` |
-| `CANVAS_PROVIDER_TYPE` | Set to `duckdb` to enable DataCanvas spillover — analytical SQL over staged result sets via `openfda_dataframe_query`. Requires the optional `@duckdb/node-api` dependency; unsupported on Cloudflare Workers. | `none` (disabled) |
+| `CANVAS_PROVIDER_TYPE` | Set to `duckdb` to enable DataCanvas staging — analytical SQL over result sets staged with `stage: true` and queried via `openfda_dataframe_query`. Requires the optional `@duckdb/node-api` dependency; unsupported on Cloudflare Workers. | `none` (disabled) |
 | `OTEL_ENABLED` | Enable OpenTelemetry | `false` |
 
 ## Running the Server
