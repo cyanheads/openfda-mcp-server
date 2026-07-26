@@ -17,7 +17,9 @@ export const dataframeDescribeTool = tool('openfda_dataframe_describe', {
     'Columns typed JSON hold nested openFDA objects/arrays — query them with DuckDB json functions.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
-    canvas_id: nonBlankString().describe('Canvas ID from an openFDA search tool response.'),
+    canvas_id: nonBlankString().describe(
+      'Canvas ID from an openFDA search tool response (present when the search ran with stage=true).',
+    ),
   }),
   output: z.object({
     tables: z
