@@ -1,8 +1,8 @@
 /**
- * @fileoverview Tests for the spillSearch DataCanvas helper. Exercises the real
- * spillover() against a mock CanvasInstance whose registerTable drains the async
- * source — so the lazy drain paging, the 25k ceiling, and the truncated signal
- * run for real, with only the openFDA service and canvas accessor stubbed.
+ * @fileoverview Tests for the spillSearch DataCanvas helper. The mock
+ * CanvasInstance drains the async source registerTable receives, so the paging
+ * cadence, the byte budget, the 25k ceiling, and the truncation signal all run
+ * for real with only the openFDA service and the canvas accessor stubbed.
  * @module tests/services/openfda/canvas-spill.test
  */
 
@@ -33,7 +33,7 @@ vi.mock('@/services/openfda/openfda-service.js', () => {
   };
 });
 
-import { spillSearch } from '@/services/openfda/canvas-spill.js';
+import { OPENFDA_MAX_ROWS, spillSearch } from '@/services/openfda/canvas-spill.js';
 
 async function setCanvasMock(c: unknown) {
   const mod = await import('@/services/canvas/canvas-accessor.js');
@@ -45,15 +45,24 @@ async function setSvcMock(s: unknown) {
   (mod as unknown as { __setMock: (s: unknown) => void }).__setMock(s);
 }
 
-/** Paged openFDA service stub backed by a synthetic dataset of `total` rows. */
-function makeSvc(total: number) {
+/**
+ * Paged openFDA service stub over a synthetic dataset of `total` rows.
+ * `rowBytes` pads each record so the byte-budget path can be exercised.
+ */
+function makeSvc(total: number, rowBytes = 0) {
   return {
     query: vi.fn(async (_endpoint: string, params: { limit?: number; skip?: number }) => {
       const skip = params.skip ?? 0;
       const limit = params.limit ?? 1000;
       const end = Math.min(skip + limit, total);
       const results: Record<string, unknown>[] = [];
-      for (let i = skip; i < end; i++) results.push({ id: `r${i}`, val: i });
+      for (let i = skip; i < end; i++) {
+        results.push(
+          rowBytes > 0
+            ? { id: `r${i}`, val: i, blob: 'x'.repeat(rowBytes) }
+            : { id: `r${i}`, val: i },
+        );
+      }
       return { meta: { total, skip, limit, lastUpdated: '2026-06-01' }, results };
     }),
   };
@@ -92,15 +101,15 @@ describe('spillSearch', () => {
   it('throws when canvas is disabled', async () => {
     await setSvcMock(makeSvc(10));
     const ctx = createMockContext();
-    await expect(spillSearch({ endpoint: 'drug/event', schema: SCHEMA, ctx })).rejects.toThrow(
-      'DataCanvas is not enabled',
-    );
+    await expect(
+      spillSearch({ endpoint: 'drug/event', schema: SCHEMA, ctx, limit: 10, skip: 0 }),
+    ).rejects.toThrow('DataCanvas is not enabled');
   });
 
-  it('stages the full set, pages lazily, and reports no truncation when all rows fit the ceiling', async () => {
+  it('stages the matched set and reports staged rows with no truncation when it all fits', async () => {
     const svc = makeSvc(2500);
     await setSvcMock(svc);
-    const { canvas } = makeCanvas();
+    const { canvas, instance } = makeCanvas();
     await setCanvasMock(canvas);
 
     const ctx = createMockContext();
@@ -108,22 +117,22 @@ describe('spillSearch', () => {
       endpoint: 'drug/event',
       schema: SCHEMA,
       ctx,
-      previewChars: 100, // tiny budget forces a spill
+      limit: 10,
+      skip: 0,
     });
 
     expect(result.spilled).toBe(true);
     expect(result.canvasId).toBe('cv_test');
-    expect(result.tableName).not.toBe('');
+    expect(result.tableName).toMatch(/^spilled_[0-9a-f]{8}$/);
     expect(result.total).toBe(2500);
+    expect(result.stagedRows).toBe(2500);
     expect(result.truncated).toBe(false);
-    // First page fetched at skip 0, then paged forward at the 1000-row cap.
-    expect(svc.query.mock.calls[0][1]).toMatchObject({ skip: 0, limit: 1000 });
-    const skips = svc.query.mock.calls.map((c) => c[1].skip);
-    expect(skips).toEqual([0, 1000, 2000]);
+    expect(instance.registerTable).toHaveBeenCalledOnce();
   });
 
-  it('caps the drain at 25000 rows and reports truncated when more match upstream', async () => {
-    const svc = makeSvc(30_000);
+  it('bounds the drain by a byte budget so large records cannot run away (#30)', async () => {
+    // ~70 KB per record — the drug/event shape that made a limit:10 call take minutes.
+    const svc = makeSvc(30_000, 70_000);
     await setSvcMock(svc);
     const { canvas } = makeCanvas();
     await setCanvasMock(canvas);
@@ -133,51 +142,40 @@ describe('spillSearch', () => {
       endpoint: 'drug/event',
       schema: SCHEMA,
       ctx,
-      previewChars: 100,
+      limit: 10,
+      skip: 0,
     });
 
-    expect(result.spilled).toBe(true);
     expect(result.total).toBe(30_000);
+    expect(result.stagedRows).toBeGreaterThan(0);
+    expect(result.stagedRows).toBeLessThan(1_000);
     expect(result.truncated).toBe(true);
-    // Never requests a skip past the 25000 ceiling.
-    const maxSkip = Math.max(...svc.query.mock.calls.map((c) => c[1].skip ?? 0));
-    expect(maxSkip).toBeLessThanOrEqual(24_000);
+    // The old drain issued 25 upstream requests for 25,000 rows regardless of limit.
+    expect(svc.query.mock.calls.length).toBeLessThan(10);
   });
 
-  it('returns an inline preview with no canvas table when the result fits', async () => {
-    const svc = makeSvc(3);
-    await setSvcMock(svc);
-    const { canvas, instance } = makeCanvas('cv_small');
-    await setCanvasMock(canvas);
-
-    const ctx = createMockContext();
-    const result = await spillSearch({ endpoint: 'drug/event', schema: SCHEMA, ctx });
-
-    expect(result.spilled).toBe(false);
-    expect(result.canvasId).toBe('cv_small');
-    expect(result.tableName).toBe('');
-    expect(result.truncated).toBe(false);
-    expect(result.preview).toHaveLength(3);
-    expect(instance.registerTable).not.toHaveBeenCalled();
-  });
-
-  it('caps the inline preview at the caller limit while staging the full set (#18)', async () => {
-    const svc = makeSvc(2500);
+  it('caps the drain at the 25000-row openFDA ceiling for small records', async () => {
+    const svc = makeSvc(40_000);
     await setSvcMock(svc);
     const { canvas } = makeCanvas();
     await setCanvasMock(canvas);
 
     const ctx = createMockContext();
-    // The default char budget fits far more than 3 rows — limit must bind.
-    const result = await spillSearch({ endpoint: 'drug/event', schema: SCHEMA, ctx, limit: 3 });
+    const result = await spillSearch({
+      endpoint: 'drug/shortages',
+      schema: SCHEMA,
+      ctx,
+      limit: 10,
+      skip: 0,
+    });
 
-    expect(result.spilled).toBe(true);
-    expect(result.preview).toHaveLength(3); // inline capped at limit
-    expect(result.skip).toBe(0);
-    expect(result.total).toBe(2500); // full matched set still staged on the canvas
+    expect(result.stagedRows).toBe(OPENFDA_MAX_ROWS);
+    expect(result.truncated).toBe(true);
+    const maxSkip = Math.max(...svc.query.mock.calls.map((c) => c[1].skip ?? 0));
+    expect(maxSkip).toBeLessThan(OPENFDA_MAX_ROWS);
   });
 
-  it('honors skip as the inline preview window offset (#18)', async () => {
+  it('serves the inline page from the matched set at the caller offset (#32)', async () => {
     const svc = makeSvc(2500);
     await setSvcMock(svc);
     const { canvas } = makeCanvas();
@@ -193,21 +191,114 @@ describe('spillSearch', () => {
     });
 
     expect(result.skip).toBe(5);
-    expect(result.preview).toHaveLength(3);
     expect(result.preview.map((r) => r.id)).toEqual(['r5', 'r6', 'r7']);
   });
 
-  it('keeps the full budget-fit preview when no limit is given', async () => {
-    const svc = makeSvc(2500);
+  it('fetches the inline page directly when the offset is past the probe window (#32)', async () => {
+    const svc = makeSvc(1175);
     await setSvcMock(svc);
     const { canvas } = makeCanvas();
     await setCanvasMock(canvas);
 
     const ctx = createMockContext();
-    const capped = await spillSearch({ endpoint: 'drug/event', schema: SCHEMA, ctx, limit: 3 });
-    const uncapped = await spillSearch({ endpoint: 'drug/event', schema: SCHEMA, ctx });
+    const result = await spillSearch({
+      endpoint: 'drug/shortages',
+      schema: SCHEMA,
+      ctx,
+      limit: 2,
+      skip: 300,
+    });
 
-    // Undefined limit preserves the budget-fit preview — larger than the capped one.
-    expect(uncapped.preview.length).toBeGreaterThan(capped.preview.length);
+    expect(result.preview.map((r) => r.id)).toEqual(['r300', 'r301']);
+    expect(svc.query.mock.calls.some((c) => c[1].skip === 300 && c[1].limit === 2)).toBe(true);
+  });
+
+  it('returns an empty page with a note-worthy total when the offset runs past the end (#32)', async () => {
+    const svc = makeSvc(50);
+    await setSvcMock(svc);
+    const { canvas } = makeCanvas();
+    await setCanvasMock(canvas);
+
+    const ctx = createMockContext();
+    const result = await spillSearch({
+      endpoint: 'drug/shortages',
+      schema: SCHEMA,
+      ctx,
+      limit: 5,
+      skip: 100,
+    });
+
+    expect(result.preview).toHaveLength(0);
+    expect(result.total).toBe(50);
+    expect(result.stagedRows).toBe(50);
+  });
+
+  it('keeps the inline page even when a single record is larger than any preview budget (#31)', async () => {
+    // One 70 KB record could never fit a character-budgeted preview.
+    const svc = makeSvc(600, 70_000);
+    await setSvcMock(svc);
+    const { canvas } = makeCanvas();
+    await setCanvasMock(canvas);
+
+    const ctx = createMockContext();
+    const result = await spillSearch({
+      endpoint: 'drug/event',
+      schema: SCHEMA,
+      ctx,
+      limit: 2,
+      skip: 0,
+    });
+
+    expect(result.preview).toHaveLength(2);
+    expect(result.total).toBe(600);
+  });
+
+  it('stages nothing when the query matched no records', async () => {
+    const svc = makeSvc(0);
+    await setSvcMock(svc);
+    const { canvas, instance } = makeCanvas('cv_empty');
+    await setCanvasMock(canvas);
+
+    const ctx = createMockContext();
+    const result = await spillSearch({
+      endpoint: 'drug/event',
+      schema: SCHEMA,
+      ctx,
+      limit: 10,
+      skip: 0,
+    });
+
+    expect(result.spilled).toBe(false);
+    expect(result.stagedRows).toBe(0);
+    expect(result.tableName).toBe('');
+    expect(result.truncated).toBe(false);
+    expect(result.canvasId).toBe('cv_empty');
+    expect(instance.registerTable).not.toHaveBeenCalled();
+  });
+
+  it('stages the same rows regardless of the caller limit', async () => {
+    await setSvcMock(makeSvc(2500));
+    const { canvas } = makeCanvas();
+    await setCanvasMock(canvas);
+
+    const ctx = createMockContext();
+    const small = await spillSearch({
+      endpoint: 'drug/event',
+      schema: SCHEMA,
+      ctx,
+      limit: 3,
+      skip: 0,
+    });
+    const large = await spillSearch({
+      endpoint: 'drug/event',
+      schema: SCHEMA,
+      ctx,
+      limit: 50,
+      skip: 0,
+    });
+
+    expect(small.preview).toHaveLength(3);
+    expect(large.preview).toHaveLength(50);
+    expect(small.stagedRows).toBe(large.stagedRows);
   });
 });

@@ -158,19 +158,26 @@ describe('formatRemainingFields', () => {
 });
 
 describe('emptyResultMessage', () => {
-  it('returns base hint when skip is 0', () => {
-    const msg = emptyResultMessage(0, 'Try different filters.');
+  it('returns base hint when skip is 0 and nothing matched', () => {
+    const msg = emptyResultMessage(0, 0, 'Try different filters.');
     expect(msg).toBe('Try different filters.');
   });
 
-  it('adds pagination context when skip > 0', () => {
-    const msg = emptyResultMessage(10, 'Try different filters.');
+  it('adds pagination context when skip > 0 and the total is unknown', () => {
+    const msg = emptyResultMessage(10, 0, 'Try different filters.');
     expect(msg).toContain('skip=10');
     expect(msg).toContain('Try different filters.');
   });
 
   it('mentions skip=0 in the pagination hint', () => {
-    const msg = emptyResultMessage(500, 'Some hint.');
+    const msg = emptyResultMessage(500, 0, 'Some hint.');
     expect(msg).toContain('skip=0');
+  });
+
+  it('says the offset overshot — not "no match" — when records did match', () => {
+    const msg = emptyResultMessage(2000, 1175, 'Try different filters.');
+    expect(msg).toContain('1175 matched');
+    expect(msg).toContain('skip=2000');
+    expect(msg).not.toContain('Try different filters.');
   });
 });

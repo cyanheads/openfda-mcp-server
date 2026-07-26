@@ -7,10 +7,23 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import type { ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
-import { emptyResultMessage, formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
+import {
+  canvasStagingLine,
+  emptyPageNote,
+  emptyResultMessage,
+  formatRemainingFields,
+  noMatchNote,
+} from '@/mcp-server/tools/format-utils.js';
 import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
-import { canvasOutputShape, canvasResult, spillSearch } from '@/services/openfda/canvas-spill.js';
+import {
+  canvasDisabledError,
+  canvasOutputShape,
+  canvasResult,
+  spillSearch,
+  stageInput,
+  stagingNotice,
+} from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 /**
@@ -72,10 +85,11 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       .default(10)
       .describe('Maximum number of records to return (1-1000).'),
     skip: z.number().min(0).max(25000).default(0).describe('Pagination offset (0-25000).'),
+    stage: stageInput,
     canvas_id: nonBlankString()
       .optional()
       .describe(
-        'DataCanvas session id from a prior call. Omit to start a fresh canvas; the response returns a new one when canvas is enabled. When canvas (CANVAS_PROVIDER_TYPE=duckdb) is enabled the full matched set is staged for SQL and limit/skip apply only to the inline path.',
+        'DataCanvas session id from a prior call. Passing one stages this search onto that canvas (same effect as stage=true) so result sets accumulate for cross-table joins. Omit to stage onto a fresh canvas.',
       ),
   }),
 
@@ -106,7 +120,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       .string()
       .optional()
       .describe(
-        'Guidance when results are empty — how to broaden filters or correct field names. Absent when results are returned.',
+        'Canvas staging disclosure when the call staged, and guidance when results are empty — how to broaden filters or correct field names.',
       ),
   },
 
@@ -117,6 +131,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       when: 'The recall endpoint was requested for a non-device category.',
       recovery: 'Set endpoint=enforcement for drug and food categories; recall is device-only.',
     },
+    canvasDisabledError,
     {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
@@ -160,9 +175,24 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
     }
 
     const resolvedEndpoint = `${input.category}/${endpointValue}`;
+    const emptyNotice = (skip: number, total: number) =>
+      emptyResultMessage(
+        skip,
+        total,
+        `No recall/enforcement records matched${input.search ? ` search: ${input.search}` : ''} in ${resolvedEndpoint}. Try broadening filters or check field names (e.g. classification, recalling_firm, reason_for_recall). ${formatFieldHint(resolvedEndpoint)}`,
+      );
 
     const canvas = getCanvas();
-    if (canvas) {
+    const staging = input.stage || input.canvas_id !== undefined;
+    if (staging && !canvas) {
+      throw ctx.fail(
+        'canvas_disabled',
+        'Staging requires DataCanvas. Set CANVAS_PROVIDER_TYPE=duckdb, or drop stage/canvas_id for the inline page.',
+        { ...ctx.recoveryFor('canvas_disabled') },
+      );
+    }
+
+    if (canvas && staging) {
       const spill = await spillSearch({
         endpoint: resolvedEndpoint,
         search: input.search,
@@ -175,11 +205,11 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       });
       ctx.enrich({ totalResults: spill.total });
       if (input.search) ctx.enrich.echo(input.search);
-      if (spill.spilled) {
-        ctx.enrich.notice(
-          `Full result set (${spill.total} matched) staged on canvas table "${spill.tableName}". Query it with openfda_dataframe_query using canvas_id "${spill.canvasId}".`,
-        );
-      }
+      ctx.enrich.notice(
+        spill.preview.length === 0
+          ? `${emptyNotice(spill.skip, spill.total)} ${stagingNotice(spill)}`
+          : stagingNotice(spill),
+      );
       return canvasResult(spill);
     }
 
@@ -204,24 +234,29 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
     ctx.enrich({ totalResults: response.meta.total });
     if (input.search) ctx.enrich.echo(input.search);
     if (response.results.length === 0) {
-      const fieldHint = formatFieldHint(resolvedEndpoint);
-      ctx.enrich.notice(
-        emptyResultMessage(
-          response.meta.skip,
-          `No recall/enforcement records matched${input.search ? ` search: ${input.search}` : ''} in ${resolvedEndpoint}. Try broadening filters or check field names (e.g. classification, recalling_firm, reason_for_recall). ${fieldHint}`,
-        ),
-      );
+      ctx.enrich.notice(emptyNotice(response.meta.skip, response.meta.total));
     }
 
     return { meta: response.meta, results: response.results };
   },
 
   format: (result) => {
-    if (result.results.length === 0) {
-      return [{ type: 'text' as const, text: 'No results found.' }];
+    if (result.results.length === 0 && result.meta.total === 0) {
+      return [{ type: 'text' as const, text: noMatchNote('No results found.', result.meta.skip) }];
     }
 
     const header = `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Last updated: ${result.meta.lastUpdated}\n`;
+    const staging = canvasStagingLine(result.meta.total, result);
+    const canvasHint = staging ? `${staging}\n\n` : '';
+
+    if (result.results.length === 0) {
+      return [
+        {
+          type: 'text' as const,
+          text: `${header}\n${canvasHint}${emptyPageNote(result.meta.total, result.meta.skip, result)}`,
+        },
+      ];
+    }
 
     const rendered = new Set([
       'recall_number',
@@ -250,12 +285,6 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
     });
 
     const body = records.join('\n\n---\n\n');
-    const canvasHint =
-      result.spilled === undefined
-        ? ''
-        : result.canvas_table
-          ? `> Staged ${result.meta.total} matched rows on canvas table \`${result.canvas_table}\` (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled})${result.truncated ? ', truncated at the 25000-row ceiling' : ''} — query with openfda_dataframe_query.\n\n`
-          : `> Canvas enabled (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled}); ${result.meta.total} rows fit inline.\n\n`;
 
     return [{ type: 'text' as const, text: `${header}\n${canvasHint}${body}` }];
   },

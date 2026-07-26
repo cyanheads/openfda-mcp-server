@@ -7,10 +7,23 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import type { ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
-import { emptyResultMessage, formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
+import {
+  canvasStagingLine,
+  emptyPageNote,
+  emptyResultMessage,
+  formatRemainingFields,
+  noMatchNote,
+} from '@/mcp-server/tools/format-utils.js';
 import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
-import { canvasOutputShape, canvasResult, spillSearch } from '@/services/openfda/canvas-spill.js';
+import {
+  canvasDisabledError,
+  canvasOutputShape,
+  canvasResult,
+  spillSearch,
+  stageInput,
+  stagingNotice,
+} from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 /**
@@ -62,10 +75,11 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       .max(25000)
       .default(0)
       .describe('Number of records to skip for pagination (0-25000, default 0)'),
+    stage: stageInput,
     canvas_id: nonBlankString()
       .optional()
       .describe(
-        'DataCanvas session id from a prior call. Omit to start a fresh canvas; the response returns a new one when canvas is enabled. When canvas (CANVAS_PROVIDER_TYPE=duckdb) is enabled the full matched set is staged for SQL and limit/skip apply only to the inline path.',
+        'DataCanvas session id from a prior call. Passing one stages this search onto that canvas (same effect as stage=true) so result sets accumulate for cross-table joins. Omit to stage onto a fresh canvas.',
       ),
   }),
 
@@ -96,11 +110,12 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       .string()
       .optional()
       .describe(
-        'Guidance when results are empty — how to broaden filters or correct field names. Absent when results are returned.',
+        'Canvas staging disclosure when the call staged, and guidance when results are empty — how to broaden filters or correct field names.',
       ),
   },
 
   errors: [
+    canvasDisabledError,
     {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,
@@ -133,8 +148,24 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
   ],
 
   async handler(input, ctx) {
+    const emptyNotice = (skip: number, total: number) =>
+      emptyResultMessage(
+        skip,
+        total,
+        `No drug shortage records matched${input.search ? ` search: ${input.search}` : ''}. Try broader filters or check field names. ${formatFieldHint('drug/shortages')}`,
+      );
+
     const canvas = getCanvas();
-    if (canvas) {
+    const staging = input.stage || input.canvas_id !== undefined;
+    if (staging && !canvas) {
+      throw ctx.fail(
+        'canvas_disabled',
+        'Staging requires DataCanvas. Set CANVAS_PROVIDER_TYPE=duckdb, or drop stage/canvas_id for the inline page.',
+        { ...ctx.recoveryFor('canvas_disabled') },
+      );
+    }
+
+    if (canvas && staging) {
       const spill = await spillSearch({
         endpoint: 'drug/shortages',
         search: input.search,
@@ -147,11 +178,11 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       });
       ctx.enrich({ totalResults: spill.total });
       if (input.search) ctx.enrich.echo(input.search);
-      if (spill.spilled) {
-        ctx.enrich.notice(
-          `Full result set (${spill.total} matched) staged on canvas table "${spill.tableName}". Query it with openfda_dataframe_query using canvas_id "${spill.canvasId}".`,
-        );
-      }
+      ctx.enrich.notice(
+        spill.preview.length === 0
+          ? `${emptyNotice(spill.skip, spill.total)} ${stagingNotice(spill)}`
+          : stagingNotice(spill),
+      );
       return canvasResult(spill);
     }
 
@@ -176,33 +207,32 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
     ctx.enrich({ totalResults: response.meta.total });
     if (input.search) ctx.enrich.echo(input.search);
     if (response.results.length === 0) {
-      const fieldHint = formatFieldHint('drug/shortages');
-      ctx.enrich.notice(
-        emptyResultMessage(
-          response.meta.skip,
-          `No drug shortage records matched${input.search ? ` search: ${input.search}` : ''}. Try broader filters or check field names. ${fieldHint}`,
-        ),
-      );
+      ctx.enrich.notice(emptyNotice(response.meta.skip, response.meta.total));
     }
 
     return { meta: response.meta, results: response.results };
   },
 
   format: (result) => {
-    if (result.results.length === 0) {
-      return [{ type: 'text' as const, text: 'No drug shortage records found.' }];
+    if (result.results.length === 0 && result.meta.total === 0) {
+      return [
+        {
+          type: 'text' as const,
+          text: noMatchNote('No drug shortage records found.', result.meta.skip),
+        },
+      ];
     }
 
     const lines: string[] = [
       `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Data updated: ${result.meta.lastUpdated}\n`,
     ];
 
-    if (result.spilled !== undefined) {
-      lines.push(
-        result.canvas_table
-          ? `> Staged ${result.meta.total} matched rows on canvas table \`${result.canvas_table}\` (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled})${result.truncated ? ', truncated at the 25000-row ceiling' : ''} — query with openfda_dataframe_query.\n`
-          : `> Canvas enabled (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled}); ${result.meta.total} rows fit inline.\n`,
-      );
+    const staging = canvasStagingLine(result.meta.total, result);
+    if (staging) lines.push(`${staging}\n`);
+
+    if (result.results.length === 0) {
+      lines.push(emptyPageNote(result.meta.total, result.meta.skip, result));
+      return [{ type: 'text' as const, text: lines.join('\n') }];
     }
 
     const rendered = new Set([

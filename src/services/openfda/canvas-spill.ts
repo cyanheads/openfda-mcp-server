@@ -1,89 +1,141 @@
 /**
- * @fileoverview DataCanvas spillover helper for openFDA search tools. Pages an
- * openFDA endpoint lazily (the API caps each request at 1000 rows) up to the
- * 25,000-row skip ceiling, feeding the rows into `spillover()`: a sized inline
- * preview plus, when the result overflows, a staged canvas table the agent
- * queries with openfda_dataframe_query. Shared by every multi-row search tool so
- * the drain + spill branch lives in one place.
+ * @fileoverview DataCanvas staging helper for openFDA search tools. Staging is
+ * opt-in: a search only reaches this module when the caller asked for it
+ * (`stage: true`, or a `canvas_id` to accumulate onto). It returns the same
+ * inline page the plain search path returns — `limit`/`skip` address the matched
+ * set identically in both modes — and, alongside it, registers a bounded drain of
+ * the matched set as a canvas table the agent queries with
+ * openfda_dataframe_query. The drain is capped by a serialized-byte budget as
+ * well as openFDA's 25,000-row `skip` ceiling, so a staged call on a
+ * large-record endpoint cannot run for minutes; `stagedRows` vs `total`
+ * discloses how much of the match actually reached the canvas.
  * @module services/openfda/canvas-spill
  */
 
 import { type Context, z } from '@cyanheads/mcp-ts-core';
-import { type ColumnSchema, spillover } from '@cyanheads/mcp-ts-core/canvas';
+import type { ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 /** openFDA hard pagination ceiling — `skip` may not exceed this. */
 export const OPENFDA_MAX_ROWS = 25_000;
 /** openFDA per-request row cap. */
-const PAGE_SIZE = 1_000;
-/** Inline preview character budget (~10k tokens of JSON). */
-export const PREVIEW_CHARS = 40_000;
+const MAX_PAGE_SIZE = 1_000;
+/** Rows read up front to get the total and measure serialized record size. */
+const PROBE_ROWS = 100;
+/**
+ * Serialized-JSON budget for one staged drain. Record size varies by three
+ * orders of magnitude across openFDA endpoints (a shortage row is ~1 KB, a
+ * `drug/event` report ~65 KB), so a flat row cap either starves the small
+ * endpoints or stalls the large ones — the drain measures the probe page and
+ * derives its own row cap from this budget.
+ */
+export const STAGE_MAX_BYTES = 16_000_000;
+/** Serialized-JSON budget for a single upstream page, bounding per-request latency. */
+const PAGE_MAX_BYTES = 4_000_000;
 
 /**
- * Output fields shared by every search tool for DataCanvas spillover. All
- * optional — absent when canvas (CANVAS_PROVIDER_TYPE=duckdb) is disabled, so
- * the default response shape is unchanged. Spread into each tool's output object.
+ * `stage` input field shared by every search tool that can stage to DataCanvas.
+ * Spread into each tool's input object alongside `canvas_id`.
+ */
+export const stageInput = z
+  .boolean()
+  .default(false)
+  .describe(
+    'Stage the matched set on a DataCanvas for SQL analysis with openfda_dataframe_query. Default false — the call returns one page for one upstream request. When true, records are also drained onto a canvas table up to a size budget (staged_rows reports how many reached it). Requires CANVAS_PROVIDER_TYPE=duckdb.',
+  );
+
+/**
+ * `canvas_disabled` contract entry shared by every search tool that can stage.
+ * Spread into each tool's `errors` array so the reason, code, and recovery stay
+ * identical across the surface.
+ */
+export const canvasDisabledError = {
+  reason: 'canvas_disabled',
+  code: JsonRpcErrorCode.ValidationError,
+  when: 'Staging was requested (stage=true or a canvas_id) but DataCanvas is disabled.',
+  recovery:
+    'Set CANVAS_PROVIDER_TYPE=duckdb to enable staging, or drop stage/canvas_id to get the inline page.',
+} as const;
+
+/**
+ * Output fields shared by every search tool that can stage to DataCanvas. All
+ * optional — absent unless the call staged (canvas enabled plus an explicit
+ * staging signal), so the default response shape is unchanged. Spread into each
+ * tool's output object.
  */
 export const canvasOutputShape = {
   canvas_id: z
     .string()
     .optional()
     .describe(
-      'DataCanvas session id for the staged result set. Present when canvas is enabled. Pass to openfda_dataframe_query / openfda_dataframe_describe, or back into this tool to accumulate more tables on the same canvas.',
+      'DataCanvas session id for the staged result set. Present when this call staged. Pass to openfda_dataframe_query / openfda_dataframe_describe, or back into this tool to accumulate more tables on the same canvas.',
     ),
   canvas_table: z
     .string()
     .optional()
     .describe(
-      'Canvas table holding the full staged result. Present when spilled=true; reference it in SQL FROM clauses.',
+      'Canvas table holding the staged rows. Present when rows were staged; reference it in SQL FROM clauses.',
     ),
   spilled: z
     .boolean()
     .optional()
     .describe(
-      'True when the full result set was staged on the canvas — use canvas_id with openfda_dataframe_query for SQL. False when it fit inline. Absent when canvas is disabled.',
+      'True when this call staged its matched set on the canvas — use canvas_id with openfda_dataframe_query for SQL. Absent when staging was not requested.',
+    ),
+  staged_rows: z
+    .number()
+    .optional()
+    .describe(
+      'Rows written to the canvas table. Compare with meta.total: a smaller value means staging stopped at its size budget and the table holds only the first staged_rows records.',
     ),
   truncated: z
     .boolean()
     .optional()
     .describe(
-      'True when more rows matched upstream than the 25000-row staging ceiling. Narrow the query (filters, date range) for a complete set.',
+      "True when fewer rows reached the canvas than matched upstream — staging stopped at its size budget or openFDA's 25000-row pagination ceiling. Narrow the query (filters, date range) for a complete set.",
     ),
 };
 
-/** Outcome of a canvas-backed search drain. */
+/** Outcome of a canvas-backed search. */
 export interface OpenFdaSpillResult {
   /** Canvas session id — surface so the agent can query or accumulate. */
   canvasId: string;
   /** Dataset `last_updated` date from upstream metadata. */
   lastUpdated: string;
-  /** Inline preview rows — raw records, identical in shape to the non-canvas path, bounded by the caller's limit/skip. */
+  /** Inline page — the caller's `limit`/`skip` window over the matched set, identical to the non-staged path. */
   preview: Record<string, unknown>[];
-  /** Pagination offset applied to the inline preview window (the full set is staged regardless). */
+  /** Pagination offset applied to the inline page. */
   skip: number;
-  /** True when the full result set was staged on the canvas. */
+  /** True when rows were registered on the canvas. */
   spilled: boolean;
-  /** Canvas table holding the staged rows; empty string when the result fit inline. */
+  /** Rows written to the canvas table. */
+  stagedRows: number;
+  /** Canvas table holding the staged rows; empty string when nothing was staged. */
   tableName: string;
-  /** Total matching records upstream, before the drain ceiling. */
+  /** Total matching records upstream. */
   total: number;
-  /** True when more rows matched upstream than were staged (drain ceiling hit). */
+  /** True when fewer rows were staged than matched upstream. */
   truncated: boolean;
 }
 
+/** Canvas table handle — `spilled_<8 hex>`, matching the framework's spillover naming. */
+function newTableName(): string {
+  return `spilled_${crypto.randomUUID().replaceAll('-', '').slice(0, 8)}`;
+}
+
 /**
- * Drain an openFDA search endpoint into a DataCanvas via spillover. Peeks the
- * first page for the total and dataset metadata, then pages lazily up to the
- * 25,000-row ceiling. The explicit nullable `schema` keeps DuckDB ingestion
- * robust against openFDA's sparse, heterogeneous records — missing fields land
- * as NULL, fields outside the schema are ignored, and nested objects/arrays are
- * stored as JSON columns (queryable with DuckDB's json functions). Caller must
- * confirm `getCanvas()` is defined before invoking.
+ * Fetch the caller's inline page and stage a bounded drain of the matched set on
+ * a DataCanvas. The explicit nullable `schema` keeps DuckDB ingestion robust
+ * against openFDA's sparse, heterogeneous records — missing fields land as NULL,
+ * fields outside the schema are ignored, and nested objects/arrays are stored as
+ * JSON columns (queryable with DuckDB's json functions). Caller must confirm
+ * `getCanvas()` is defined before invoking.
  *
- * The full matched set is always staged on the canvas; `limit`/`skip` bound only
- * the inline preview window (`preview.slice(skip, skip + limit)`), so an agent can
- * cap its inline context while the complete result stays queryable via SQL.
+ * The inline page is the same `limit`/`skip` window the plain search path
+ * returns; the drain always starts at offset 0 and runs until the byte budget,
+ * the row ceiling, or the matched set is exhausted.
  */
 export async function spillSearch(opts: {
   endpoint: string;
@@ -92,82 +144,120 @@ export async function spillSearch(opts: {
   canvasId?: string | undefined;
   schema: ColumnSchema[];
   ctx: Context;
-  previewChars?: number | undefined;
-  /** Upper bound on inline preview rows. Undefined keeps the full budget-fit preview. */
-  limit?: number | undefined;
-  /** Pagination offset into the inline preview window. Defaults to 0. */
-  skip?: number | undefined;
+  /** Inline page size — the caller's `limit`. */
+  limit: number;
+  /** Inline page offset into the matched set — the caller's `skip`. */
+  skip: number;
 }): Promise<OpenFdaSpillResult> {
-  const { endpoint, search, sort, canvasId, schema, ctx } = opts;
+  const { endpoint, search, sort, canvasId, schema, ctx, limit, skip } = opts;
   const canvas = getCanvas();
   if (!canvas) {
     throw new Error('DataCanvas is not enabled. Set CANVAS_PROVIDER_TYPE=duckdb.');
   }
   const svc = getOpenFdaService();
 
-  // Peek the first page: total drives the truncation signal and the drain bound;
-  // lastUpdated carries dataset provenance into the tool's meta block.
-  const first = await svc.query<Record<string, unknown>>(
+  // Acquire before any upstream work so an unknown canvas_id fails fast.
+  const instance = await canvas.acquire(canvasId, ctx);
+
+  // Probe: the total drives the drain bound, the serialized size drives the page
+  // cadence, and the rows themselves cover the common inline window for free.
+  const probe = await svc.query<Record<string, unknown>>(
     endpoint,
-    { search, sort, limit: PAGE_SIZE, skip: 0 },
+    { search, sort, limit: PROBE_ROWS, skip: 0 },
     ctx,
   );
-  const total = first.meta.total;
-  const lastUpdated = first.meta.lastUpdated;
+  const total = probe.meta.total;
+  const lastUpdated = probe.meta.lastUpdated;
+
+  const probeCoversWindow =
+    skip + limit <= probe.results.length || probe.results.length < PROBE_ROWS;
+  const preview = probeCoversWindow
+    ? probe.results.slice(skip, skip + limit)
+    : (await svc.query<Record<string, unknown>>(endpoint, { search, sort, limit, skip }, ctx))
+        .results;
+
+  if (probe.results.length === 0) {
+    return {
+      canvasId: instance.canvasId,
+      lastUpdated,
+      preview,
+      skip,
+      spilled: false,
+      stagedRows: 0,
+      tableName: '',
+      total,
+      truncated: false,
+    };
+  }
+
+  const avgBytes = Math.max(1, JSON.stringify(probe.results).length / probe.results.length);
+  const rowBudget = Math.min(
+    OPENFDA_MAX_ROWS,
+    Math.max(probe.results.length, Math.floor(STAGE_MAX_BYTES / avgBytes)),
+  );
+  const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Math.floor(PAGE_MAX_BYTES / avgBytes)));
 
   async function* drain(): AsyncGenerator<Record<string, unknown>> {
-    yield* first.results;
-    let skip = first.results.length;
-    // Page forward, never requesting a skip past the 25,000 ceiling.
-    while (skip < OPENFDA_MAX_ROWS && skip < total) {
-      const limit = Math.min(PAGE_SIZE, OPENFDA_MAX_ROWS - skip);
+    yield* probe.results;
+    let fetched = probe.results.length;
+    while (fetched < rowBudget && fetched < total) {
+      const pageLimit = Math.min(pageSize, rowBudget - fetched);
       const page = await svc.query<Record<string, unknown>>(
         endpoint,
-        { search, sort, limit, skip },
+        { search, sort, limit: pageLimit, skip: fetched },
         ctx,
       );
       if (page.results.length === 0) break;
       yield* page.results;
-      if (page.results.length < limit) break;
-      skip += page.results.length;
+      fetched += page.results.length;
+      if (page.results.length < pageLimit) break;
     }
   }
 
-  const instance = await canvas.acquire(canvasId, ctx);
-  const result = await spillover({
-    canvas: instance,
-    source: drain(),
+  const handle = await instance.registerTable(newTableName(), drain(), {
     schema,
-    previewChars: opts.previewChars ?? PREVIEW_CHARS,
-    caps: { maxRows: OPENFDA_MAX_ROWS },
     signal: ctx.signal,
   });
 
-  // `stagedCount` reflects the full staged set — every matched row is on the
-  // canvas. `limit`/`skip` bound only the inline preview window below, never the
-  // staged data, so the truncation signal stays keyed to the complete result.
-  const stagedCount = result.spilled ? result.handle.rowCount : result.previewRows.length;
-  const previewStart = opts.skip ?? 0;
-  const preview =
-    opts.limit === undefined
-      ? result.previewRows.slice(previewStart)
-      : result.previewRows.slice(previewStart, previewStart + opts.limit);
-  return {
-    preview,
-    skip: previewStart,
-    total,
-    lastUpdated,
+  ctx.log.info('Staged openFDA search on canvas', {
+    endpoint,
     canvasId: instance.canvasId,
-    tableName: result.spilled ? result.handle.tableName : '',
-    spilled: result.spilled,
-    truncated: total > stagedCount,
+    tableName: handle.tableName,
+    stagedRows: handle.rowCount,
+    total,
+  });
+
+  return {
+    canvasId: instance.canvasId,
+    lastUpdated,
+    preview,
+    skip,
+    spilled: true,
+    stagedRows: handle.rowCount,
+    tableName: handle.tableName,
+    total,
+    truncated: total > handle.rowCount,
   };
 }
 
 /**
- * Map a spill result to the canvas-mode tool response — the `{ meta, results }`
- * shape every search tool returns plus the canvas pointer fields. Shared so the
- * output contract lives in one place.
+ * Enrichment notice for a staged search — the canvas pointer plus how much of
+ * the matched set actually reached the table.
+ */
+export function stagingNotice(spill: OpenFdaSpillResult): string {
+  if (!spill.spilled) {
+    return `Nothing was staged on canvas "${spill.canvasId}" — ${spill.total} records matched.`;
+  }
+  const cut = spill.truncated
+    ? ` Staging stopped at its size budget, so the table holds the first ${spill.stagedRows} records — narrow the query (filters, date range) for a complete set.`
+    : '';
+  return `Staged ${spill.stagedRows} of ${spill.total} matched records on canvas table "${spill.tableName}". Query it with openfda_dataframe_query using canvas_id "${spill.canvasId}".${cut}`;
+}
+
+/**
+ * Map a spill result to the staged tool response — the `{ meta, results }` shape
+ * every search tool returns plus the canvas pointer fields. Shared so the output
+ * contract lives in one place.
  */
 export function canvasResult(spill: OpenFdaSpillResult) {
   return {
@@ -180,6 +270,7 @@ export function canvasResult(spill: OpenFdaSpillResult) {
     results: spill.preview,
     canvas_id: spill.canvasId,
     spilled: spill.spilled,
+    staged_rows: spill.stagedRows,
     ...(spill.tableName ? { canvas_table: spill.tableName } : {}),
     ...(spill.truncated ? { truncated: true } : {}),
   };

@@ -134,6 +134,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       ctx.enrich.notice(
         emptyResultMessage(
           response.meta.skip,
+          response.meta.total,
           `No labels matched${input.search ? ` search: ${input.search}` : ''}. Try broader terms or check field names (e.g. openfda.brand_name, openfda.generic_name, openfda.manufacturer_name). ${fieldHint}`,
         ),
       );

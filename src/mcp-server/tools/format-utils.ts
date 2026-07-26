@@ -70,11 +70,76 @@ export function formatRemainingFields(
 
 /**
  * Build an empty-result message that distinguishes "no matches" from
- * "paginated past the end" — openFDA returns the same 404 for both, so the
- * handler needs the request's `skip` to disambiguate for the caller.
+ * "paginated past the end". A non-zero `total` settles it — records matched, so
+ * the offset overshot and the field hints are noise. openFDA answers both cases
+ * with the same 404 (total 0), so without a total the message names both
+ * possibilities and the request's `skip` is the only clue.
  */
-export function emptyResultMessage(skip: number, baseHint: string): string {
+export function emptyResultMessage(skip: number, total: number, baseHint: string): string {
+  if (total > 0) {
+    return `No records at skip=${skip}: ${total} matched, so the offset is past the end of the result set. Lower skip to read them.`;
+  }
   return skip > 0
     ? `No results at skip=${skip}. Either no records match or pagination ran past the end of the result set — try skip=0 to confirm. ${baseHint}`
     : baseHint;
+}
+
+/** Canvas pointer fields a search tool's `format()` receives when the call staged. */
+export interface CanvasResultFields {
+  canvas_id?: string | undefined;
+  canvas_table?: string | undefined;
+  spilled?: boolean | undefined;
+  staged_rows?: number | undefined;
+  truncated?: boolean | undefined;
+}
+
+/**
+ * Canvas staging disclosure for `content[]`. Renders whenever the call staged —
+ * independent of how many inline rows came back — so the canvas pointer and the
+ * staged-vs-matched count never hinge on the size of the inline page. Returns
+ * null when the call did not stage.
+ */
+export function canvasStagingLine(total: number, result: CanvasResultFields): string | null {
+  if (result.spilled === undefined) return null;
+  if (!result.canvas_table) {
+    return `> Canvas \`${result.canvas_id}\` acquired; no rows staged (spilled=${result.spilled}, ${total} matched).`;
+  }
+  const staged = result.staged_rows ?? 0;
+  const cut = result.truncated
+    ? ` Truncated: staging stopped at its size budget, so the table holds the first ${staged} records — narrow the query for a complete set.`
+    : '';
+  return `> Staged ${staged} of ${total} matched rows on canvas table \`${result.canvas_table}\` (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled}) — query with openfda_dataframe_query.${cut}`;
+}
+
+/**
+ * Explain an empty inline page for a query that did match records. Callers keep
+ * their own "nothing matched" wording for `total === 0`, so a search that found
+ * records never renders as no results. The staged-table pointer reads from the
+ * start of the table: this note only fires once the offset has run past the
+ * matched set, and the table never holds more rows than matched, so carrying
+ * `skip` into the SQL would hand back a query that returns nothing.
+ */
+export function emptyPageNote(
+  total: number,
+  skip: number,
+  result?: CanvasResultFields | undefined,
+): string {
+  const base = `No records in this page: ${total} matched, but skip=${skip} is past the end of the result set. Lower skip to read matched records.`;
+  if (!result?.canvas_table) return base;
+  const held = result.truncated
+    ? `the first ${result.staged_rows ?? 0} of them`
+    : `all ${total} of them`;
+  return `${base} The staged table holds ${held} — openfda_dataframe_query with \`SELECT * FROM ${result.canvas_table} LIMIT 10\`.`;
+}
+
+/**
+ * Qualify a tool's no-match line when the request carried an offset. openFDA
+ * answers a page past the end of a result set with the same empty payload and
+ * `total: 0` it uses for a genuine miss, so at `skip > 0` the flat wording would
+ * assert something the response cannot support.
+ */
+export function noMatchNote(miss: string, skip: number): string {
+  return skip > 0
+    ? `${miss.replace(/\.$/, '')} at skip=${skip} — either nothing matched or the offset ran past the end of the result set. Retry with skip=0 to tell them apart.`
+    : miss;
 }
