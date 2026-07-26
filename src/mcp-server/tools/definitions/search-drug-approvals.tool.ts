@@ -9,6 +9,7 @@ import type { ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import { emptyResultMessage, formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
+import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import { canvasOutputShape, canvasResult, spillSearch } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
@@ -34,14 +35,12 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
   annotations: { readOnlyHint: true },
 
   input: z.object({
-    search: z
-      .string()
+    search: nonBlankString()
       .optional()
       .describe(
         'openFDA search query. Examples: openfda.brand_name:"humira", sponsor_name:"PFIZER", submissions.submission_type:"ORIG" AND submissions.review_priority:"PRIORITY". Exact quoted values can be case-sensitive on some fields — sponsor_name is stored uppercase, so use sponsor_name:"PFIZER" (a lowercase quoted value returns no matches). Omit to browse recent.',
       ),
-    sort: z
-      .string()
+    sort: nonBlankString()
       .optional()
       .describe(
         'Sort expression (field:asc or field:desc). Example: submissions.submission_status_date:desc. Invalid or non-sortable fields cause a query error — use a documented field name.',
@@ -58,8 +57,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       .max(25000)
       .default(0)
       .describe('Number of records to skip for pagination (0-25000, default 0)'),
-    canvas_id: z
-      .string()
+    canvas_id: nonBlankString()
       .optional()
       .describe(
         'DataCanvas session id from a prior call. Omit to start a fresh canvas; the response returns a new one when canvas is enabled. When canvas (CANVAS_PROVIDER_TYPE=duckdb) is enabled the full matched set is staged for SQL and limit/skip apply only to the inline path.',

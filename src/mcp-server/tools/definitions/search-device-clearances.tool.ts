@@ -8,6 +8,7 @@ import type { ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import { emptyResultMessage, formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
+import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import { canvasOutputShape, canvasResult, spillSearch } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
@@ -47,14 +48,12 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
     pathway: z
       .enum(['510k', 'pma'])
       .describe('Premarket pathway. 510(k) is the most common; PMA is for higher-risk devices.'),
-    search: z
-      .string()
+    search: nonBlankString()
       .optional()
       .describe(
         'openFDA search query. Examples: applicant:"medtronic", advisory_committee_description:"cardiovascular", product_code:"DXN", openfda.device_name:"catheter". Omit to browse recent.',
       ),
-    sort: z
-      .string()
+    sort: nonBlankString()
       .optional()
       .describe(
         'Sort expression (field:asc or field:desc). Example: decision_date:desc. Invalid or non-sortable fields cause a query error — use a documented field name.',
@@ -66,8 +65,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       .default(10)
       .describe('Maximum number of records to return (1-1000).'),
     skip: z.number().min(0).max(25000).default(0).describe('Pagination offset (0-25000).'),
-    canvas_id: z
-      .string()
+    canvas_id: nonBlankString()
       .optional()
       .describe(
         'DataCanvas session id from a prior call. Omit to start a fresh canvas; the response returns a new one when canvas is enabled. When canvas (CANVAS_PROVIDER_TYPE=duckdb) is enabled the full matched set is staged for SQL and limit/skip apply only to the inline path.',

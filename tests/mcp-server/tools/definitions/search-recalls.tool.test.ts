@@ -90,6 +90,33 @@ describe('openfda_search_recalls', () => {
     expect(enrichment.notice).toBeDefined();
   });
 
+  /**
+   * Driven through `input.parse` — the boundary the framework validates at —
+   * rather than straight into the handler, so the assertion covers what a client
+   * actually hits.
+   */
+  it('rejects a blank search before any upstream request', async () => {
+    for (const blank of ['', '   ', '\t']) {
+      expect(() => searchRecallsTool.input.parse({ category: 'drug', search: blank })).toThrow(
+        /empty or whitespace-only|>=1 characters/i,
+      );
+    }
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('still browses when search is omitted', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 17816, skip: 0, limit: 1, lastUpdated: '2026-01-01' },
+      results: [{ recall_number: 'R-1' }],
+    });
+
+    const input = searchRecallsTool.input.parse({ category: 'drug', limit: 1 });
+    const result = await searchRecallsTool.handler(input, ctx);
+
+    expect(mockQuery.mock.calls[0][1]).toMatchObject({ search: undefined });
+    expect(result.results).toHaveLength(1);
+  });
+
   it('formats recall records', () => {
     const content = searchRecallsTool.format({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },

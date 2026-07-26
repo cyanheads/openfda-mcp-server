@@ -7,6 +7,7 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import { emptyResultMessage, humanizeField } from '@/mcp-server/tools/format-utils.js';
+import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 const ENDPOINT = 'drug/label';
@@ -17,13 +18,10 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
   annotations: { readOnlyHint: true },
 
   input: z.object({
-    search: z
-      .string()
-      .describe(
-        'Query targeting label fields. Examples: openfda.brand_name:"aspirin", openfda.generic_name:"metformin", openfda.manufacturer_name:"pfizer". For a specific revision, pass set_id with the SPL UUID returned in earlier results.',
-      ),
-    sort: z
-      .string()
+    search: nonBlankString().describe(
+      'Query targeting label fields. Examples: openfda.brand_name:"aspirin", openfda.generic_name:"metformin", openfda.manufacturer_name:"pfizer". For a specific revision, pass set_id with the SPL UUID returned in earlier results.',
+    ),
+    sort: nonBlankString()
       .optional()
       .describe(
         'Sort expression (field:asc or field:desc). Example: effective_time:desc. Invalid or non-sortable fields cause a query error — use a documented field name.',

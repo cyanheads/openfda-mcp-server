@@ -8,6 +8,7 @@ import type { ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import { emptyResultMessage, formatRemainingFields } from '@/mcp-server/tools/format-utils.js';
+import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import { canvasOutputShape, canvasResult, spillSearch } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
@@ -64,14 +65,12 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
     category: z
       .enum(['drug', 'food', 'device'])
       .describe('Product category — each has different field schemas in the response'),
-    search: z
-      .string()
+    search: nonBlankString()
       .optional()
       .describe(
         'openFDA search query. Examples: patient.drug.medicinalproduct:"aspirin", patient.reaction.reactionmeddrapt:"nausea" AND serious:"1". Omit to browse recent.',
       ),
-    sort: z
-      .string()
+    sort: nonBlankString()
       .optional()
       .describe(
         'Sort expression (field:asc or field:desc). Sortable date fields are category-specific: drug → receivedate:desc (or receiptdate), food → date_created:desc (or date_started), device → date_received:desc (or date_of_event). A field from another category (e.g. receivedate on food or device) causes a query error — use the field for this category.',
@@ -88,8 +87,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       .max(25000)
       .default(0)
       .describe('Number of records to skip for pagination (0-25000, default 0)'),
-    canvas_id: z
-      .string()
+    canvas_id: nonBlankString()
       .optional()
       .describe(
         'DataCanvas session id from a prior call. Omit to start a fresh canvas; the response returns a new one when canvas is enabled. When canvas (CANVAS_PROVIDER_TYPE=duckdb) is enabled the full matched set is staged for SQL and limit/skip apply only to the inline path.',

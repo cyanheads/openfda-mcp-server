@@ -6,6 +6,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 
 export const dataframeDescribeTool = tool('openfda_dataframe_describe', {
@@ -16,7 +17,7 @@ export const dataframeDescribeTool = tool('openfda_dataframe_describe', {
     'Columns typed JSON hold nested openFDA objects/arrays — query them with DuckDB json functions.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
-    canvas_id: z.string().describe('Canvas ID from an openFDA search tool response.'),
+    canvas_id: nonBlankString().describe('Canvas ID from an openFDA search tool response.'),
   }),
   output: z.object({
     tables: z

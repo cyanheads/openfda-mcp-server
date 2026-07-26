@@ -6,6 +6,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 
 export const dataframeQueryTool = tool('openfda_dataframe_query', {
@@ -17,15 +18,13 @@ export const dataframeQueryTool = tool('openfda_dataframe_query', {
     'Only SELECT is allowed — DDL, DML, COPY, and file-reading functions are blocked.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
-    canvas_id: z
-      .string()
-      .describe('Canvas ID from an openFDA search tool response (the canvas_id field).'),
-    query: z
-      .string()
-      .describe(
-        'SQL SELECT against the staged table. Use the table name from openfda_dataframe_describe. ' +
-          'Example: "SELECT classification, COUNT(*) AS n FROM spilled_ab12cd34 GROUP BY classification ORDER BY n DESC".',
-      ),
+    canvas_id: nonBlankString().describe(
+      'Canvas ID from an openFDA search tool response (the canvas_id field).',
+    ),
+    query: nonBlankString().describe(
+      'SQL SELECT against the staged table. Use the table name from openfda_dataframe_describe. ' +
+        'Example: "SELECT classification, COUNT(*) AS n FROM spilled_ab12cd34 GROUP BY classification ORDER BY n DESC".',
+    ),
   }),
   output: z.object({
     rows: z
