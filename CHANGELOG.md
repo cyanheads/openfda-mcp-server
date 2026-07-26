@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.4.3](changelog/0.4.x/0.4.3.md) — 2026-07-26
+
+Fixes six openFDA classification and input-validation bugs (#22, #25, #26, #33, #34, #35) and adopts mcp-ts-core ^0.11.0 with a Socket security scanner and .mcpb native-binding stripping
+
 ## [0.4.2](changelog/0.4.x/0.4.2.md) — 2026-07-11
 
 Removes content-output truncation across recalls, adverse events, device clearances, drug approvals, drug shortages, and NDC lookup so text output matches the full structuredContent data

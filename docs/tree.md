@@ -1,6 +1,6 @@
 # openfda-mcp-server - Directory Structure
 
-Generated on: 2026-07-11 09:27:09
+Generated on: 2026-07-26 22:23:03
 
 ```text
 openfda-mcp-server/
@@ -153,7 +153,8 @@ openfda-mcp-server/
 │   │       │   ├── search-recalls.tool.ts
 │   │       │   └── search-tobacco-reports.tool.ts
 │   │       ├── field-catalog.ts
-│   │       └── format-utils.ts
+│   │       ├── format-utils.ts
+│   │       └── schema-utils.ts
 │   ├── services/
 │   │   ├── canvas/
 │   │   │   └── canvas-accessor.ts
