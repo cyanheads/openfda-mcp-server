@@ -8,5 +8,10 @@ minimumReleaseAgeExcludes = ["@cyanheads/mcp-ts-core"]
 auto = "fallback"
 frozenLockfile = false
 
+[install.security]
+# Socket scans every package before install (malware, typosquats, CVEs).
+# Note: configuring a scanner disables Bun's auto-install.
+scanner = "@socketsecurity/bun-security-scanner"
+
 [run]
 bun = true

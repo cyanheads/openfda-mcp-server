@@ -54,6 +54,8 @@ logs/
 # =============================================================================
 .cache/
 .parcel-cache/
+# DuckDB spill directory — created in CWD while DataCanvas is active, removed on clean exit
+.tmp/
 
 # =============================================================================
 # ENVIRONMENT & CONFIGURATION
@@ -69,7 +71,7 @@ worker-configuration.d.ts
 # =============================================================================
 .storage/
 repomix-output*
-data/
+/data/
 docs/api/
 docs/devdocs.md
 .mcp.json

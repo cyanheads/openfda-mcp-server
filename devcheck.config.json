@@ -7,7 +7,8 @@
       "tsc-alias",
       "@cyanheads/mcp-ts-core",
       "depcheck",
-      "@vitest/coverage-istanbul"
+      "@vitest/coverage-istanbul",
+      "@socketsecurity/bun-security-scanner"
     ],
     "ignorePatterns": []
   },
