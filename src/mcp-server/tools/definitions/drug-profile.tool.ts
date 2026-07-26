@@ -8,12 +8,67 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { truncate } from '@/mcp-server/tools/format-utils.js';
+import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 /** Strip double quotes so a free-text drug name embeds safely in a quoted query clause. */
 function sanitize(term: string): string {
   return term.replace(/"/g, '').trim();
+}
+
+/** Profile sections a sub-query populates — the key degradation is reported under. */
+const SECTIONS = [
+  'identity',
+  'label',
+  'adverse_events',
+  'recalls',
+  'approval',
+  'shortage',
+] as const;
+type Section = (typeof SECTIONS)[number];
+
+/** A sub-query that failed, kept so the caller learns the section is unknown rather than absent. */
+interface SectionFailure {
+  message: string;
+  reason: string;
+  section: Section;
+}
+
+/** Collects every sub-query failure of one profile run, plus the first global one to rethrow. */
+interface FailureSink {
+  failures: SectionFailure[];
+  fatal?: unknown;
+}
+
+/**
+ * Failures that must never be absorbed into a best-effort null section.
+ *
+ * Auth, permission, and configuration failures are global — every sub-query fails
+ * identically, and reporting them as "no data" describes a server misconfiguration
+ * as a misspelled drug. Cancellation means the caller is already gone. Returns the
+ * reason to report, or null when the failure is genuinely per-section (a rate limit,
+ * a 5xx on one endpoint, a rejected query) and best-effort degradation is correct.
+ */
+function fatalReason(error: unknown): string | null {
+  if (!(error instanceof McpError)) return null;
+  if (error.code === JsonRpcErrorCode.Unauthorized) return 'unauthorized';
+  if (error.code === JsonRpcErrorCode.Forbidden) return 'forbidden';
+  if (error.code === JsonRpcErrorCode.ConfigurationError) return 'configuration_error';
+  // fetchWithTimeout tags a caller-signal abort with this source before wrapping
+  // it as an InternalError, which is otherwise indistinguishable from a bug.
+  if ((error.data as { errorSource?: string } | undefined)?.errorSource === 'FetchAborted') {
+    return 'cancelled';
+  }
+  return null;
+}
+
+/** Machine-readable reason for a per-section failure — the service's own `data.reason` when it set one. */
+function failureReason(error: unknown): string {
+  if (!(error instanceof McpError)) return 'unexpected_error';
+  const reason = (error.data as { reason?: string } | undefined)?.reason;
+  return typeof reason === 'string' ? reason : 'upstream_error';
 }
 
 /** First non-empty string in an openFDA array field (or a bare string), else null. */
@@ -111,12 +166,30 @@ function deriveMarketingStatus(app: Record<string, unknown>): string | null {
   return null;
 }
 
-/** Run a best-effort sub-query: resolve to its result, or null (flagging degradation) on error. */
-async function settle<T>(fn: () => Promise<T>, onError: () => void): Promise<T | null> {
+/**
+ * Run a best-effort sub-query: resolve to its result, or null on error.
+ *
+ * Every failure is recorded in `failures` so the response can name the sections it
+ * could not fill. A failure `fatalReason` classifies as global is additionally
+ * captured in `fatal` — the handler rethrows it after the round rather than
+ * rejecting mid-flight, so a second concurrent fatal never becomes an unhandled
+ * rejection.
+ */
+async function settle<T>(
+  section: Section,
+  fn: () => Promise<T>,
+  sink: FailureSink,
+): Promise<T | null> {
   try {
     return await fn();
-  } catch {
-    onError();
+  } catch (error) {
+    const fatal = fatalReason(error);
+    if (fatal !== null) sink.fatal ??= error;
+    sink.failures.push({
+      section,
+      reason: fatal ?? failureReason(error),
+      message: truncate(error instanceof Error ? error.message : String(error), 300),
+    });
     return null;
   }
 }
@@ -164,12 +237,9 @@ export const drugProfileTool = tool('openfda_drug_profile', {
   annotations: { readOnlyHint: true },
 
   input: z.object({
-    drug: z
-      .string()
-      .min(1)
-      .describe(
-        'Drug name to profile — brand or generic (e.g. "metformin", "Humira", "Glucophage"). Resolved once to canonical FDA identifiers, which then key every sub-query.',
-      ),
+    drug: nonBlankString().describe(
+      'Drug name to profile — brand or generic (e.g. "metformin", "Humira", "Glucophage"). Resolved once to canonical FDA identifiers, which then key every sub-query.',
+    ),
   }),
 
   output: z.object({
@@ -264,7 +334,34 @@ export const drugProfileTool = tool('openfda_drug_profile', {
       })
       .nullable()
       .describe('Current or most-recent drug shortage status, or null when none on record.'),
+    degraded: z
+      .array(
+        z
+          .object({
+            section: z.enum(SECTIONS).describe('Profile section whose sub-query failed.'),
+            reason: z
+              .string()
+              .describe(
+                'Machine-readable failure reason (e.g. rate_limited, upstream_error, query_error).',
+              ),
+            message: z.string().describe('Upstream failure message for this section, truncated.'),
+          })
+          .describe('One failed sub-query and why it failed.'),
+      )
+      .describe(
+        'Sub-queries that failed upstream, empty when every section resolved. A section listed here is unknown, not absent — a null section with no entry here genuinely has no FDA record.',
+      ),
   }),
+
+  errors: [
+    {
+      reason: 'blank_drug_name',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'The drug name is blank, or reduces to nothing once quote characters are stripped.',
+      recovery:
+        'Supply a brand or generic drug name with at least one searchable character, for example "metformin".',
+    },
+  ],
 
   enrichment: {
     sectionsFound: z
@@ -283,10 +380,18 @@ export const drugProfileTool = tool('openfda_drug_profile', {
   async handler(input, ctx) {
     const svc = getOpenFdaService();
     const term = sanitize(input.drug);
-    let degraded = false;
-    const flag = () => {
-      degraded = true;
-    };
+    // Guard the normalized term, not just the raw input: a name made only of quote
+    // characters survives the schema but sanitizes to '', which would key every
+    // sub-query off an empty clause and browse unrelated records as a "profile".
+    if (term.length === 0) {
+      throw ctx.fail(
+        'blank_drug_name',
+        `"${input.drug}" has no searchable characters once quotes are stripped, so it cannot be resolved to an FDA drug.`,
+        { ...ctx.recoveryFor('blank_drug_name') },
+      );
+    }
+
+    const sink: FailureSink = { failures: [] };
 
     /* 1. Resolve identity once — drug/label first (richest, doubles as the label section), drug/ndc fallback. */
     let resolvedVia: 'label' | 'ndc' | 'none' = 'none';
@@ -295,13 +400,14 @@ export const drugProfileTool = tool('openfda_drug_profile', {
 
     const termLower = term.toLowerCase();
     const labelResolve = await settle(
+      'label',
       () =>
         svc.query(
           'drug/label',
           { search: `openfda.generic_name:"${term}" OR openfda.brand_name:"${term}"`, limit: 5 },
           ctx,
         ),
-      flag,
+      sink,
     );
     if (labelResolve && labelResolve.results.length > 0) {
       const records = labelResolve.results as Record<string, unknown>[];
@@ -312,14 +418,18 @@ export const drugProfileTool = tool('openfda_drug_profile', {
         resolvedVia = 'label';
       }
     } else {
+      // Identity resolution failed globally (bad key, forbidden endpoint, caller
+      // gone) — fan out five more doomed requests would only widen the blast radius.
+      if (sink.fatal) throw sink.fatal;
       const ndcResolve = await settle(
+        'identity',
         () =>
           svc.query(
             'drug/ndc',
             { search: `generic_name:"${term}" OR brand_name:"${term}"`, limit: 5 },
             ctx,
           ),
-        flag,
+        sink,
       );
       if (ndcResolve && ndcResolve.results.length > 0) {
         const records = ndcResolve.results as Record<string, unknown>[];
@@ -343,9 +453,12 @@ export const drugProfileTool = tool('openfda_drug_profile', {
      * canonical generic name; the free-text adverse-event field keys off the user's term,
      * which matches the heterogeneous reporter-entered medicinalproduct values with better recall.
      */
-    const key = sanitize(identity.generic_name ?? identity.brand_names[0] ?? term);
+    // A resolved identity whose name sanitizes to nothing falls back to the
+    // (already validated) input term rather than keying sub-queries off an empty clause.
+    const key = sanitize(identity.generic_name ?? identity.brand_names[0] ?? term) || term;
     const [reactionsRes, seriousRes, recallsRes, approvalRes, shortageRes] = await Promise.all([
       settle(
+        'adverse_events',
         () =>
           svc.query(
             'drug/event',
@@ -356,41 +469,49 @@ export const drugProfileTool = tool('openfda_drug_profile', {
             },
             ctx,
           ),
-        flag,
+        sink,
       ),
       settle(
+        'adverse_events',
         () =>
           svc.query(
             'drug/event',
             { search: `patient.drug.medicinalproduct:"${term}"`, count: 'serious' },
             ctx,
           ),
-        flag,
+        sink,
       ),
       settle(
+        'recalls',
         () =>
           svc.query(
             'drug/enforcement',
             { search: `openfda.generic_name:"${key}"`, sort: 'report_date:desc', limit: 5 },
             ctx,
           ),
-        flag,
+        sink,
       ),
       settle(
+        'approval',
         () =>
           svc.query('drug/drugsfda', { search: `openfda.generic_name:"${key}"`, limit: 5 }, ctx),
-        flag,
+        sink,
       ),
       settle(
+        'shortage',
         () =>
           svc.query(
             'drug/shortages',
             { search: `generic_name:"${key}"`, sort: 'update_date:desc', limit: 1 },
             ctx,
           ),
-        flag,
+        sink,
       ),
     ]);
+
+    // Auth/config failures and cancellation stay accessible to the caller rather
+    // than collapsing into an empty best-effort profile.
+    if (sink.fatal) throw sink.fatal;
 
     /* 3. Merge sections (best-effort: absent/failed → null). */
     const label = labelRecord
@@ -468,16 +589,31 @@ export const drugProfileTool = tool('openfda_drug_profile', {
       shortage,
     ].filter((s) => s != null).length;
 
-    ctx.log.info('Drug profile completed', { drug: term, resolvedVia, sectionsFound, degraded });
+    // One entry per section, not per sub-query — the two adverse-event calls share a section.
+    const degraded = [...new Map(sink.failures.map((f) => [f.section, f])).values()];
+
+    ctx.log.info('Drug profile completed', {
+      drug: term,
+      resolvedVia,
+      sectionsFound,
+      degradedSections: degraded.map((d) => d.section),
+    });
 
     ctx.enrich({ sectionsFound });
-    if (resolvedVia === 'none' && sectionsFound === 0) {
+    if (degraded.length > 0) {
+      // Never attribute an upstream failure to a misspelled drug — say which
+      // sections failed and why, and only then note an unresolved identity.
+      const detail = degraded.map((d) => `${d.section} (${d.reason})`).join(', ');
+      ctx.enrich.notice(
+        `Partial profile — these sections failed upstream and are unknown, not empty: ${detail}. Retry for a complete profile.${
+          resolvedVia === 'none'
+            ? ' Identity was not resolved either, which may be a consequence of the same failures.'
+            : ''
+        }`,
+      );
+    } else if (resolvedVia === 'none' && sectionsFound === 0) {
       ctx.enrich.notice(
         `Could not resolve "${input.drug}" to an FDA drug. Check the spelling, try the generic name, or query openfda_get_drug_label / openfda_lookup_ndc directly.`,
-      );
-    } else if (degraded) {
-      ctx.enrich.notice(
-        'Some sections are unavailable due to upstream rate limiting or errors; retry for a complete profile.',
       );
     }
 
@@ -489,16 +625,26 @@ export const drugProfileTool = tool('openfda_drug_profile', {
       recalls,
       approval,
       shortage,
+      degraded,
     };
   },
 
   format: (result) => {
-    const { identity, label, adverse_events, recalls, approval, shortage, meta } = result;
+    const { identity, label, adverse_events, recalls, approval, shortage, degraded, meta } = result;
     const lines: string[] = [
       `# Drug profile: ${meta.drug}`,
       `_Resolved via: ${meta.resolvedVia} · fan-out key: ${meta.fanOutKey}_`,
       '',
     ];
+
+    // Ahead of the sections themselves, so an empty section is never read as
+    // "no FDA record" when the sub-query behind it actually failed.
+    if (degraded.length > 0) {
+      lines.push(`## Degraded (${degraded.length} section${degraded.length === 1 ? '' : 's'})`);
+      lines.push('These sub-queries failed upstream — the data below is unknown, not absent:');
+      for (const d of degraded) lines.push(`- **${d.section}** — ${d.reason}: ${d.message}`);
+      lines.push('');
+    }
 
     lines.push('## Identity');
     lines.push(

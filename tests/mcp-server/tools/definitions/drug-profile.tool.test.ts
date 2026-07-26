@@ -1,4 +1,11 @@
 import type { Context } from '@cyanheads/mcp-ts-core';
+import {
+  forbidden,
+  JsonRpcErrorCode,
+  McpError,
+  serviceUnavailable,
+  unauthorized,
+} from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -227,6 +234,7 @@ describe('openfda_drug_profile', () => {
       recalls: [],
       approval: null,
       shortage: null,
+      degraded: [],
     });
 
     const text = content[0].text;
@@ -313,5 +321,160 @@ describe('openfda_drug_profile', () => {
 
     expect(result.label?.warnings).toBeNull();
     expect(result.label?.indications).toContain('No active');
+  });
+
+  // Issue #25 — the schema guards the raw input, but sanitize() strips quotes, so a
+  // name made only of quote characters survived it and keyed every sub-query off an
+  // empty clause: an unfiltered browse returned as a "profile".
+  describe('blank fan-out key (#25)', () => {
+    it('rejects a drug name that sanitizes to nothing, without any upstream request', async () => {
+      const failCtx = createMockContext({ errors: drugProfileTool.errors });
+
+      const err = (await drugProfileTool
+        .handler({ drug: '"""' }, failCtx)
+        .catch((e: unknown) => e)) as McpError;
+
+      expect(err).toBeInstanceOf(McpError);
+      expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
+      expect(err.data).toMatchObject({ reason: 'blank_drug_name' });
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the input term when the resolved identity yields a blank key', async () => {
+      mockQuery.mockImplementation(async (endpoint: string) =>
+        endpoint === 'drug/label'
+          ? { meta: meta({ total: 1 }), results: [{ openfda: { generic_name: ['"'] } }] }
+          : { meta: meta(), results: [] },
+      );
+
+      const result = await drugProfileTool.handler({ drug: 'metformin' }, ctx);
+
+      expect(result.meta.fanOutKey).toBe('metformin');
+      const structured = mockQuery.mock.calls.filter(([endpoint]) =>
+        ['drug/enforcement', 'drug/drugsfda', 'drug/shortages'].includes(endpoint),
+      );
+      expect(structured).toHaveLength(3);
+      for (const [, params] of structured) {
+        expect(params.search).toContain('metformin');
+      }
+    });
+  });
+
+  // Issue #26 — every section failure used to be swallowed into an empty best-effort
+  // result, so an invalid API key was reported as a drug that could not be resolved.
+  describe('section failure classification (#26)', () => {
+    it('propagates an auth failure instead of reporting an unresolved drug', async () => {
+      mockQuery.mockRejectedValue(
+        unauthorized('openFDA API key is missing or invalid.', { reason: 'unauthorized' }),
+      );
+
+      const err = (await drugProfileTool
+        .handler({ drug: 'metformin' }, ctx)
+        .catch((e: unknown) => e)) as McpError;
+
+      expect(err).toBeInstanceOf(McpError);
+      expect(err.code).toBe(JsonRpcErrorCode.Unauthorized);
+      expect(getEnrichment(ctx).notice).toBeUndefined();
+    });
+
+    it('stops before the fan-out when identity resolution fails globally', async () => {
+      mockQuery.mockRejectedValue(
+        forbidden('Access to this openFDA endpoint is forbidden.', { reason: 'forbidden' }),
+      );
+
+      await expect(drugProfileTool.handler({ drug: 'metformin' }, ctx)).rejects.toThrow(McpError);
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      expect(mockQuery.mock.calls[0][0]).toBe('drug/label');
+    });
+
+    it('propagates cancellation rather than returning a half-built profile', async () => {
+      mockQuery.mockRejectedValue(
+        new McpError(JsonRpcErrorCode.InternalError, 'Request was aborted.', {
+          errorSource: 'FetchAborted',
+        }),
+      );
+
+      const err = (await drugProfileTool
+        .handler({ drug: 'metformin' }, ctx)
+        .catch((e: unknown) => e)) as McpError;
+
+      expect(err).toBeInstanceOf(McpError);
+      expect(err.message).toMatch(/aborted/i);
+    });
+
+    it('reports a per-section failure in structuredContent and content[]', async () => {
+      mockQuery.mockImplementation(async (endpoint: string, params: { count?: string }) => {
+        if (endpoint === 'drug/enforcement') {
+          throw serviceUnavailable('openFDA upstream error: gateway timeout', {
+            reason: 'upstream_error',
+          });
+        }
+        return fullUpstream(endpoint, params);
+      });
+
+      const result = await drugProfileTool.handler({ drug: 'metformin' }, ctx);
+
+      expect(result.degraded).toEqual([
+        {
+          section: 'recalls',
+          reason: 'upstream_error',
+          message: expect.stringContaining('gateway timeout'),
+        },
+      ]);
+      expect(result.recalls).toEqual([]);
+      expect(result.label).not.toBeNull();
+
+      const text = drugProfileTool.format(result)[0].text;
+      expect(text).toContain('## Degraded');
+      expect(text).toContain('recalls');
+      expect(text).toContain('upstream_error');
+      expect(text).toContain('gateway timeout');
+
+      const notice = getEnrichment(ctx).notice as string;
+      expect(notice).toContain('recalls (upstream_error)');
+      expect(notice).not.toMatch(/spelling/i);
+    });
+
+    it('collapses the two adverse-event sub-queries into one degraded entry', async () => {
+      mockQuery.mockImplementation(async (endpoint: string, params: { count?: string }) => {
+        if (endpoint === 'drug/event') {
+          throw serviceUnavailable('openFDA upstream error: shard failure', {
+            reason: 'upstream_error',
+          });
+        }
+        return fullUpstream(endpoint, params);
+      });
+
+      const result = await drugProfileTool.handler({ drug: 'metformin' }, ctx);
+
+      expect(result.degraded.map((d) => d.section)).toEqual(['adverse_events']);
+    });
+
+    it('never blames spelling when every section failed upstream', async () => {
+      mockQuery.mockRejectedValue(
+        serviceUnavailable('openFDA upstream error: HTTP 503', { reason: 'upstream_error' }),
+      );
+
+      const result = await drugProfileTool.handler({ drug: 'metformin' }, ctx);
+
+      expect(result.meta.resolvedVia).toBe('none');
+      expect(getEnrichment(ctx).sectionsFound).toBe(0);
+      expect(result.degraded.length).toBeGreaterThan(0);
+      const notice = getEnrichment(ctx).notice as string;
+      expect(notice).not.toMatch(/spelling/i);
+      expect(notice).toMatch(/failed upstream/i);
+      expect(notice).toMatch(/identity was not resolved/i);
+    });
+
+    it('leaves degraded empty on a fully resolved profile', async () => {
+      mockQuery.mockImplementation(async (endpoint: string, params: { count?: string }) =>
+        fullUpstream(endpoint, params),
+      );
+
+      const result = await drugProfileTool.handler({ drug: 'metformin' }, ctx);
+
+      expect(result.degraded).toEqual([]);
+      expect(drugProfileTool.format(result)[0].text).not.toContain('## Degraded');
+    });
   });
 });
