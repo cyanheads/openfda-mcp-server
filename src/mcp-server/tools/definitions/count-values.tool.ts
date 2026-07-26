@@ -6,6 +6,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 /** All valid openFDA endpoint paths. */
@@ -41,15 +42,14 @@ export const countValuesTool = tool('openfda_count_values', {
     endpoint: z
       .enum(ENDPOINTS)
       .describe('Full openFDA endpoint path (e.g. "drug/event", "device/classification")'),
-    count: z
-      .string()
-      .describe(
-        'Field to count. Append .exact for whole-phrase counting (e.g. "patient.reaction.reactionmeddrapt.exact", "openfda.brand_name.exact")',
-      ),
-    search: z
-      .string()
+    count: nonBlankString().describe(
+      'Field to count. Append .exact for whole-phrase counting of free-text fields (e.g. "patient.reaction.reactionmeddrapt.exact"). Identifier fields openFDA already indexes as keywords (product_ndc, application_number, pma_number) must be counted bare — .exact on those is rejected as not countable.',
+    ),
+    search: nonBlankString()
       .optional()
-      .describe('Filter query to scope the count (e.g. patient.drug.medicinalproduct:"metformin")'),
+      .describe(
+        'Filter query to scope the count (e.g. patient.drug.medicinalproduct:"metformin"). Omit to count across every record in the endpoint.',
+      ),
     limit: z
       .number()
       .min(1)
@@ -120,6 +120,13 @@ export const countValuesTool = tool('openfda_count_values', {
         'Verify field names using the openFDA field reference and correct boolean operators (AND/OR, quoted phrases).',
     },
     {
+      reason: 'not_aggregatable',
+      code: JsonRpcErrorCode.ValidationError,
+      when: 'openFDA accepted the query but cannot aggregate the count expression as written.',
+      recovery:
+        'Drop the .exact suffix on identifier fields openFDA already indexes as keywords, or count a different keyword field.',
+    },
+    {
       reason: 'pagination_limit_reached',
       code: JsonRpcErrorCode.ValidationError,
       when: 'skip exceeds the 25000 record pagination ceiling.',
@@ -154,7 +161,7 @@ export const countValuesTool = tool('openfda_count_values', {
     ctx.enrich({ termCount: results.length });
     if (results.length === 0) {
       ctx.enrich.notice(
-        `No count results for ${input.count} on ${input.endpoint}${input.search ? ` with search: ${input.search}` : ''}. Verify the field name exists for this endpoint and check .exact suffix usage.`,
+        `${input.count} is countable on ${input.endpoint}, but nothing matched${input.search ? ` search: ${input.search}` : ''}. Broaden or drop the search filter; call openfda_describe_fields for the endpoint field list.`,
       );
     } else if (results.length >= input.limit) {
       const lowestCount = results.at(-1)?.count;

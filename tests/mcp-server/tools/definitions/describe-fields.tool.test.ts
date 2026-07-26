@@ -84,6 +84,18 @@ describe('openfda_describe_fields', () => {
     expect(result.queryTips).toContain('AND');
   });
 
+  // Issue #34 — the tips used to present .exact as the default for every string
+  // field, steering callers straight into "Nothing to count" on the identifier
+  // fields openFDA already indexes as keywords.
+  it('queryTips does not present .exact as the default for string fields', async () => {
+    const { queryTips } = await describeFieldsTool.handler({ endpoint: 'drug/ndc' }, ctx);
+
+    expect(queryTips).not.toContain('Append .exact to string fields');
+    expect(queryTips).toMatch(/count identifier fields bare/i);
+    expect(queryTips).toContain('product_ndc');
+    expect(queryTips).toMatch(/free-text fields/i);
+  });
+
   // Issue #16 — the count-only endpoints exposed by openfda_count_values now have
   // field catalogs, so openfda_describe_fields accepts them too.
   const countOnlyEndpoints: Array<[string, string]> = [
@@ -100,15 +112,16 @@ describe('openfda_describe_fields', () => {
     }
   });
 
-  it.each(
-    countOnlyEndpoints,
-  )('returns a representative field group for %s (issue #16)', async (endpoint, expectedPath) => {
-    const input = describeFieldsTool.input.parse({ endpoint });
-    const result = await describeFieldsTool.handler(input, ctx);
+  it.each(countOnlyEndpoints)(
+    'returns a representative field group for %s (issue #16)',
+    async (endpoint, expectedPath) => {
+      const input = describeFieldsTool.input.parse({ endpoint });
+      const result = await describeFieldsTool.handler(input, ctx);
 
-    expect(result.endpoint).toBe(endpoint);
-    expect(result.groups.length).toBeGreaterThan(0);
-    const allPaths = result.groups.flatMap((g) => g.fields.map((f) => f.path));
-    expect(allPaths).toContain(expectedPath);
-  });
+      expect(result.endpoint).toBe(endpoint);
+      expect(result.groups.length).toBeGreaterThan(0);
+      const allPaths = result.groups.flatMap((g) => g.fields.map((f) => f.path));
+      expect(allPaths).toContain(expectedPath);
+    },
+  );
 });

@@ -20,12 +20,20 @@ const REQUEST_TIMEOUT_MS = 15_000;
 
 /**
  * openFDA surfaces deterministic, user-fixable query failures as HTTP 5xx whose body
- * names the underlying Lucene/ES exception in `error.details`: a malformed search is a
- * `token_mgr_error` / lexical error, a `count` on a non-keyword text field an
- * `illegal_argument_exception`, and a sort or filter on a field absent from that index's
- * mapping (e.g. `receivedate:desc` on food/device, which lack the field) a
- * `query_shard_exception`. These never succeed on retry, so a 5xx carrying one is
- * reclassified to a non-retryable `query_error`.
+ * names the underlying Lucene/ES exception in `error.details`. Covered markers:
+ *
+ * - `token_mgr_error` / `lexical error` — the tokenizer rejected the search string
+ *   (e.g. an unbalanced quote).
+ * - `parse_exception` — the tokens are legal but the grammar is not: an unbalanced
+ *   bracket or paren, a dangling `AND`/`OR`, a half-open range (`[20200101 TO]`),
+ *   or a bare `_exists_:`.
+ * - `illegal_argument_exception` — a `count` on a non-keyword text field.
+ * - `query_shard_exception` — a sort or filter on a field absent from that index's
+ *   mapping (e.g. `receivedate:desc` on food/device, which lack the field).
+ *
+ * These never succeed on retry, so a 5xx carrying one is reclassified to a
+ * non-retryable `query_error` — `ValidationError` sits outside `withRetry`'s
+ * transient-code set, so the reclassification alone stops the retry loop.
  *
  * Keyed on the specific exception names only — NOT openFDA's generic "Check your request
  * and try again" message, which rides on every application-level SERVER_ERROR including
@@ -36,7 +44,16 @@ const REQUEST_TIMEOUT_MS = 15_000;
  * truncation never hides them.
  */
 const OPENFDA_QUERY_ERROR_5XX =
-  /token_mgr_error|lexical error|illegal_argument_exception|query_shard_exception/i;
+  /token_mgr_error|lexical error|parse_exception|illegal_argument_exception|query_shard_exception/i;
+
+/**
+ * openFDA answers a count query with two distinguishable 404s: `No matches found!`
+ * (the field aggregates fine, the filter matched nothing) and `Nothing to count`
+ * (the field expression is not aggregatable as written — commonly `.exact` on a
+ * field openFDA already indexes as keyword-only). Only the first is an empty tally;
+ * the second is a fixable query error and must not be collapsed into one.
+ */
+const OPENFDA_NOTHING_TO_COUNT = /nothing to count/i;
 
 export class OpenFdaService {
   private readonly baseUrl: string;
@@ -58,7 +75,8 @@ export class OpenFdaService {
    * classification happens inside the `withRetry` callback so a reclassified
    * non-retryable error (`query_error`) stops the retry loop while a genuine
    * `upstream_error` / `rate_limited` is retried. Returns an empty result set for
-   * 404 (valid query, zero matches).
+   * 404 (valid query, zero matches) — except a `Nothing to count` 404, which is a
+   * fixable count expression, not an empty tally.
    */
   async query<T = Record<string, unknown>>(
     endpoint: string,
@@ -78,8 +96,13 @@ export class OpenFdaService {
           operation: `openFDA:${endpoint}`,
         };
         try {
+          // openFDA answers a valid zero-match query with 404; `expectedStatuses`
+          // drops that to a debug log so a handled empty result stops reading as
+          // an operational failure. The thrown status-mapped McpError is unchanged,
+          // so classification below is unaffected.
           const response = await fetchWithTimeout(url, REQUEST_TIMEOUT_MS, requestContext, {
             signal: ctx.signal,
+            expectedStatuses: [404],
           });
           const data = (await response.json()) as Record<string, unknown>;
           return this.normalizeResponse<T>(data, endpoint);
@@ -144,17 +167,22 @@ export class OpenFdaService {
   ): OpenFdaResponse<T> {
     if (!(error instanceof McpError)) throw error;
 
-    const data = error.data as { statusCode?: number; responseBody?: string } | undefined;
+    const data = error.data as { status?: number; body?: string } | undefined;
     // No HTTP status → timeout / abort / network error from fetchWithTimeout; it is
     // already classified (ServiceUnavailable / Timeout — retryable). Let it bubble.
-    if (data?.statusCode === undefined) throw error;
+    if (data?.status === undefined) throw error;
 
-    const status = data.statusCode;
-    const body = data.responseBody ?? '';
+    const status = data.status;
+    const body = data.body ?? '';
     const message = this.upstreamMessage(body, status);
 
     // 404 → valid query, zero matches. Return an empty result set (not an error).
     if (status === 404) {
+      // Only a count query can produce this marker; keyed on `params.count` so the
+      // error can always name the expression it is telling the caller to fix.
+      if (params.count && OPENFDA_NOTHING_TO_COUNT.test(body)) {
+        throw this.notAggregatableError(endpoint, params.count, ctx);
+      }
       return {
         meta: {
           total: 0,
@@ -227,6 +255,30 @@ export class OpenFdaService {
     // Unexpected HTTP status (e.g. 418) — fetchWithTimeout already produced a typed
     // McpError; propagate it unchanged rather than inventing a classification.
     throw error;
+  }
+
+  /**
+   * Build the `not_aggregatable` error for a `Nothing to count` 404 — openFDA
+   * accepted the query but cannot aggregate the count expression as written.
+   * Names the offending expression and, for the dominant `.exact`-on-a-keyword-field
+   * case, the exact correction (the bare field, which openFDA already indexes as
+   * a keyword). Non-retryable: the same expression fails identically every time.
+   */
+  private notAggregatableError(endpoint: string, expression: string, ctx: Context): McpError {
+    const bare = expression.replace(/\.exact$/, '');
+    const correction =
+      bare !== expression
+        ? `Retry with the bare field "${bare}" — openFDA already indexes it as a keyword, so .exact is redundant and unsupported here.`
+        : `Count a keyword field instead; call openfda_describe_fields for ${endpoint} to see the available field paths.`;
+    return validationError(
+      `openFDA cannot aggregate "${expression}" on ${endpoint}: the field is not countable as written. ${correction}`,
+      {
+        reason: 'not_aggregatable',
+        endpoint,
+        count: expression,
+        ...ctx.recoveryFor('not_aggregatable'),
+      },
+    );
   }
 
   /**

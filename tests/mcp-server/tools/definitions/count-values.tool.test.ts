@@ -1,4 +1,5 @@
 import type { Context } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode, McpError, validationError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -113,17 +114,21 @@ describe('openfda_count_values', () => {
     expect(enrichment.truncated).toBeUndefined();
   });
 
+  // An empty tally now carries one meaning only: the expression aggregates and the
+  // filter matched nothing. A non-aggregatable expression throws from the service
+  // (#34), so the notice points at the filter instead of blaming the field name.
   it('sets enrichment.notice and returns empty results when no terms match', async () => {
     mockQuery.mockResolvedValue({ meta: { lastUpdated: '' }, results: [] });
 
     const result = await countValuesTool.handler(
-      { endpoint: 'drug/event', count: 'nonexistent.field' },
+      { endpoint: 'drug/ndc', count: 'dosage_form.exact', search: 'brand_name:"zzznotreal"' },
       ctx,
     );
 
     expect(result.results).toHaveLength(0);
     const enrichment = getEnrichment(ctx);
-    expect(enrichment.notice).toMatch(/no count results/i);
+    expect(enrichment.notice).toMatch(/nothing matched/i);
+    expect(enrichment.notice).toContain('brand_name:"zzznotreal"');
     expect(enrichment.termCount).toBe(0);
   });
 
@@ -150,5 +155,33 @@ describe('openfda_count_values', () => {
     });
 
     expect(content[0].text).toBe('No count results.');
+  });
+
+  // Issue #34 — a non-aggregatable count expression is a fixable query error, so it
+  // reaches the caller as a distinct declared failure rather than an empty tally.
+  describe('not_aggregatable (#34)', () => {
+    it('declares the reason in the error contract with a recovery hint', () => {
+      const entry = countValuesTool.errors?.find((e) => e.reason === 'not_aggregatable');
+
+      expect(entry).toBeDefined();
+      expect(entry?.code).toBe(JsonRpcErrorCode.ValidationError);
+      expect(entry?.recovery).toMatch(/\.exact/);
+    });
+
+    it('surfaces the service error instead of an empty result', async () => {
+      mockQuery.mockRejectedValue(
+        validationError('openFDA cannot aggregate "product_ndc.exact" on drug/ndc.', {
+          reason: 'not_aggregatable',
+        }),
+      );
+
+      const err = (await countValuesTool
+        .handler({ endpoint: 'drug/ndc', count: 'product_ndc.exact', limit: 2 }, ctx)
+        .catch((e: unknown) => e)) as McpError;
+
+      expect(err).toBeInstanceOf(McpError);
+      expect(err.data).toMatchObject({ reason: 'not_aggregatable' });
+      expect(getEnrichment(ctx).notice).toBeUndefined();
+    });
   });
 });

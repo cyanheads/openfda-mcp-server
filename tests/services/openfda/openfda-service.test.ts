@@ -3,13 +3,25 @@ import { McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Records the options the service hands `fetchWithTimeout` so the log-severity
+// opt-out (`expectedStatuses`) is assertable — the severity itself is decided
+// inside the framework helper, against its module-level logger.
+const { fetchOptionsSpy } = vi.hoisted(() => ({ fetchOptionsSpy: vi.fn() }));
+
 // Keep the real `fetchWithTimeout` so classification runs against the actual
 // helper (it throws the status-mapped McpError the service reclassifies); only
 // collapse `withRetry` to a single attempt so a reclassified error surfaces
 // directly instead of retrying against the stubbed fetch.
 vi.mock('@cyanheads/mcp-ts-core/utils', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@cyanheads/mcp-ts-core/utils')>();
-  return { ...actual, withRetry: vi.fn((fn: () => Promise<unknown>) => fn()) };
+  return {
+    ...actual,
+    withRetry: vi.fn((fn: () => Promise<unknown>) => fn()),
+    fetchWithTimeout: (...args: Parameters<typeof actual.fetchWithTimeout>) => {
+      fetchOptionsSpy(args[3]);
+      return actual.fetchWithTimeout(...args);
+    },
+  };
 });
 
 import { OpenFdaService } from '@/services/openfda/openfda-service.js';
@@ -22,6 +34,7 @@ describe('OpenFdaService', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', mockFetch);
     mockFetch.mockReset();
+    fetchOptionsSpy.mockReset();
     service = new OpenFdaService({ baseUrl: 'https://api.fda.gov' });
     ctx = createMockContext();
   });
@@ -155,6 +168,40 @@ describe('OpenFdaService', () => {
 
       expect(second.meta.lastUpdated).toBe('2026-04-28');
       expect(second.meta.skip).toBe(25000);
+    });
+
+    // #22 — openFDA answers a valid zero-match query with 404. Without the opt-out
+    // the framework helper logs every non-2xx at error level, so an expected empty
+    // search read as an operational failure in the logs while the tool response was
+    // a normal success.
+    it('marks 404 as an expected status so a handled no-match is not logged as a fetch error', async () => {
+      mockFetch.mockResolvedValue(
+        mockResponse(404, { error: { code: 'NOT_FOUND', message: 'No matches found!' } }),
+      );
+
+      const result = await service.query('drug/drugsfda', { search: 'sponsor_name:"pfizer"' }, ctx);
+
+      expect(result.results).toEqual([]);
+      expect(fetchOptionsSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ expectedStatuses: [404] }),
+      );
+    });
+
+    it('classifies off the canonical status/body fields on error.data', async () => {
+      // 0.10.15 added Response-aligned `status`/`body` alongside the legacy
+      // `statusCode`/`responseBody` aliases. Classification keys on the canonical
+      // pair; reading a field the helper does not emit would fall through to the
+      // "no HTTP status" branch and rethrow the raw helper error untouched.
+      mockFetch.mockResolvedValue(
+        mockResponse(400, { error: { message: 'Skip value must 25000 or less.' } }),
+      );
+
+      const err = (await service
+        .query('drug/event', { skip: 26000 }, ctx)
+        .catch((e: unknown) => e)) as McpError;
+
+      expect(err.data).toMatchObject({ reason: 'pagination_limit_reached' });
+      expect(err.message).toMatch(/pagination limit reached/i);
     });
 
     it('throws McpError on 429', async () => {
@@ -324,6 +371,59 @@ describe('OpenFdaService', () => {
       expect(err.message).toMatch(/no mapping found for \[receivedate\]/i); // shard detail preserved
     });
 
+    // #33 — openFDA returns parse_exception for grammar failures the tokenizer
+    // accepts: unbalanced brackets/parens, a dangling AND/OR, a half-open range,
+    // and a bare _exists_:. Without the marker these classified as retryable
+    // upstream_error — four requests and ~9s of backoff on a query that can never
+    // succeed, plus a recovery hint telling the agent to check api.fda.gov status.
+    const parseException = (detail: string) =>
+      JSON.stringify({
+        error: {
+          code: 'SERVER_ERROR',
+          message: 'Check your request and try again',
+          details: detail,
+        },
+      });
+
+    const PARSE_EXCEPTION_QUERIES: Array<[string, string]> = [
+      [
+        '(patient.drug.medicinalproduct:"aspirin"',
+        '[parse_exception] parse_exception: Encountered "<EOF>" at line 1, column 29. Was expecting one of: <AND> ... <OR> ...',
+      ],
+      [
+        'openfda.brand_name:[[[',
+        '[parse_exception] parse_exception: Encountered "[" at line 1, column 21.',
+      ],
+      [
+        'recalling_firm:"pfizer" AND',
+        '[parse_exception] parse_exception: Encountered "<EOF>" at line 1, column 27.',
+      ],
+      [
+        'effective_time:[20200101 TO]',
+        '[parse_exception] parse_exception: Encountered "]" at line 1, column 28.',
+      ],
+      ['_exists_:', '[parse_exception] parse_exception: Encountered "<EOF>" at line 1, column 9.'],
+    ];
+
+    it.each(PARSE_EXCEPTION_QUERIES)(
+      'reclassifies the parse_exception 500 for %s as a non-retryable query_error',
+      async (search, detail) => {
+        mockFetch.mockResolvedValue(mockResponse(500, parseException(detail)));
+
+        const err = (await service
+          .query('drug/event', { search }, ctx)
+          .catch((e: unknown) => e)) as McpError;
+
+        expect(err).toBeInstanceOf(McpError);
+        expect(err.data).toMatchObject({ reason: 'query_error' });
+        expect(err.code).toBe(-32007); // ValidationError
+        expect(TRANSIENT_CODES.has(err.code)).toBe(false);
+        expect(err.message).toMatch(/parse_exception/i);
+        expect(err.message).toMatch(/line 1, column/i); // parser location preserved
+        expect(err.message).toMatch(/query syntax/i); // query-syntax recovery guidance attached
+      },
+    );
+
     it('leaves a marker-free 500 as a retryable upstream_error', async () => {
       mockFetch.mockResolvedValue(
         mockResponse(500, { error: { message: 'Internal server error' } }),
@@ -362,6 +462,55 @@ describe('OpenFdaService', () => {
       expect(err.data).toMatchObject({ reason: 'upstream_error' });
       expect(err.code).toBe(-32000);
       expect(TRANSIENT_CODES.has(err.code)).toBe(true);
+    });
+  });
+
+  // #34 — openFDA answers a count query with two distinguishable 404s. Collapsing
+  // both into an empty tally left the agent no signal to fix the expression.
+  describe('404 disambiguation for count queries (#34)', () => {
+    const notFound404 = (message: string) =>
+      JSON.stringify({ error: { code: 'NOT_FOUND', message } });
+
+    it('raises a non-retryable not_aggregatable error for a "Nothing to count" 404', async () => {
+      mockFetch.mockResolvedValue(mockResponse(404, notFound404('Nothing to count.')));
+
+      const err = (await service
+        .query('drug/ndc', { count: 'product_ndc.exact', limit: 2 }, ctx)
+        .catch((e: unknown) => e)) as McpError;
+
+      expect(err).toBeInstanceOf(McpError);
+      expect(err.code).toBe(-32007); // ValidationError — outside withRetry's transient set
+      expect(err.data).toMatchObject({
+        reason: 'not_aggregatable',
+        endpoint: 'drug/ndc',
+        count: 'product_ndc.exact',
+      });
+      expect(err.message).toContain('product_ndc.exact');
+      expect(err.message).toContain('"product_ndc"'); // the bare-field correction
+    });
+
+    it('points at a keyword field when the unaggregatable expression carries no .exact suffix', async () => {
+      mockFetch.mockResolvedValue(mockResponse(404, notFound404('Nothing to count.')));
+
+      const err = (await service
+        .query('drug/event', { count: 'patient.patientonsetage' }, ctx)
+        .catch((e: unknown) => e)) as McpError;
+
+      expect(err.data).toMatchObject({ reason: 'not_aggregatable' });
+      expect(err.message).toMatch(/openfda_describe_fields/);
+    });
+
+    it('keeps a "No matches found!" 404 an empty result, not an error', async () => {
+      mockFetch.mockResolvedValue(mockResponse(404, notFound404('No matches found!')));
+
+      const result = await service.query(
+        'drug/ndc',
+        { count: 'dosage_form.exact', search: 'brand_name:"zzzzznotarealdrug"', limit: 2 },
+        ctx,
+      );
+
+      expect(result.results).toEqual([]);
+      expect(result.meta.total).toBe(0);
     });
   });
 });
