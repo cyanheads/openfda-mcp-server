@@ -1,6 +1,6 @@
 # openfda-mcp-server - Directory Structure
 
-Generated on: 2026-07-26 22:23:03
+Generated on: 2026-07-26 23:24:46
 
 ```text
 openfda-mcp-server/
@@ -25,6 +25,7 @@ openfda-mcp-server/
 │   ├── 0.2.x/
 │   ├── 0.3.x/
 │   ├── 0.4.x/
+│   ├── 0.5.x/
 │   └── template.md
 ├── claude-plans/
 ├── docs/
@@ -169,6 +170,7 @@ openfda-mcp-server/
 │   ├── mcp-server/
 │   │   └── tools/
 │   │       ├── definitions/
+│   │       │   ├── canvas-staging-parity.test.ts
 │   │       │   ├── count-values.tool.test.ts
 │   │       │   ├── dataframe-describe.tool.test.ts
 │   │       │   ├── dataframe-query.tool.test.ts

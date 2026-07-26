@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.5.0](changelog/0.5.x/0.5.0.md) — 2026-07-26 · ⚠️ Breaking
+
+DataCanvas staging becomes opt-in and size-bounded (#30), fixes an empty-preview false-negative (#31), skip disagreeing between staged/unstaged modes (#32), leaked canvas errors (#28), and an undisclosed 10k-row query cap (#29)
+
 ## [0.4.3](changelog/0.4.x/0.4.3.md) — 2026-07-26
 
 Fixes six openFDA classification and input-validation bugs (#22, #25, #26, #33, #34, #35) and adopts mcp-ts-core ^0.11.0 with a Socket security scanner and .mcpb native-binding stripping
