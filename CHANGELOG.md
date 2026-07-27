@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.6.0](changelog/0.6.x/0.6.0.md) — 2026-07-26 · ⚠️ Breaking
+
+openfda_get_drug_label outlines label sections on size overflow (#11), fixes an unreachable pagination_limit_reached contract (#27), content[]/structuredContent field-parity gaps across the search tools (#24), and points truncated canvas staging at openfda_count_values for whole-population aggregates (#36)
+
 ## [0.5.0](changelog/0.5.x/0.5.0.md) — 2026-07-26 · ⚠️ Breaking
 
 DataCanvas staging becomes opt-in and size-bounded (#30), fixes an empty-preview false-negative (#31), skip disagreeing between staged/unstaged modes (#32), leaked canvas errors (#28), and an undisclosed 10k-row query cap (#29)
