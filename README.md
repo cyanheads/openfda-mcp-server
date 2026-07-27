@@ -65,7 +65,7 @@ Search adverse event reports across drugs, food, and devices. Use to investigate
 
 - Category selection: `drug`, `food`, or `device` — each returns different field schemas
 - Elasticsearch query syntax for filtering by product, reaction, seriousness, date range
-- Pagination via `limit` (up to 1000) and `skip` (up to 25000)
+- Pagination via `limit` (up to 1000) and `skip` (openFDA's ceiling is 25000 — past it the call returns a typed `pagination_limit_reached` error with recovery guidance)
 - Formatted output includes report ID, seriousness, patient demographics, reactions, drugs with characterization/indication/route, and all remaining fields
 
 ---
@@ -106,9 +106,10 @@ Search FDA device premarket notifications — 510(k) clearances and PMA approval
 Look up FDA drug labeling (package inserts / SPL documents). Check indications, warnings, dosage, contraindications, active ingredients, or any structured label section.
 
 - Search by brand name, generic name, manufacturer, or set ID
-- Formatted output dynamically renders all label sections and openfda metadata present in the record
-- Large sections are automatically truncated to keep output readable
-- Default limit of 5 — labels are large documents
+- Formatted output dynamically renders all label sections and openfda metadata present in the record, in full — `content[]` and `structuredContent` carry the same text
+- A page over the ~24 KB inline budget returns `kind: "outline"` — the section names and their sizes — instead of the label text; re-call with `sections: [...]` for the ones you need
+- `sections` narrows each record to the requested keys plus metadata (`openfda`, `set_id`, `id`, `effective_time`, `version`)
+- Default limit of 5 — labels are large documents (a warfarin label is ~130 KB on its own)
 
 ---
 
@@ -119,7 +120,7 @@ Search the Drugs@FDA database for drug application approvals (NDAs and ANDAs). R
 - Filter by brand name, sponsor, submission type, review priority
 - Formatted output includes products with active ingredients, dosage forms, routes, and marketing status
 - Full submission history with type, status, date, and review priority
-- Pagination via `limit` (up to 1000) and `skip` (up to 25000)
+- Pagination via `limit` (up to 1000) and `skip` (openFDA's ceiling is 25000 — past it the call returns a typed `pagination_limit_reached` error with recovery guidance)
 
 ---
 
@@ -158,7 +159,7 @@ Search FDA drug shortage records (1,700+ entries, refreshed daily). Returns shor
 
 - Filter by status (`Current`, `Resolved`), therapeutic category, generic name, or manufacturer
 - The `openfda` block carries `brand_name`, `product_ndc`, and `rxcui` for chaining into `openfda_get_drug_label` or `openfda_lookup_ndc`
-- Pagination via `limit` (up to 1000) and `skip` (up to 25000)
+- Pagination via `limit` (up to 1000) and `skip` (openFDA's ceiling is 25000 — past it the call returns a typed `pagination_limit_reached` error with recovery guidance)
 
 ---
 
@@ -177,7 +178,7 @@ Return the searchable field paths for an openFDA endpoint, grouped by category w
 A DataCanvas SQL surface over staged result sets — **opt-in**, enabled with `CANVAS_PROVIDER_TYPE=duckdb` and requested per call with `stage: true`.
 
 - Call a multi-row search tool with `stage: true` to drain its matched set into a DuckDB table alongside the normal page of results; the response adds `canvas_id`, `canvas_table`, and `staged_rows`. `openfda_dataframe_query` runs read-only `SELECT` (GROUP BY, SUM/COUNT, joins) across the staged rows; `openfda_dataframe_describe` lists the table and column schemas needed to write valid SQL.
-- Staging is bounded by a byte budget and openFDA's 25,000-row ceiling, so a staged call stays quick even on large-record endpoints like `drug/event`. `staged_rows` against the match total says how much reached the table; `truncated` flags the cut.
+- Staging is bounded by a byte budget and openFDA's 25,000-row ceiling, so a staged call stays quick even on large-record endpoints like `drug/event`. `staged_rows` against the match total says how much reached the table; `truncated` flags the cut and points at `openfda_count_values`, which aggregates over the whole matched set server-side rather than over the staged slice.
 - Scalar fields are stored as text (`CAST` for numeric math); nested openFDA blocks (`openfda`, `patient`, `products`, …) are JSON columns. Pass a `canvas_id` back into a search tool to accumulate result sets on one canvas for cross-table joins.
 - Off by default at both levels — without `CANVAS_PROVIDER_TYPE=duckdb` and an explicit staging request, a search costs one upstream request and the two dataframe tools report that canvas is disabled. Requires the optional `@duckdb/node-api` dependency; unsupported on Cloudflare Workers.
 
