@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.1](changelog/0.7.x/0.7.1.md) — 2026-07-27
+
+Narrows the local mirror's non-unique-key eligibility gate to a single-record match, fixing an order divergence between mirrored and live recall/NDC/label lookups (#37)
+
 ## [0.7.0](changelog/0.7.x/0.7.0.md) — 2026-07-27
 
 Adds an opt-in local SQLite mirror of four openFDA drug datasets (label, NDC, enforcement, drugsfda) that answers exact-key lookups without spending API budget, with automatic live fallback (#4); fixes a tree-generator bug that let gitignored directories leak into docs/tree.md
