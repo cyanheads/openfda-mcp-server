@@ -1,6 +1,6 @@
 {
   "name": "@cyanheads/openfda-mcp-server",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "mcpName": "io.github.cyanheads/openfda-mcp-server",
   "description": "Query FDA data on drugs, food, devices, and recalls via openFDA. STDIO or Streamable HTTP.",
   "type": "module",
@@ -16,7 +16,8 @@
     "CLAUDE.md",
     "Dockerfile",
     "server.json",
-    "manifest.json"
+    "manifest.json",
+    "scripts/openfda-mirror.ts"
   ],
   "scripts": {
     "build": "bun run scripts/build.ts",
@@ -31,6 +32,10 @@
     "list-skills": "bun run scripts/list-skills.ts",
     "lint:mcp": "bun run scripts/lint-mcp.ts",
     "lint:packaging": "bun run scripts/lint-packaging.ts",
+    "mirror:init": "bun run scripts/openfda-mirror.ts init",
+    "mirror:refresh": "bun run scripts/openfda-mirror.ts refresh",
+    "mirror:verify": "bun run scripts/openfda-mirror.ts verify",
+    "mirror:status": "bun run scripts/openfda-mirror.ts status",
     "bundle": "bun run build && npx -y @anthropic-ai/mcpb pack . dist/openfda-mcp-server.mcpb && bun run scripts/clean-mcpb.ts dist/openfda-mcp-server.mcpb",
     "changelog:build": "bun run scripts/build-changelog.ts",
     "changelog:check": "bun run scripts/build-changelog.ts --check",
@@ -97,5 +102,17 @@
     "tsc-alias": "^1.9.1",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"
+  },
+  "peerDependencies": {
+    "better-sqlite3": ">=11",
+    "node-cron": ">=4"
+  },
+  "peerDependenciesMeta": {
+    "better-sqlite3": {
+      "optional": true
+    },
+    "node-cron": {
+      "optional": true
+    }
   }
 }

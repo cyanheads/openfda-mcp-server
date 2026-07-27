@@ -1,10 +1,9 @@
 # openfda-mcp-server - Directory Structure
 
-Generated on: 2026-07-27 00:31:20
+Generated on: 2026-07-27 07:20:58
 
 ```text
 openfda-mcp-server/
-├── .claude/
 ├── .claude-plugin/
 │   └── plugin.json
 ├── .codex-plugin/
@@ -27,6 +26,7 @@ openfda-mcp-server/
 │   ├── 0.4.x/
 │   ├── 0.5.x/
 │   ├── 0.6.x/
+│   ├── 0.7.x/
 │   └── template.md
 ├── claude-plans/
 ├── docs/
@@ -45,6 +45,7 @@ openfda-mcp-server/
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
 │   ├── list-skills.ts
+│   ├── openfda-mirror.ts
 │   ├── release-github.ts
 │   ├── split-changelog.ts
 │   └── tree.ts
@@ -161,6 +162,14 @@ openfda-mcp-server/
 │   │   ├── canvas/
 │   │   │   └── canvas-accessor.ts
 │   │   └── openfda/
+│   │       ├── mirror/
+│   │       │   ├── bulk-stream.ts
+│   │       │   ├── datasets.ts
+│   │       │   ├── harvester.ts
+│   │       │   ├── index.ts
+│   │       │   ├── mirror-registry.ts
+│   │       │   ├── query.ts
+│   │       │   └── refresh-schedule.ts
 │   │       ├── canvas-spill.ts
 │   │       ├── openfda-service.ts
 │   │       └── types.ts
@@ -195,6 +204,14 @@ openfda-mcp-server/
 │   │       └── format-utils.test.ts
 │   └── services/
 │       └── openfda/
+│           ├── mirror/
+│           │   ├── bulk-stream.test.ts
+│           │   ├── datasets.test.ts
+│           │   ├── harvester.test.ts
+│           │   ├── mirror-fixture.ts
+│           │   ├── query.test.ts
+│           │   ├── refresh-schedule.test.ts
+│           │   └── routing.test.ts
 │           ├── canvas-spill.test.ts
 │           ├── openfda-service-security.test.ts
 │           └── openfda-service.test.ts

@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.0](changelog/0.7.x/0.7.0.md) — 2026-07-27
+
+Adds an opt-in local SQLite mirror of four openFDA drug datasets (label, NDC, enforcement, drugsfda) that answers exact-key lookups without spending API budget, with automatic live fallback (#4); fixes a tree-generator bug that let gitignored directories leak into docs/tree.md
+
 ## [0.6.0](changelog/0.6.x/0.6.0.md) — 2026-07-26 · ⚠️ Breaking
 
 openfda_get_drug_label outlines label sections on size overflow (#11), fixes an unreachable pagination_limit_reached contract (#27), content[]/structuredContent field-parity gaps across the search tools (#24), and points truncated canvas staging at openfda_count_values for whole-population aggregates (#36)
