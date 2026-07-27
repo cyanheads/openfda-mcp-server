@@ -14,7 +14,11 @@ import {
   formatRemainingFields,
   noMatchNote,
 } from '@/mcp-server/tools/format-utils.js';
-import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
+import {
+  assertSkipWithinCeiling,
+  nonBlankString,
+  SKIP_DESCRIPTION,
+} from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
   canvasDisabledError,
@@ -77,7 +81,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       .max(1000)
       .default(10)
       .describe('Maximum number of records to return (1-1000).'),
-    skip: z.number().min(0).max(25000).default(0).describe('Pagination offset (0-25000).'),
+    skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     stage: stageInput,
     canvas_id: nonBlankString()
       .optional()
@@ -151,6 +155,8 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
   ],
 
   async handler(input, ctx) {
+    assertSkipWithinCeiling(input.skip, ctx);
+
     const endpoint = `device/${input.pathway}`;
     const emptyNotice = (skip: number, total: number) =>
       emptyResultMessage(
@@ -239,6 +245,12 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       return [{ type: 'text' as const, text: lines.join('\n') }];
     }
 
+    /**
+     * Keys the curated lines below emit verbatim and unconditionally. Anything
+     * rendered only as a fallback (`generic_name` behind `trade_name`) or never
+     * rendered (`advisory_committee`, the raw committee code) stays out, so
+     * `formatRemainingFields` carries it into `content[]`.
+     */
     const rendered510k = new Set([
       'k_number',
       'device_name',
@@ -246,7 +258,6 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       'product_code',
       'decision_description',
       'decision_date',
-      'advisory_committee',
       'advisory_committee_description',
       'clearance_type',
       'statement_or_summary',
@@ -254,13 +265,10 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
     const renderedPma = new Set([
       'pma_number',
       'trade_name',
-      'generic_name',
       'applicant',
       'product_code',
       'decision_description',
-      'decision_code',
       'decision_date',
-      'advisory_committee',
       'advisory_committee_description',
       'supplement_number',
     ]);

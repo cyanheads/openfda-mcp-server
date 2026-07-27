@@ -14,7 +14,11 @@ import {
   formatRemainingFields,
   noMatchNote,
 } from '@/mcp-server/tools/format-utils.js';
-import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
+import {
+  assertSkipWithinCeiling,
+  nonBlankString,
+  SKIP_DESCRIPTION,
+} from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
   canvasDisabledError,
@@ -70,12 +74,7 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
       .max(1000)
       .default(10)
       .describe('Maximum number of records to return (1-1000, default 10)'),
-    skip: z
-      .number()
-      .min(0)
-      .max(25000)
-      .default(0)
-      .describe('Number of records to skip for pagination (0-25000, default 0)'),
+    skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     stage: stageInput,
     canvas_id: nonBlankString()
       .optional()
@@ -148,6 +147,8 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
   ],
 
   async handler(input, ctx) {
+    assertSkipWithinCeiling(input.skip, ctx);
+
     const emptyNotice = (skip: number, total: number) =>
       emptyResultMessage(
         skip,
@@ -242,10 +243,9 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
       lines.push(`### ${title}`);
       lines.push(`**NDC:** ${r.product_ndc ?? 'N/A'} | **Labeler:** ${r.labeler_name ?? 'N/A'}`);
       if (r.generic_name && r.brand_name) lines.push(`**Generic:** ${r.generic_name}`);
-      if (r.dosage_form)
-        lines.push(
-          `**Form:** ${r.dosage_form}${r.route ? ` | **Route:** ${(Array.isArray(r.route) ? r.route : [r.route]).join(', ')}` : ''}`,
-        );
+      if (r.dosage_form) lines.push(`**Form:** ${r.dosage_form}`);
+      if (r.route)
+        lines.push(`**Route:** ${(Array.isArray(r.route) ? r.route : [r.route]).join(', ')}`);
       if (r.marketing_category) lines.push(`**Category:** ${r.marketing_category}`);
 
       const ingredients = r.active_ingredients ?? [];
@@ -260,6 +260,8 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
         lines.push(`**Packaging:**`);
         for (const p of packaging) {
           lines.push(`- ${p.package_ndc ?? ''}: ${p.description ?? 'N/A'}`);
+          // Marketing dates and the sample flag.
+          lines.push(...formatRemainingFields(p, new Set(['package_ndc', 'description'])));
         }
       }
 

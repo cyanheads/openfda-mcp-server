@@ -14,7 +14,11 @@ import {
   formatRemainingFields,
   noMatchNote,
 } from '@/mcp-server/tools/format-utils.js';
-import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
+import {
+  assertSkipWithinCeiling,
+  nonBlankString,
+  SKIP_DESCRIPTION,
+} from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
   canvasDisabledError,
@@ -84,7 +88,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       .max(1000)
       .default(10)
       .describe('Maximum number of records to return (1-1000).'),
-    skip: z.number().min(0).max(25000).default(0).describe('Pagination offset (0-25000).'),
+    skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     stage: stageInput,
     canvas_id: nonBlankString()
       .optional()
@@ -164,6 +168,8 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
   ],
 
   async handler(input, ctx) {
+    assertSkipWithinCeiling(input.skip, ctx);
+
     const endpointValue = input.endpoint ?? 'enforcement';
 
     if (endpointValue === 'recall' && input.category !== 'device') {

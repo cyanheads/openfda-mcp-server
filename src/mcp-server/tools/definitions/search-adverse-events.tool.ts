@@ -14,7 +14,11 @@ import {
   formatRemainingFields,
   noMatchNote,
 } from '@/mcp-server/tools/format-utils.js';
-import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
+import {
+  assertSkipWithinCeiling,
+  nonBlankString,
+  SKIP_DESCRIPTION,
+} from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
   canvasDisabledError,
@@ -94,12 +98,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       .max(1000)
       .default(10)
       .describe('Maximum number of records to return (1-1000, default 10)'),
-    skip: z
-      .number()
-      .min(0)
-      .max(25000)
-      .default(0)
-      .describe('Number of records to skip for pagination (0-25000, default 0)'),
+    skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     stage: stageInput,
     canvas_id: nonBlankString()
       .optional()
@@ -173,6 +172,8 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
   ],
 
   async handler(input, ctx) {
+    assertSkipWithinCeiling(input.skip, ctx);
+
     const endpoint = `${input.category}/event`;
     const emptyNotice = (skip: number, total: number) =>
       emptyResultMessage(
@@ -257,8 +258,30 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
     }
 
     for (const r of result.results) {
+      // Device adverse events. Checked before `patient`: a device/event record
+      // also carries a `patient` array, so a patient-first branch would route
+      // every device report into the drug renderer.
+      if (r.device) {
+        lines.push(`### Report ${r.report_number ?? r.mdr_report_key ?? 'N/A'}`);
+        if (r.event_type) lines.push(`**Event type:** ${r.event_type}`);
+        for (const d of Array.isArray(r.device) ? r.device : []) {
+          lines.push(
+            `**Device:** ${d.brand_name ?? d.generic_name ?? 'Unknown'}${d.manufacturer_d_name ? ` by ${d.manufacturer_d_name}` : ''}`,
+          );
+          lines.push(...formatRemainingFields(d, new Set(['brand_name', 'manufacturer_d_name'])));
+        }
+        for (const t of (r.mdr_text ?? []) as Record<string, unknown>[]) {
+          const label = t.text_type_code ? `Narrative (${t.text_type_code})` : 'Narrative';
+          if (t.text) lines.push(`**${label}:** ${t.text as string}`);
+          lines.push(...formatRemainingFields(t, new Set(['text', 'text_type_code'])));
+        }
+
+        // Remaining top-level fields (date_of_event, source_type, patient, etc.)
+        const renderedTop = new Set(['device', 'report_number', 'event_type', 'mdr_text']);
+        lines.push(...formatRemainingFields(r, renderedTop));
+      }
       // Drug adverse events
-      if (r.patient) {
+      else if (r.patient) {
         const patient = r.patient;
         const reactions = (patient.reaction ?? [])
           .map((rx: Record<string, unknown>) => rx.reactionmeddrapt)
@@ -274,6 +297,9 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
             `**Patient:** Sex ${patient.patientsex === '1' ? 'Male' : patient.patientsex === '2' ? 'Female' : patient.patientsex}`,
           );
         if (reactions) lines.push(`**Reactions:** ${reactions}`);
+        for (const rx of (patient.reaction ?? []) as Record<string, unknown>[]) {
+          lines.push(...formatRemainingFields(rx, new Set(['reactionmeddrapt'])));
+        }
 
         // Drugs — expanded with indication and route
         const drugList = (patient.drug ?? []) as Record<string, unknown>[];
@@ -296,57 +322,21 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
               .filter(Boolean)
               .join(', ');
             lines.push(`- ${d.medicinalproduct ?? 'Unknown'}${detail ? ` (${detail})` : ''}`);
+            lines.push(
+              ...formatRemainingFields(
+                d,
+                new Set(['medicinalproduct', 'drugindication', 'drugadministrationroute']),
+              ),
+            );
           }
         }
 
-        // Remaining patient fields (age, weight, death, etc.)
-        const renderedPatient = new Set(['reaction', 'drug', 'patientsex']);
-        lines.push(...formatRemainingFields(patient, renderedPatient));
+        // Remaining patient fields (age, weight, death, sex code, etc.)
+        lines.push(...formatRemainingFields(patient, new Set(['reaction', 'drug'])));
 
-        // Remaining top-level fields (companynumb, sender, primarysource, etc.)
-        // Skip FDA workflow timestamps and format codes that aren't useful for clinical reading.
-        const renderedTop = new Set([
-          'patient',
-          'safetyreportid',
-          'receivedate',
-          'serious',
-          'safetyreportversion',
-          'transmissiondate',
-          'transmissiondateformat',
-          'receivedateformat',
-          'receiptdate',
-          'receiptdateformat',
-          'reporttype',
-          'fulfillexpeditecriteria',
-          'duplicate',
-        ]);
-        lines.push(...formatRemainingFields(r, renderedTop));
-      }
-      // Device adverse events
-      else if (r.device) {
-        lines.push(`### Report ${r.report_number ?? r.mdr_report_key ?? 'N/A'}`);
-        if (r.event_type) lines.push(`**Event type:** ${r.event_type}`);
-        for (const d of Array.isArray(r.device) ? r.device : []) {
-          const renderedDevice = new Set(['brand_name', 'generic_name', 'manufacturer_d_name']);
-          lines.push(
-            `**Device:** ${d.brand_name ?? d.generic_name ?? 'Unknown'}${d.manufacturer_d_name ? ` by ${d.manufacturer_d_name}` : ''}`,
-          );
-          lines.push(...formatRemainingFields(d, renderedDevice));
-        }
-        for (const t of (r.mdr_text ?? []) as Record<string, unknown>[]) {
-          if (!t.text) continue;
-          const label = t.text_type_code ? `Narrative (${t.text_type_code})` : 'Narrative';
-          lines.push(`**${label}:** ${t.text as string}`);
-        }
-
-        // Remaining top-level fields (date_of_event, source_type, patient, etc.)
-        const renderedTop = new Set([
-          'device',
-          'report_number',
-          'mdr_report_key',
-          'event_type',
-          'mdr_text',
-        ]);
+        // Remaining top-level fields (companynumb, sender, primarysource, the
+        // serious code, FDA workflow timestamps, ...).
+        const renderedTop = new Set(['patient', 'safetyreportid', 'receivedate']);
         lines.push(...formatRemainingFields(r, renderedTop));
       }
       // Food adverse events
@@ -372,6 +362,9 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
               .filter(Boolean)
               .join(', ');
             lines.push(`- ${name}${detail ? ` (${detail})` : ''}`);
+            lines.push(
+              ...formatRemainingFields(p, new Set(['name_brand', 'role', 'industry_code'])),
+            );
           }
         }
 

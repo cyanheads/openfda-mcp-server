@@ -121,4 +121,27 @@ describe('openfda_search_adverse_events', () => {
 
     expect(content[0].text).toBe('No results found.');
   });
+
+  it('renders a device report through the device arm, not the drug arm (#24)', () => {
+    /** device/event records carry their own `patient` array alongside `device`. */
+    const content = searchAdverseEventsTool.format({
+      meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
+      results: [
+        {
+          report_number: 'DEV-9',
+          event_type: 'Malfunction',
+          device: [{ brand_name: 'INFUSION PUMP', manufacturer_d_name: 'ACME' }],
+          mdr_text: [{ text_type_code: 'Description of Event or Problem', text: 'Pump stalled.' }],
+          patient: [{ patient_age: '92 YR' }],
+        },
+      ],
+    });
+
+    const text = content[0].text;
+    expect(text).toContain('### Report DEV-9');
+    expect(text).toContain('**Event type:** Malfunction');
+    expect(text).toContain('**Device:** INFUSION PUMP by ACME');
+    expect(text).toContain('Narrative (Description of Event or Problem)');
+    expect(text).toContain('92 YR');
+  });
 });

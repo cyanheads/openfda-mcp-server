@@ -15,7 +15,11 @@ import {
   formatRemainingFields,
   noMatchNote,
 } from '@/mcp-server/tools/format-utils.js';
-import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
+import {
+  assertSkipWithinCeiling,
+  nonBlankString,
+  SKIP_DESCRIPTION,
+} from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
   canvasDisabledError,
@@ -64,12 +68,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       .max(1000)
       .default(10)
       .describe('Maximum number of records to return (1-1000, default 10)'),
-    skip: z
-      .number()
-      .min(0)
-      .max(25000)
-      .default(0)
-      .describe('Number of records to skip for pagination (0-25000, default 0)'),
+    skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     stage: stageInput,
     canvas_id: nonBlankString()
       .optional()
@@ -143,6 +142,8 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
   ],
 
   async handler(input, ctx) {
+    assertSkipWithinCeiling(input.skip, ctx);
+
     const emptyNotice = (skip: number, total: number) =>
       emptyResultMessage(
         skip,
@@ -255,14 +256,10 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       if (openfda.product_type)
         lines.push(`**Type:** ${(openfda.product_type as string[]).join(', ')}`);
 
-      // Remaining openfda fields (substance_name, rxcui, nui, pharm_class, etc.)
-      const renderedOpenfda = new Set([
-        'brand_name',
-        'generic_name',
-        'manufacturer_name',
-        'route',
-        'product_type',
-      ]);
+      // Remaining openfda fields — brand_name/generic_name included, since the
+      // lines above only ever show entry 0 of each — plus manufacturer_name,
+      // substance_name, rxcui, nui, pharm_class, ...
+      const renderedOpenfda = new Set(['route', 'product_type']);
       lines.push(...formatRemainingFields(openfda, renderedOpenfda));
 
       const products = r.products ?? [];
@@ -280,6 +277,19 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
             p.marketing_status,
           ].filter(Boolean);
           lines.push(`- ${parts.join(' | ')}`);
+          // Product number, reference-drug/standard flags, TE code.
+          lines.push(
+            ...formatRemainingFields(
+              p,
+              new Set([
+                'brand_name',
+                'active_ingredients',
+                'dosage_form',
+                'route',
+                'marketing_status',
+              ]),
+            ),
+          );
         }
       }
 
@@ -295,6 +305,19 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
             s.review_priority ? `(${s.review_priority})` : null,
           ].filter(Boolean);
           lines.push(`- ${parts.join(' | ')}`);
+          // application_docs[] (names + URLs), submission class code, public notes.
+          lines.push(
+            ...formatRemainingFields(
+              s,
+              new Set([
+                'submission_type',
+                'submission_number',
+                'submission_status',
+                'submission_status_date',
+                'review_priority',
+              ]),
+            ),
+          );
         }
       }
 

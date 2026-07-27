@@ -14,7 +14,11 @@ import {
   formatRemainingFields,
   noMatchNote,
 } from '@/mcp-server/tools/format-utils.js';
-import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
+import {
+  assertSkipWithinCeiling,
+  nonBlankString,
+  SKIP_DESCRIPTION,
+} from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
   canvasDisabledError,
@@ -65,12 +69,7 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
       .max(1000)
       .default(10)
       .describe('Maximum number of records to return (1-1000, default 10)'),
-    skip: z
-      .number()
-      .min(0)
-      .max(25000)
-      .default(0)
-      .describe('Number of records to skip for pagination (0-25000, default 0)'),
+    skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     stage: stageInput,
     canvas_id: nonBlankString()
       .optional()
@@ -144,6 +143,8 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
   ],
 
   async handler(input, ctx) {
+    assertSkipWithinCeiling(input.skip, ctx);
+
     const emptyNotice = (skip: number, total: number) =>
       emptyResultMessage(
         skip,
@@ -263,22 +264,19 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
         lines.push(`**Health problems:** ${healthProblems.join(', ')}`);
       }
 
-      // Product problems
+      // Product problems — rendered in full, including openFDA's
+      // "No information provided" placeholder, so content[] carries the same
+      // list structuredContent does.
       const productProblems = (r.reported_product_problems as string[] | undefined) ?? [];
-      const meaningfulProductProblems = productProblems.filter(
-        (p) => p !== 'No information provided',
-      );
-      if (meaningfulProductProblems.length > 0) {
-        lines.push(`**Product problems:** ${meaningfulProductProblems.join(', ')}`);
+      if (productProblems.length > 0) {
+        lines.push(`**Product problems:** ${productProblems.join(', ')}`);
       }
 
-      // Counts
+      // Counts — a zero is reported data, not an absent field.
       const counts = [
         r.number_tobacco_products != null ? `${r.number_tobacco_products} product(s)` : null,
-        r.number_health_problems != null && r.number_health_problems > 0
-          ? `${r.number_health_problems} health problem(s)`
-          : null,
-        r.number_product_problems != null && r.number_product_problems > 0
+        r.number_health_problems != null ? `${r.number_health_problems} health problem(s)` : null,
+        r.number_product_problems != null
           ? `${r.number_product_problems} product problem(s)`
           : null,
       ]

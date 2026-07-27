@@ -185,7 +185,7 @@ describe('openfda_search_tobacco_reports', () => {
     expect(text).toContain('2026-04-01');
   });
 
-  it('format suppresses product problem "No information provided"', () => {
+  it('format renders every reported product problem, placeholders included (#24)', () => {
     const content = searchTobaccoReportsTool.format({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [
@@ -198,10 +198,26 @@ describe('openfda_search_tobacco_reports', () => {
     });
 
     const text = content[0].text;
-    // "No information provided" should be filtered out from product problems
-    expect(text).not.toContain('No information provided');
-    // But health problems should still appear
+    // structuredContent carries the placeholder, so content[] must too.
+    expect(text).toContain('No information provided');
     expect(text).toContain('Nausea');
+  });
+
+  it('format renders a zero problem count rather than dropping it (#24)', () => {
+    const content = searchTobaccoReportsTool.format({
+      meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
+      results: [
+        {
+          report_id: 'TOB-ZERO',
+          number_tobacco_products: 1,
+          number_health_problems: 0,
+          number_product_problems: 0,
+        },
+      ],
+    });
+
+    expect(content[0].text).toContain('0 health problem(s)');
+    expect(content[0].text).toContain('0 product problem(s)');
   });
 
   it('format renders counts when present', () => {

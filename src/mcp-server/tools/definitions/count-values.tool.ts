@@ -126,13 +126,6 @@ export const countValuesTool = tool('openfda_count_values', {
       recovery:
         'Drop the .exact suffix on identifier fields openFDA already indexes as keywords, or count a different keyword field.',
     },
-    {
-      reason: 'pagination_limit_reached',
-      code: JsonRpcErrorCode.ValidationError,
-      when: 'skip exceeds the 25000 record pagination ceiling.',
-      recovery:
-        'Narrow the search query with additional filters or date ranges instead of increasing skip.',
-    },
   ],
 
   async handler(input, ctx) {

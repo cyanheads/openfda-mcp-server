@@ -7,6 +7,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import type { QueryResult } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { formatCell } from '@/mcp-server/tools/format-utils.js';
 import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 
@@ -190,12 +191,14 @@ export const dataframeQueryTool = tool('openfda_dataframe_query', {
     if (result.rows.length === 0) {
       lines.push('_No rows returned._');
     } else {
-      const headers = Object.keys(result.rows[0] ?? {});
+      // Union the keys across rows — a SELECT over sparse staged records can omit
+      // a key from the first row that a later row carries.
+      const headers = [...new Set(result.rows.flatMap((row) => Object.keys(row)))];
       if (headers.length > 0) {
         lines.push(`| ${headers.join(' | ')} |`);
         lines.push(`| ${headers.map(() => '---').join(' | ')} |`);
         for (const row of result.rows) {
-          lines.push(`| ${headers.map((h) => String(row[h] ?? '')).join(' | ')} |`);
+          lines.push(`| ${headers.map((h) => formatCell(row[h])).join(' | ')} |`);
         }
       }
     }

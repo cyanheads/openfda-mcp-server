@@ -14,7 +14,11 @@ import {
   formatRemainingFields,
   noMatchNote,
 } from '@/mcp-server/tools/format-utils.js';
-import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
+import {
+  assertSkipWithinCeiling,
+  nonBlankString,
+  SKIP_DESCRIPTION,
+} from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
   canvasDisabledError,
@@ -68,12 +72,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       .max(1000)
       .default(10)
       .describe('Maximum number of records to return (1-1000, default 10)'),
-    skip: z
-      .number()
-      .min(0)
-      .max(25000)
-      .default(0)
-      .describe('Number of records to skip for pagination (0-25000, default 0)'),
+    skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     stage: stageInput,
     canvas_id: nonBlankString()
       .optional()
@@ -147,6 +146,8 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
   ],
 
   async handler(input, ctx) {
+    assertSkipWithinCeiling(input.skip, ctx);
+
     const emptyNotice = (skip: number, total: number) =>
       emptyResultMessage(
         skip,
@@ -267,6 +268,8 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
           .filter(Boolean)
           .join(' | ');
         if (animalDetails) lines.push(`  ${animalDetails}`);
+        // Breed detail, age/weight qualifiers, physiological status, sex code.
+        lines.push(...formatRemainingFields(animal, new Set(['species', 'gender'])));
       }
 
       // Reactions
@@ -277,6 +280,9 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
           .filter(Boolean)
           .join(', ');
         if (reactionNames) lines.push(`**Reactions:** ${reactionNames}`);
+        for (const rx of reactions) {
+          lines.push(...formatRemainingFields(rx, new Set(['veddra_term_name'])));
+        }
       }
 
       // Drugs
@@ -297,6 +303,10 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
             .filter(Boolean)
             .join(', ');
           lines.push(`- ${brandName}${routeDose ? ` (${routeDose})` : ''}`);
+          // Ingredient doses, lot number, dosage form, manufacturer, ATC code.
+          lines.push(
+            ...formatRemainingFields(d, new Set(['brand_name', 'route', 'administered_by'])),
+          );
         }
       }
 
@@ -308,6 +318,9 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
           .filter(Boolean)
           .join(', ');
         if (outcomeStatuses) lines.push(`**Outcome:** ${outcomeStatuses}`);
+        for (const o of outcomes) {
+          lines.push(...formatRemainingFields(o, new Set(['medical_status'])));
+        }
       }
 
       // Reporter and type
@@ -315,22 +328,18 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       if (r.type_of_information) lines.push(`**Type:** ${r.type_of_information}`);
       if (r.foreign_or_domestic) lines.push(`**Origin:** ${r.foreign_or_domestic}`);
 
-      // Render remaining top-level fields (treatment context, number counts, etc.)
+      // Render remaining top-level fields — the serious_ae code, receiver,
+      // secondary reporter, treatment context, health assessment, counts.
       const rendered = new Set([
         'unique_aer_id_number',
         'original_receive_date',
-        'serious_ae',
         'animal',
         'reaction',
         'drug',
         'outcome',
         'primary_reporter',
-        'secondary_reporter',
         'type_of_information',
         'foreign_or_domestic',
-        'receiver',
-        'treated_for_ae',
-        'health_assessment_prior_to_exposure',
       ]);
       const numberInfo = [
         r.number_of_animals_treated ? `treated: ${r.number_of_animals_treated}` : null,

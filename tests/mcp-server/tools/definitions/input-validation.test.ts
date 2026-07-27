@@ -148,8 +148,9 @@ describe('openfda_search_adverse_events input schema', () => {
     expect(() => searchAdverseEventsTool.input.parse({ category: 'drug', skip: -1 })).toThrow();
   });
 
-  it('rejects skip above 25000', () => {
-    expect(() => searchAdverseEventsTool.input.parse({ category: 'drug', skip: 25001 })).toThrow();
+  it('admits skip above 25000 so the handler can raise the typed contract (#27)', () => {
+    const input = searchAdverseEventsTool.input.parse({ category: 'drug', skip: 25001 });
+    expect(input.skip).toBe(25001);
   });
 
   it('accepts limit=1 (boundary)', () => {
@@ -191,8 +192,9 @@ describe('openfda_search_recalls input schema', () => {
     ).toThrow();
   });
 
-  it('rejects skip above 25000', () => {
-    expect(() => searchRecallsTool.input.parse({ category: 'drug', skip: 25001 })).toThrow();
+  it('admits skip above 25000 so the handler can raise the typed contract (#27)', () => {
+    const input = searchRecallsTool.input.parse({ category: 'drug', skip: 25001 });
+    expect(input.skip).toBe(25001);
   });
 
   it('accepts skip=0 (minimum)', () => {
@@ -247,8 +249,9 @@ describe('openfda_get_drug_label input schema', () => {
     expect(input.skip).toBe(25000);
   });
 
-  it('rejects skip=25001', () => {
-    expect(() => getDrugLabelTool.input.parse({ search: 'aspirin', skip: 25001 })).toThrow();
+  it('admits skip=25001 so the handler can raise the typed contract (#27)', () => {
+    const input = getDrugLabelTool.input.parse({ search: 'aspirin', skip: 25001 });
+    expect(input.skip).toBe(25001);
   });
 });
 
@@ -276,9 +279,9 @@ describe('openfda_lookup_ndc input schema', () => {
     expect(() => lookupNdcTool.input.parse({ search: 'x', limit: 1001 })).toThrow();
   });
 
-  it('rejects out-of-range skip', () => {
+  it('rejects negative skip but admits over-ceiling skip for the handler (#27)', () => {
     expect(() => lookupNdcTool.input.parse({ search: 'x', skip: -1 })).toThrow();
-    expect(() => lookupNdcTool.input.parse({ search: 'x', skip: 25001 })).toThrow();
+    expect(lookupNdcTool.input.parse({ search: 'x', skip: 25001 }).skip).toBe(25001);
   });
 });
 
@@ -304,9 +307,9 @@ describe('openfda_search_drug_approvals input schema', () => {
     expect(() => searchDrugApprovalsTool.input.parse({ limit: 1001 })).toThrow();
   });
 
-  it('rejects out-of-range skip', () => {
+  it('rejects negative skip but admits over-ceiling skip for the handler (#27)', () => {
     expect(() => searchDrugApprovalsTool.input.parse({ skip: -1 })).toThrow();
-    expect(() => searchDrugApprovalsTool.input.parse({ skip: 25001 })).toThrow();
+    expect(searchDrugApprovalsTool.input.parse({ skip: 25001 }).skip).toBe(25001);
   });
 });
 
@@ -336,10 +339,9 @@ describe('openfda_search_device_clearances input schema', () => {
     expect(() => searchDeviceClearancesTool.input.parse({ pathway: '510k', limit: 0 })).toThrow();
   });
 
-  it('rejects out-of-range skip', () => {
-    expect(() =>
-      searchDeviceClearancesTool.input.parse({ pathway: '510k', skip: 25001 }),
-    ).toThrow();
+  it('admits skip above 25000 so the handler can raise the typed contract (#27)', () => {
+    const input = searchDeviceClearancesTool.input.parse({ pathway: '510k', skip: 25001 });
+    expect(input.skip).toBe(25001);
   });
 });
 
@@ -380,8 +382,8 @@ describe('openfda_search_animal_events input schema', () => {
     expect(() => searchAnimalEventsTool.input.parse({ skip: -1 })).toThrow();
   });
 
-  it('rejects skip above 25000', () => {
-    expect(() => searchAnimalEventsTool.input.parse({ skip: 25001 })).toThrow();
+  it('admits skip above 25000 so the handler can raise the typed contract (#27)', () => {
+    expect(searchAnimalEventsTool.input.parse({ skip: 25001 }).skip).toBe(25001);
   });
 
   it('accepts skip=25000 (boundary)', () => {
@@ -427,8 +429,8 @@ describe('openfda_search_tobacco_reports input schema', () => {
     expect(() => searchTobaccoReportsTool.input.parse({ skip: -1 })).toThrow();
   });
 
-  it('rejects skip above 25000', () => {
-    expect(() => searchTobaccoReportsTool.input.parse({ skip: 25001 })).toThrow();
+  it('admits skip above 25000 so the handler can raise the typed contract (#27)', () => {
+    expect(searchTobaccoReportsTool.input.parse({ skip: 25001 }).skip).toBe(25001);
   });
 
   it('accepts skip=25000 (boundary)', () => {

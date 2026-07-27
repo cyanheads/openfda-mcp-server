@@ -14,7 +14,11 @@ import {
   formatRemainingFields,
   noMatchNote,
 } from '@/mcp-server/tools/format-utils.js';
-import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
+import {
+  assertSkipWithinCeiling,
+  nonBlankString,
+  SKIP_DESCRIPTION,
+} from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
   canvasDisabledError,
@@ -69,12 +73,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       .max(1000)
       .default(10)
       .describe('Maximum number of records to return (1-1000, default 10)'),
-    skip: z
-      .number()
-      .min(0)
-      .max(25000)
-      .default(0)
-      .describe('Number of records to skip for pagination (0-25000, default 0)'),
+    skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     stage: stageInput,
     canvas_id: nonBlankString()
       .optional()
@@ -148,6 +147,8 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
   ],
 
   async handler(input, ctx) {
+    assertSkipWithinCeiling(input.skip, ctx);
+
     const emptyNotice = (skip: number, total: number) =>
       emptyResultMessage(
         skip,
@@ -286,6 +287,9 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
           .filter(Boolean)
           .join(' | ');
         if (crossLinks) lines.push(`**OpenFDA:** ${crossLinks}`);
+        // Remaining openfda leaves — the full NDC/RxCUI lists, spl ids, substance,
+        // product type, route, UNII, application number.
+        lines.push(...formatRemainingFields(openfda, new Set(['brand_name'])));
       }
 
       lines.push(...formatRemainingFields(r, rendered));
