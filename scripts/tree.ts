@@ -131,9 +131,14 @@ async function loadIgnoreHandler(
   return ig;
 }
 
-function isIgnored(entryPath: string, root: string, ig: Ignore): boolean {
+/**
+ * A gitignore pattern written with a trailing slash (`/data/`) matches only a
+ * directory, and the matcher can only tell a directory from a file by the
+ * trailing slash on the path it is given — so directories are tested with one.
+ */
+function isIgnored(entryPath: string, root: string, ig: Ignore, isDirectory: boolean): boolean {
   const rel = relative(root, entryPath).split(sep).join(posix.sep);
-  return ig.ignores(rel);
+  return ig.ignores(isDirectory ? `${rel}/` : rel);
 }
 
 /**
@@ -182,7 +187,7 @@ async function generateTree(
   }
 
   const filteredEntries = entries
-    .filter((entry) => !isIgnored(join(resolvedDir, entry.name), root, ig))
+    .filter((entry) => !isIgnored(join(resolvedDir, entry.name), root, ig, entry.isDirectory()))
     .sort((a, b) => {
       if (a.isDirectory() && !b.isDirectory()) return -1;
       if (!a.isDirectory() && b.isDirectory()) return 1;
