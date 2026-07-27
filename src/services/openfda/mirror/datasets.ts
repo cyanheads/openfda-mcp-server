@@ -181,7 +181,8 @@ function projector(primaryKey: string, lookups: string[]) {
 /**
  * The four mirrorable datasets. A key need not be unique — `product_ndc`,
  * `set_id` and `event_id` are not — because `query.ts` answers a lookup only
- * when the whole match set fits on the requested page.
+ * when the value addresses exactly one record; a value matching two or more
+ * routes live, where upstream's relevance ordering is defined.
  */
 export const DATASETS: Record<MirroredEndpoint, DatasetSpec> = {
   'drug/label': {

@@ -7,7 +7,12 @@
 
 import { describe, expect, it } from 'vitest';
 import { planMirrorLookup, runMirrorLookup } from '@/services/openfda/mirror/index.js';
-import { createMirrorFixture, ENFORCEMENT_RECORD, SIBLING_RECORD } from './mirror-fixture.js';
+import {
+  createMirrorFixture,
+  ENFORCEMENT_RECORD,
+  LONE_EVENT_RECORD,
+  SIBLING_RECORD,
+} from './mirror-fixture.js';
 
 describe('planMirrorLookup — accepted', () => {
   it.each([
@@ -111,32 +116,27 @@ describe('runMirrorLookup', () => {
     expect(response).toMatchObject({ meta: { total: 0, lastUpdated: '2026-07-22' }, results: [] });
   });
 
-  it('returns the whole match set when it fits the page', async () => {
+  it('answers a non-unique key that addresses exactly one record', async () => {
+    await using fixture = await createMirrorFixture('drug/enforcement');
+    await fixture.seed([ENFORCEMENT_RECORD, SIBLING_RECORD, LONE_EVENT_RECORD]);
+
+    const plan = planMirrorLookup('drug/enforcement', { search: 'event_id:"75980"', limit: 10 });
+    const response = await runMirrorLookup(fixture.mirror, plan!);
+
+    expect(response?.meta).toEqual({ total: 1, skip: 0, limit: 10, lastUpdated: '2026-07-22' });
+    expect(response?.results).toEqual([LONE_EVENT_RECORD]);
+  });
+
+  /**
+   * The page size used to decide this: a match set that fit the page was served
+   * in primary-key order where upstream ranks by relevance. Ordering is now out
+   * of reach at any page size, so every one of these defers.
+   */
+  it.each([1, 2, 10, 1000])('defers a two-record match at limit %i', async (limit) => {
     await using fixture = await createMirrorFixture('drug/enforcement');
     await fixture.seed([ENFORCEMENT_RECORD, SIBLING_RECORD]);
 
-    const plan = planMirrorLookup('drug/enforcement', { search: 'event_id:"72241"', limit: 10 });
-    const response = await runMirrorLookup(fixture.mirror, plan!);
-
-    expect(response?.meta.total).toBe(2);
-    expect(response?.results).toHaveLength(2);
-  });
-
-  it('orders a non-unique match by primary key, not by upstream relevance', async () => {
-    await using fixture = await createMirrorFixture('drug/enforcement');
-    await fixture.seed([SIBLING_RECORD, ENFORCEMENT_RECORD]);
-
-    const plan = planMirrorLookup('drug/enforcement', { search: 'event_id:"72241"', limit: 10 });
-    const response = await runMirrorLookup(fixture.mirror, plan!);
-
-    expect(response?.results.map((r) => r.recall_number)).toEqual(['D-321-2016', 'D-322-2016']);
-  });
-
-  it('defers to live when the match set is larger than the page', async () => {
-    await using fixture = await createMirrorFixture('drug/enforcement');
-    await fixture.seed([ENFORCEMENT_RECORD, SIBLING_RECORD]);
-
-    const plan = planMirrorLookup('drug/enforcement', { search: 'event_id:"72241"', limit: 1 });
+    const plan = planMirrorLookup('drug/enforcement', { search: 'event_id:"72241"', limit });
     expect(await runMirrorLookup(fixture.mirror, plan!)).toBeUndefined();
   });
 

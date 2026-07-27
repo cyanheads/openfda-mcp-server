@@ -13,17 +13,17 @@
  *    canonical identifier in its canonical case;
  * 3. no `count`, no `sort`, and `skip === 0` — aggregation and ordering are
  *    upstream's to define;
- * 4. and the whole match set fits on the requested page, so the response is the
- *    complete answer rather than one upstream-ordered slice of it.
+ * 4. and the value addresses exactly one record, so the response is the whole
+ *    answer and there is no order to disagree about.
  *
  * Anything else returns `undefined` and is routed live.
  *
  * Selection is reproduced; ordering is not. Upstream orders an unsorted match by
- * Elasticsearch relevance, which no local index can recompute, so a lookup whose
- * key is non-unique (`event_id`, `product_ndc`, `set_id`) returns the same
- * complete set in primary-key order rather than upstream's. Condition 4 is what
- * keeps that sound: the page holds the whole match set, so no record is dropped
- * by the reordering — only its position moves.
+ * Elasticsearch relevance, which no local index can recompute. Condition 4 is
+ * what keeps that from mattering: a lookup on a non-unique key (`event_id`,
+ * `product_ndc`, `set_id`) is served only where that key happens to address a
+ * single record, and two or more records route live whatever the page size. A
+ * one-record response is order-free, so a mirrored answer is the API's answer.
  *
  * @module services/openfda/mirror/query
  */
@@ -47,6 +47,7 @@ export interface MirrorLookup {
   dataset: DatasetSpec;
   /** openFDA field path the search named. */
   field: string;
+  /** Requested page size, echoed into `meta.limit` as the live API echoes it. */
   limit: number;
   value: string;
 }
@@ -85,10 +86,13 @@ export function planMirrorLookup(
 }
 
 /**
- * Answer a planned lookup from the mirror, or return `undefined` when the match
- * set is larger than the requested page — in that case the mirror would be
- * returning an arbitrarily ordered slice where upstream returns a ranked one,
- * so the caller routes live instead.
+ * Answer a planned lookup from the mirror, or return `undefined` when the value
+ * matches more than one record — upstream ranks a multi-record match by
+ * relevance and the mirror cannot recompute that, so the caller routes live.
+ *
+ * A zero-match is answered rather than declined: an empty result is a fact about
+ * the corpus, and whether a mirror that may be a refresh cycle behind is allowed
+ * to report a miss belongs to the caller (`OPENFDA_MIRROR_FALLBACK_LIVE`).
  *
  * @throws Whatever the store throws (a missing or corrupt database file); the
  *   caller decides whether that falls back to live.
@@ -97,13 +101,14 @@ export async function runMirrorLookup(
   mirror: Mirror,
   lookup: MirrorLookup,
 ): Promise<OpenFdaResponse | undefined> {
+  // `total` counts the whole match; one row is all a served answer can hold, so
+  // a multi-record match is detected without reading records it will not return.
   const { rows, total } = await mirror.query({
     filters: [{ column: lookup.column, op: 'eq', value: lookup.value }],
-    sort: { column: lookup.dataset.primaryKey, direction: 'asc' },
-    limit: lookup.limit,
+    limit: 1,
     offset: 0,
   });
-  if (total > lookup.limit) return;
+  if (total > 1) return;
 
   return {
     meta: {

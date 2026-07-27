@@ -38,6 +38,17 @@ export const SIBLING_RECORD = {
   product_description: 'Testosterone Cypionate 200 mg/mL Injection',
 } as const;
 
+/**
+ * The only recall of its enforcement event — a non-unique key that happens to
+ * address a single record, which is the case the mirror still answers.
+ */
+export const LONE_EVENT_RECORD = {
+  ...ENFORCEMENT_RECORD,
+  recall_number: 'D-410-2017',
+  event_id: '75980',
+  product_description: 'Ketorolac Tromethamine 30 mg/mL Injection, 1 mL vials',
+} as const;
+
 /** A record with no primary key — unaddressable, so the projector drops it. */
 export const KEYLESS_RECORD = { event_id: '72241', state: 'IL' } as const;
 

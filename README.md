@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.7.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.14-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.7.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.14-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -336,7 +336,9 @@ The mirror is deliberately narrow. openFDA's `search` runs server-side in Elasti
 - the search is a single quoted `field:"value"` term — no boolean operators, wildcards, or ranges;
 - the field is one of `id`, `set_id`, `product_id`, `product_ndc`, `recall_number`, `event_id`, `application_number`, and the value is a whole identifier in its canonical spelling and case;
 - there is no `count` and no `sort`, and `skip` is 0;
-- the whole match set fits on the requested page.
+- the value matches exactly one record.
+
+The last condition is what keeps a mirrored answer identical to the API's rather than merely equivalent. Four of the seven lookup fields are primary keys and always match one record. The other three — `set_id`, `product_ndc`, `event_id` — can address several, and openFDA returns those in relevance order, which a local corpus cannot recompute; such a lookup routes to the API whatever the requested page size.
 
 `openfda_count_values` therefore always runs against the API — a partial mirror would return plausible but incomplete aggregates.
 

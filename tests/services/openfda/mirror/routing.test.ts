@@ -24,7 +24,12 @@ import {
   mirrorPathFor,
 } from '@/services/openfda/mirror/index.js';
 import { OpenFdaService } from '@/services/openfda/openfda-service.js';
-import { DUMP_STAMP, ENFORCEMENT_RECORD, SIBLING_RECORD } from './mirror-fixture.js';
+import {
+  DUMP_STAMP,
+  ENFORCEMENT_RECORD,
+  LONE_EVENT_RECORD,
+  SIBLING_RECORD,
+} from './mirror-fixture.js';
 
 const LIVE_RECORD = { ...ENFORCEMENT_RECORD, product_description: 'served by the live API' };
 
@@ -141,6 +146,59 @@ describe('mirror routing', () => {
 
     const response = await service.query('drug/enforcement', lookup, ctx);
 
+    expect(mockFetch).toHaveBeenCalledOnce();
+    expect(response.results).toEqual([LIVE_RECORD]);
+  });
+
+  it('answers a non-unique key from the mirror when it addresses one record', async () => {
+    await seedMirror('drug/enforcement', [ENFORCEMENT_RECORD, SIBLING_RECORD, LONE_EVENT_RECORD]);
+    const service = new OpenFdaService({ baseUrl: 'https://api.fda.gov', mirrorEnabled: true });
+
+    const response = await service.query(
+      'drug/enforcement',
+      { search: 'event_id:"75980"', limit: 50 },
+      ctx,
+    );
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(response.results).toEqual([LONE_EVENT_RECORD]);
+  });
+
+  it('routes live when a non-unique key matches more than one record', async () => {
+    await seedMirror('drug/enforcement', [ENFORCEMENT_RECORD, SIBLING_RECORD]);
+    const service = new OpenFdaService({ baseUrl: 'https://api.fda.gov', mirrorEnabled: true });
+
+    const response = await service.query(
+      'drug/enforcement',
+      { search: 'event_id:"72241"', limit: 50 },
+      ctx,
+    );
+
+    // The mirror holds the whole match set and could have answered it; upstream
+    // ranks it by relevance, so the ordering is the API's to define.
+    expect(mockFetch).toHaveBeenCalledOnce();
+    expect(new URL(mockFetch.mock.calls[0]?.[0] as string).searchParams.get('search')).toBe(
+      'event_id:"72241"',
+    );
+    expect(response.results).toEqual([LIVE_RECORD]);
+  });
+
+  it('routes a multi-record match live rather than answering empty when fallback is off', async () => {
+    await seedMirror('drug/enforcement', [ENFORCEMENT_RECORD, SIBLING_RECORD]);
+    const service = new OpenFdaService({
+      baseUrl: 'https://api.fda.gov',
+      mirrorEnabled: true,
+      mirrorFallbackLive: false,
+    });
+
+    const response = await service.query(
+      'drug/enforcement',
+      { search: 'event_id:"72241"', limit: 50 },
+      ctx,
+    );
+
+    // Fallback off suppresses a *mirror miss* from reaching the API; a query the
+    // mirror declines is an ordinary live query, not an empty success.
     expect(mockFetch).toHaveBeenCalledOnce();
     expect(response.results).toEqual([LIVE_RECORD]);
   });
