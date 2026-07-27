@@ -7,6 +7,7 @@
 import { createApp } from '@cyanheads/mcp-ts-core';
 import { allToolDefinitions } from './mcp-server/tools/definitions/index.js';
 import { setCanvas } from './services/canvas/canvas-accessor.js';
+import { scheduleMirrorRefresh } from './services/openfda/mirror/index.js';
 import { initOpenFdaService } from './services/openfda/openfda-service.js';
 
 await createApp({
@@ -17,9 +18,12 @@ await createApp({
     'Use the openfda_* tools to query the openFDA public API for drugs, food, devices, and animal/veterinary products: search adverse events, drug approvals, device clearances, and recalls; look up NDC codes; fetch drug labels; aggregate field counts. Queries use dotted field paths joined by AND/OR with double-quoted phrases (e.g. `openfda.brand_name:"aspirin"`); cross-product fields use the `openfda.*` prefix.',
   // Public catalog — serve full landing inventory without requiring auth
   landing: { requireAuth: false },
-  setup(core) {
+  async setup(core) {
     initOpenFdaService();
     // Optional DataCanvas (CANVAS_PROVIDER_TYPE=duckdb) — undefined when disabled.
     setCanvas(core.canvas);
+    // No-op unless OPENFDA_MIRROR_ENABLED and a refresh cron are both set; the
+    // initial harvest always runs out-of-band via `bun run mirror:init`.
+    await scheduleMirrorRefresh(core.config.mcpTransportType);
   },
 });

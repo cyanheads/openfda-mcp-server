@@ -14,6 +14,7 @@ import {
 } from '@cyanheads/mcp-ts-core/errors';
 import { fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig, type ServerConfig } from '@/config/server-config.js';
+import { getMirror, planMirrorLookup, runMirrorLookup } from './mirror/index.js';
 import type { OpenFdaQueryParams, OpenFdaResponse } from './types.js';
 
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -55,19 +56,98 @@ const OPENFDA_QUERY_ERROR_5XX =
  */
 const OPENFDA_NOTHING_TO_COUNT = /nothing to count/i;
 
+/**
+ * The slice of {@link ServerConfig} the client reads. Mirror settings are
+ * optional so a caller that only wants the live client — the default posture —
+ * can construct one from a base URL alone.
+ */
+export type OpenFdaServiceConfig = Pick<ServerConfig, 'apiKey' | 'baseUrl'> &
+  Partial<Pick<ServerConfig, 'mirrorEnabled' | 'mirrorFallbackLive'>>;
+
 export class OpenFdaService {
   private readonly baseUrl: string;
   private readonly apiKey: string | undefined;
+  private readonly mirrorEnabled: boolean;
+  private readonly mirrorFallbackLive: boolean;
   /** Last-seen `meta.last_updated` per endpoint, used as fallback on 404 responses. */
   private readonly lastUpdatedByEndpoint: Map<string, string> = new Map();
 
-  constructor(config: ServerConfig) {
+  constructor(config: OpenFdaServiceConfig) {
     this.baseUrl = config.baseUrl;
     this.apiKey = config.apiKey;
+    this.mirrorEnabled = config.mirrorEnabled ?? false;
+    this.mirrorFallbackLive = config.mirrorFallbackLive ?? true;
   }
 
   /**
-   * Execute a query against any openFDA endpoint.
+   * Execute a query against any openFDA endpoint, local mirror first when one is
+   * enabled and can reproduce the query exactly (see `mirror/query.ts`), live
+   * otherwise. With the mirror off — the default — this is the live path and
+   * nothing else.
+   */
+  async query<T = Record<string, unknown>>(
+    endpoint: string,
+    params: OpenFdaQueryParams,
+    ctx: Context,
+  ): Promise<OpenFdaResponse<T>> {
+    const mirrored = await this.queryMirror<T>(endpoint, params, ctx);
+    return mirrored ?? (await this.queryLive<T>(endpoint, params, ctx));
+  }
+
+  /**
+   * Answer from the local mirror, or return `undefined` to route live.
+   *
+   * Routes live when the mirror is off, the query is one the mirror cannot
+   * reproduce, the mirror has never completed a sync, or the lookup matched
+   * nothing — a zero-match on a mirror that is a refresh cycle behind is
+   * indistinguishable from a genuine miss, so the live API arbitrates. With
+   * `OPENFDA_MIRROR_FALLBACK_LIVE=false` a cold or failing mirror raises instead
+   * of silently spending the live API budget.
+   */
+  private async queryMirror<T>(
+    endpoint: string,
+    params: OpenFdaQueryParams,
+    ctx: Context,
+  ): Promise<OpenFdaResponse<T> | undefined> {
+    if (!this.mirrorEnabled) return;
+    const lookup = planMirrorLookup(endpoint, params);
+    if (!lookup) return;
+
+    const mirror = getMirror(lookup.dataset.endpoint);
+    let answer: OpenFdaResponse | undefined;
+    try {
+      if (!(await mirror.ready())) {
+        if (this.mirrorFallbackLive) {
+          ctx.log.debug('openFDA mirror not synced; using live API', { endpoint });
+          return;
+        }
+        throw serviceUnavailable(
+          `The local openFDA mirror for ${endpoint} has never completed a sync, and OPENFDA_MIRROR_FALLBACK_LIVE is off. Run the mirror init for this dataset or re-enable live fallback.`,
+          { reason: 'mirror_unavailable', endpoint },
+        );
+      }
+      answer = await runMirrorLookup(mirror, lookup);
+    } catch (error) {
+      if (!this.mirrorFallbackLive) throw error;
+      ctx.log.warning('openFDA mirror lookup failed; falling back to live API', {
+        endpoint,
+        field: lookup.field,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+
+    if (!answer || (answer.meta.total === 0 && this.mirrorFallbackLive)) return;
+    ctx.log.debug('Served openFDA query from local mirror', {
+      endpoint,
+      field: lookup.field,
+      total: answer.meta.total,
+    });
+    return answer as OpenFdaResponse<T>;
+  }
+
+  /**
+   * Execute a query against the live openFDA API.
    *
    * Uses the framework's `fetchWithTimeout` (which throws a status-mapped
    * `McpError` on any non-2xx, redacts the api_key-bearing URL from logs/errors,
@@ -78,7 +158,7 @@ export class OpenFdaService {
    * 404 (valid query, zero matches) — except a `Nothing to count` 404, which is a
    * fixable count expression, not an empty tally.
    */
-  async query<T = Record<string, unknown>>(
+  private async queryLive<T>(
     endpoint: string,
     params: OpenFdaQueryParams,
     ctx: Context,

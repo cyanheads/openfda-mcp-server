@@ -1,7 +1,7 @@
 # Agent Protocol
 
 **Server:** openfda-mcp-server
-**Version:** 0.6.0
+**Version:** 0.7.0
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.11.0`
 **Engines:** Bun ≥1.3.0, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/sdk` ^1.29.0
@@ -174,8 +174,16 @@ src/
     server-config.ts                    # Server-specific env vars (Zod schema)
   services/
     openfda/
-      openfda-service.ts                # openFDA API client (retry, rate-limit, error normalization)
+      openfda-service.ts                # openFDA API client (retry, rate-limit, error normalization) + mirror routing
       types.ts                          # Query params and response types
+      mirror/                           # Opt-in local bulk mirror (OPENFDA_MIRROR_ENABLED, off by default)
+        datasets.ts                     # Closed dataset registry + GMDN carve-out
+        bulk-stream.ts                  # Streaming ZIP + JSON reader for a dump partition
+        harvester.ts                    # sync generator (full-refresh model, tombstones)
+        mirror-registry.ts              # One defineMirror instance per dataset
+        query.ts                        # Mirror-vs-live gate; exact-key lookups only
+        refresh-schedule.ts             # schedulerService wiring (HTTP transport)
+        index.ts                        # Barrel
   mcp-server/
     tools/definitions/
       count-values.tool.ts              # openfda_count_values
@@ -266,6 +274,7 @@ When you complete a skill's checklist, check the boxes and add a completion time
 | `bun run format` | Auto-fix formatting |
 | `bun run test` | Run tests (Vitest) |
 | `bun run list-skills` | List available skills |
+| `bun run mirror:init \| refresh \| verify \| status [dataset...]` | Bulk-mirror lifecycle (`scripts/openfda-mirror.ts`). Init runs out-of-band, never at startup. |
 | `bun run changelog:build` | Regenerate `CHANGELOG.md` from `changelog/*.md` |
 | `bun run changelog:check` | Verify `CHANGELOG.md` is in sync (used by devcheck) |
 | `bun run bundle` | Build and pack as `.mcpb` for one-click Claude Desktop install |

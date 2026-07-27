@@ -73,6 +73,15 @@ RUN if [ "$OTEL_ENABLED" = "true" ]; then \
 # Copy the compiled application code from the build stage
 COPY --from=build /usr/src/app/dist ./dist
 
+# Copy the bulk-mirror lifecycle script so `docker exec … bun run mirror:init`
+# works in a container started with OPENFDA_MIRROR_ENABLED=true.
+COPY --from=build /usr/src/app/scripts/openfda-mirror.ts ./scripts/
+
+# Bun honors tsconfig `paths` at runtime — map `@/` to the compiled `./dist/` so
+# the .ts script resolves its alias imports against the build output. A dev
+# checkout maps @/* → ./src/*; the same `bun run mirror:*` command serves both.
+RUN echo '{"compilerOptions":{"baseUrl":".","paths":{"@/*":["./dist/*"]}}}' > tsconfig.json
+
 # The 'oven/bun' image already provides a non-root user named 'bun'.
 # We will use this existing user for enhanced security.
 

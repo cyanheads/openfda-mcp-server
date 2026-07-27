@@ -6,7 +6,7 @@
     "url": "https://github.com/cyanheads/openfda-mcp-server",
     "source": "github"
   },
-  "version": "0.6.0",
+  "version": "0.7.0",
   "remotes": [
     {
       "type": "streamable-http",
@@ -19,13 +19,54 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/openfda-mcp-server",
       "runtimeHint": "bun",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "environmentVariables": [
         {
           "name": "OPENFDA_API_KEY",
           "description": "Free API key from open.fda.gov — increases daily limit from 1K to 120K requests.",
           "format": "string",
           "isRequired": false
+        },
+        {
+          "name": "OPENFDA_MIRROR_ENABLED",
+          "description": "Serve exact-key lookups for drug/label, drug/ndc, drug/enforcement, and drug/drugsfda from a local bulk mirror instead of the API. Off by default; the initial harvest runs out-of-band via the mirror:init script.",
+          "format": "string",
+          "isRequired": false,
+          "default": "false"
+        },
+        {
+          "name": "OPENFDA_MIRROR_PATH",
+          "description": "Directory holding one SQLite file per mirrored dataset.",
+          "format": "string",
+          "isRequired": false,
+          "default": "./data/openfda-mirror"
+        },
+        {
+          "name": "OPENFDA_MIRROR_REFRESH_CRON",
+          "description": "Cron expression for the in-process mirror refresh. HTTP transport only; stdio operators run mirror:refresh from the host. Requires the optional node-cron peer dependency.",
+          "format": "string",
+          "isRequired": false
+        },
+        {
+          "name": "OPENFDA_MIRROR_FALLBACK_LIVE",
+          "description": "Fall back to the live API when the mirror is cold, missing the record, or failing. Disable to fail loudly instead.",
+          "format": "string",
+          "isRequired": false,
+          "default": "true"
+        },
+        {
+          "name": "OPENFDA_MIRROR_REFRESH_TIMEOUT_MS",
+          "description": "Wall-clock budget for one scheduled refresh before it is aborted. Raise it for drug/label, the only multi-partition dataset.",
+          "format": "string",
+          "isRequired": false,
+          "default": "21600000"
+        },
+        {
+          "name": "OPENFDA_MIRROR_BASE_URL",
+          "description": "Host serving the openFDA bulk download manifest. Override only to harvest from a private mirror of the dumps.",
+          "format": "string",
+          "isRequired": false,
+          "default": "https://api.fda.gov"
         },
         {
           "name": "MCP_LOG_LEVEL",
@@ -44,7 +85,7 @@
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/openfda-mcp-server",
       "runtimeHint": "bun",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "environmentVariables": [
         {
           "name": "OPENFDA_API_KEY",
@@ -86,6 +127,47 @@
           "format": "string",
           "isRequired": false,
           "default": "none"
+        },
+        {
+          "name": "OPENFDA_MIRROR_ENABLED",
+          "description": "Serve exact-key lookups for drug/label, drug/ndc, drug/enforcement, and drug/drugsfda from a local bulk mirror instead of the API. Off by default; the initial harvest runs out-of-band via the mirror:init script.",
+          "format": "string",
+          "isRequired": false,
+          "default": "false"
+        },
+        {
+          "name": "OPENFDA_MIRROR_PATH",
+          "description": "Directory holding one SQLite file per mirrored dataset.",
+          "format": "string",
+          "isRequired": false,
+          "default": "./data/openfda-mirror"
+        },
+        {
+          "name": "OPENFDA_MIRROR_REFRESH_CRON",
+          "description": "Cron expression for the in-process mirror refresh. HTTP transport only; stdio operators run mirror:refresh from the host. Requires the optional node-cron peer dependency.",
+          "format": "string",
+          "isRequired": false
+        },
+        {
+          "name": "OPENFDA_MIRROR_FALLBACK_LIVE",
+          "description": "Fall back to the live API when the mirror is cold, missing the record, or failing. Disable to fail loudly instead.",
+          "format": "string",
+          "isRequired": false,
+          "default": "true"
+        },
+        {
+          "name": "OPENFDA_MIRROR_REFRESH_TIMEOUT_MS",
+          "description": "Wall-clock budget for one scheduled refresh before it is aborted. Raise it for drug/label, the only multi-partition dataset.",
+          "format": "string",
+          "isRequired": false,
+          "default": "21600000"
+        },
+        {
+          "name": "OPENFDA_MIRROR_BASE_URL",
+          "description": "Host serving the openFDA bulk download manifest. Override only to harvest from a private mirror of the dumps.",
+          "format": "string",
+          "isRequired": false,
+          "default": "https://api.fda.gov"
         },
         {
           "name": "MCP_LOG_LEVEL",

@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.6.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.14-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.7.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.29.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.14-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -199,6 +199,7 @@ openFDA-specific:
 - Automatic error normalization — 404 returns empty results, 429/5xx retries, 400 provides actionable messages
 - Optional API key support — works without a key (1K requests/day), increases to 120K/day with a free key
 - Optional DataCanvas staging (`CANVAS_PROVIDER_TYPE=duckdb`, per call with `stage: true`) — stage large result sets as DuckDB tables and run SQL via `openfda_dataframe_query`
+- Optional local bulk mirror (`OPENFDA_MIRROR_ENABLED=true`) — a self-refreshing SQLite copy of the four drug bulk downloads that answers exact-key lookups without spending API budget, with live fallback
 
 ## Getting Started
 
@@ -317,8 +318,43 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 | `STORAGE_PROVIDER_TYPE` | Storage backend: `in-memory`, `filesystem`, `supabase`, `cloudflare-kv/r2/d1` | `in-memory` |
 | `OPENFDA_API_KEY` | Free API key from [open.fda.gov](https://open.fda.gov/apis/authentication/). Increases daily limit from 1K to 120K requests. | none |
 | `OPENFDA_BASE_URL` | Base URL override for testing against a proxy or mock. | `https://api.fda.gov` |
+| `OPENFDA_MIRROR_ENABLED` | Answer exact-key lookups from a local copy of the openFDA bulk downloads instead of the API. See [Local bulk mirror](#local-bulk-mirror). | `false` |
+| `OPENFDA_MIRROR_PATH` | Directory holding one SQLite file per mirrored dataset. | `./data/openfda-mirror` |
+| `OPENFDA_MIRROR_REFRESH_CRON` | Cron expression for the in-process mirror refresh (HTTP transport only). Unset means no scheduled refresh. | none |
+| `OPENFDA_MIRROR_FALLBACK_LIVE` | Fall back to the live API when the mirror is cold, missing the record, or failing. | `true` |
+| `OPENFDA_MIRROR_REFRESH_TIMEOUT_MS` | Wall-clock budget for one refresh before it is aborted. | `21600000` (6h) |
+| `OPENFDA_MIRROR_BASE_URL` | Host serving the bulk download manifest (`download.json`). | `https://api.fda.gov` |
 | `CANVAS_PROVIDER_TYPE` | Set to `duckdb` to enable DataCanvas staging — analytical SQL over result sets staged with `stage: true` and queried via `openfda_dataframe_query`. Requires the optional `@duckdb/node-api` dependency; unsupported on Cloudflare Workers. | `none` (disabled) |
 | `OTEL_ENABLED` | Enable OpenTelemetry | `false` |
+
+### Local bulk mirror
+
+openFDA publishes whole-dataset JSON dumps alongside the API. With `OPENFDA_MIRROR_ENABLED=true` the server keeps a local SQLite copy of four of them — `drug/label`, `drug/ndc`, `drug/enforcement`, `drug/drugsfda` — and answers eligible lookups from it, leaving the API budget for everything else.
+
+The mirror is deliberately narrow. openFDA's `search` runs server-side in Elasticsearch, which tokenises and ranks; a local corpus cannot reproduce that. A query is answered locally only when all of the following hold, and is sent to the API otherwise:
+
+- the search is a single quoted `field:"value"` term — no boolean operators, wildcards, or ranges;
+- the field is one of `id`, `set_id`, `product_id`, `product_ndc`, `recall_number`, `event_id`, `application_number`, and the value is a whole identifier in its canonical spelling and case;
+- there is no `count` and no `sort`, and `skip` is 0;
+- the whole match set fits on the requested page.
+
+`openfda_count_values` therefore always runs against the API — a partial mirror would return plausible but incomplete aggregates.
+
+The initial harvest runs out-of-band, never at startup:
+
+```sh
+bun run mirror:init                  # all four datasets
+bun run mirror:init drug/enforcement # one dataset (~3.8 MB compressed)
+bun run mirror:status                # sync state per dataset
+bun run mirror:verify                # integrity check + row counts
+bun run mirror:refresh               # re-harvest datasets whose dump has advanced
+```
+
+openFDA publishes no incremental API for these endpoints, so a refresh re-reads the whole dump and tombstones records the new export no longer carries. It is idempotent and resumable — re-running after an interrupt continues from the persisted cursor. Set `OPENFDA_MIRROR_REFRESH_CRON` to run it in-process on the HTTP transport; on stdio, run `bun run mirror:refresh` from the host.
+
+`meta.lastUpdated` on a mirrored response reports the `last_updated` stamp of the dump being served, which can differ from the live API's — the API index and the published dumps advance on separate schedules.
+
+On Node, install the optional `better-sqlite3` peer dependency; Bun uses its built-in `bun:sqlite`. `OPENFDA_MIRROR_REFRESH_CRON` additionally needs the optional `node-cron` peer dependency — without it the server refuses to start rather than run with a schedule it cannot honour. The mirror is unavailable on Cloudflare Workers (no SQLite, no persistent filesystem) and stays off there.
 
 ## Running the Server
 
@@ -349,6 +385,7 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 | `src/index.ts` | Entry point — `createApp()` with tool registration and service setup. |
 | `src/config/` | Server-specific env var parsing and validation with Zod. |
 | `src/services/openfda/` | openFDA API client with retry, rate-limit handling, and error normalization. |
+| `src/services/openfda/mirror/` | Opt-in local bulk mirror — dataset registry, dump reader, sync ingester, and the query gate that decides mirror vs live. |
 | `src/mcp-server/tools/definitions/` | Tool definitions (`*.tool.ts`). Fourteen openFDA tools. |
 
 ## Development Guide
@@ -367,6 +404,14 @@ Issues and pull requests are welcome. Run checks and tests before submitting:
 bun run devcheck
 bun run test
 ```
+
+## Data attribution
+
+Data is served from [openFDA](https://open.fda.gov), a U.S. Food and Drug Administration service. Under the [openFDA license](https://open.fda.gov/license/) the data is dedicated to the public domain under CC0 1.0, with one exception: GMDN® device-classification content — Term Code, Term Name, and Term Definition — is licensed from The GMDN Agency, and redistributing it or using it to train AI requires a separate licence from the Agency.
+
+The local mirror therefore covers drug datasets only. `device/classification` and every other device endpoint are excluded from it, and the ingester rejects any record carrying a GMDN-bearing field rather than writing it to disk. Extending the mirror to device data requires clearing that licence first.
+
+FDA does not endorse this project. Do not rely on openFDA to make decisions regarding medical care.
 
 ## License
 

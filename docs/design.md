@@ -240,6 +240,60 @@ Every multi-row search tool — `openfda_search_adverse_events`, `_recalls`, `_d
 
 ---
 
+## Local bulk mirror
+
+**Opt-in, off by default.** `OPENFDA_MIRROR_ENABLED=false` is the shipped posture and short-circuits before anything opens: `OpenFdaService.query` is the live client and nothing else. Enabling it adds a local-first read path for four datasets; every other endpoint and every ineligible query is untouched.
+
+### Why a mirror, and why this narrow
+
+openFDA allows 240 req/min and 120K/day with a key (1K without). Bulk and repeated-lookup workflows exhaust that, and any 429 blocks every tool. openFDA also publishes whole-dataset JSON dumps at [open.fda.gov/data/downloads](https://open.fda.gov/data/downloads/) with the same record schema the API returns, so a local copy is exact for the records it holds.
+
+**Decision — the mirror answers exact-key lookups only; everything else routes live.** A sibling server in this fleet shipped an equivalent local index and then removed it: openFDA's `search` runs server-side in Elasticsearch, which tokenises and ranks, and a local corpus diverged from live on match counts and result ordering. The gate in `src/services/openfda/mirror/query.ts` keeps the mirror to the class of queries where a SQL equality test provably selects the same documents as the upstream phrase query. All four conditions must hold:
+
+1. the search is a single quoted `field:"value"` term — no boolean operators, wildcards, ranges, or second clause. (Quoting matters: `recall_number:D-321-2016` matches 17,798 documents upstream where `recall_number:"D-321-2016"` matches one, because the bare hyphens parse as operators.)
+2. the field is declared in the dataset's `keys` and the value matches its canonical grammar, **case-sensitively**. openFDA's analysed index is case-insensitive; the stored literal is not, so `application_number:"nda017398"` routes live rather than returning a false miss.
+3. no `count`, no `sort`, and `skip === 0`. Aggregation and ordering are upstream's to define.
+4. the whole match set fits on the requested page. Below that bar the mirror would return an arbitrarily ordered slice where upstream returns a ranked one.
+
+**Decision — `openfda_count_values` is never mirrored.** A partial or one-cycle-stale mirror returns a plausible but incomplete tally with no detectable miss, which is worse than a slower correct answer.
+
+### Scope
+
+| Dataset | Primary key | Additional lookup key | Bulk dump |
+|---|---|---|---|
+| `drug/label` | `id` | `set_id` | 14 partitions |
+| `drug/ndc` | `product_id` | `product_ndc` | ~27 MB compressed |
+| `drug/enforcement` | `recall_number` | `event_id` | ~3.8 MB compressed |
+| `drug/drugsfda` | `application_number` | — | ~9 MB compressed |
+
+Out of scope: `drug/event` and `device/event` (FAERS size warrants its own effort), all device endpoints, food and cosmetic endpoints, and `drug/shortages` (no bulk dump published).
+
+### GMDN licensing carve-out
+
+openFDA data is dedicated to the public domain under CC0 1.0 with one exception: GMDN® Term Code, Term Name, and Term Definition are licensed from The GMDN Agency, and redistribution or AI-training use requires a separate licence. Those terms ride in the device UDI (GUDID) dataset and `device/classification`.
+
+Two layers enforce the exclusion. `MIRRORED_ENDPOINTS` is a closed list of four drug datasets, so no device dump is reachable in the first place. `assertNoGmdnContent` is the backstop: every ingested record is walked for a GMDN-bearing key before it reaches the store, and a hit aborts the sync with the offending path named. An upstream schema change that starts emitting GMDN fields into a drug dataset therefore fails loudly instead of silently writing licensed content to disk. Any future extension to device data needs that licence cleared first.
+
+### Sync model
+
+openFDA publishes no incremental API for these endpoints, so **both `init` and `refresh` re-read every partition**; a refresh whose `export_date` has not advanced past the stored checkpoint returns without downloading anything. Each row carries the export date it was written from, so once every partition has been read the pass tombstones rows an older export left behind. The export date is published as the checkpoint only after the last partition — publishing it earlier would let a later refresh skip work an interrupted run never finished.
+
+A partition is a single-entry ZIP whose JSON unpacks to hundreds of megabytes, so `bulk-stream.ts` holds neither whole: it parses the ZIP local header off the front of the response, inflates the rest through `DecompressionStream`, and runs a depth-aware scanner that emits `results[]` elements as they complete. The reader is strict about the layout openFDA publishes (single entry, deflate, sizes in the header, `results` array closed) — a best-effort parse of an unexpected archive would produce a silently partial mirror.
+
+One SQLite file per dataset (`<slug>.db` under `OPENFDA_MIRROR_PATH`), because the framework's `mirror_sync_state` row is per database and the four datasets have independent lifecycles. A row is the primary key, the lookup columns, the dump's two freshness stamps, and the verbatim upstream record in `raw` — so a mirrored response returns the same JSON the API would. Records with no primary key are unaddressable and are skipped (`drug/enforcement` carries one).
+
+### Lifecycle
+
+**Init runs out-of-band, never at startup** — `bun run mirror:init [dataset...]`, backed by `scripts/openfda-mirror.ts` (`init` / `refresh` / `verify` / `status`). It is idempotent and resumable from the persisted cursor. Refresh is wired to `schedulerService` in `setup()` when `OPENFDA_MIRROR_REFRESH_CRON` is set and the transport is HTTP; a stdio server is a short-lived per-client process, so its operator runs `bun run mirror:refresh` from the host. The cron **skips** any dataset that has never completed an init rather than performing a multi-hour first harvest on a scheduled tick.
+
+### Fallback
+
+The read path gates on the framework's durable completion marker (`mirror.ready()`), which stays true through a refresh, so a mid-refresh or last-refresh-failed mirror keeps serving. `OPENFDA_MIRROR_FALLBACK_LIVE` (default `true`) routes to the API when the mirror is cold, when the store itself fails, and — deliberately — when a lookup matches nothing: a zero-match on a mirror one refresh cycle behind is indistinguishable from a genuine miss, so the API arbitrates. Set it to `false` to raise instead, for a deployment that must not spend API budget.
+
+**`meta.lastUpdated` reports the mirrored dump's own stamp**, which can differ from the live API's for the same endpoint — the API index and the published dumps advance on separate schedules. Reporting the live value would misrepresent the vintage of the data actually being served.
+
+---
+
 ## Implementation Notes
 
 **Uniform query layer.** All 15+ openFDA endpoints share identical query mechanics: `search=field:value`, `count=field`, `sort=field:asc|desc`, `limit=N`, `skip=N`. The service layer should implement one generic query function parameterized by endpoint path, with tool handlers providing domain-specific defaults and output formatting.
@@ -299,6 +353,12 @@ openFDA returns JSON error objects with `code`, `message`, and sometimes `detail
 | `OPENFDA_API_KEY` | No | Free API key from [open.fda.gov](https://open.fda.gov/apis/authentication/). Increases daily limit from 1K to 120K requests. Passed as `api_key` query parameter. |
 | `OPENFDA_BASE_URL` | No | Base URL override. Default: `https://api.fda.gov`. Useful for testing against a proxy or mock server. |
 | `CANVAS_PROVIDER_TYPE` | No | Set to `duckdb` to enable [DataCanvas staging](#datacanvas-staging-analytical-sql) — analytical SQL over result sets staged with `stage: true` and queried via `openfda_dataframe_query`. Default `none` (disabled). Requires the optional `@duckdb/node-api` dependency; unsupported on Cloudflare Workers. |
+| `OPENFDA_MIRROR_ENABLED` | No | Set to `true` to enable the [local bulk mirror](#local-bulk-mirror). Default `false`. Requires an out-of-band `bun run mirror:init` before it serves anything; on Node, the optional `better-sqlite3` peer dependency. Unsupported on Cloudflare Workers. |
+| `OPENFDA_MIRROR_PATH` | No | Directory holding one SQLite file per mirrored dataset. Default `./data/openfda-mirror`. |
+| `OPENFDA_MIRROR_REFRESH_CRON` | No | Cron expression for the in-process refresh. HTTP transport only; unset means no scheduled refresh. Requires the optional `node-cron` peer dependency — set without it, the server fails to start. |
+| `OPENFDA_MIRROR_FALLBACK_LIVE` | No | Fall back to the live API when the mirror is cold, missing the record, or failing. Default `true`. |
+| `OPENFDA_MIRROR_REFRESH_TIMEOUT_MS` | No | Wall-clock budget for one refresh before it is aborted. Default `21600000` (6h). |
+| `OPENFDA_MIRROR_BASE_URL` | No | Host serving the bulk download manifest (`download.json`). Default `https://api.fda.gov`. |
 
 ---
 
@@ -308,4 +368,6 @@ openFDA returns JSON error objects with `code`, `message`, and sometimes `detail
 - [openFDA Query Syntax](https://open.fda.gov/apis/query-syntax/)
 - [Authentication & Rate Limits](https://open.fda.gov/apis/authentication/)
 - [Drug Adverse Event Fields](https://open.fda.gov/apis/drug/event/searchable-fields/)
+- [openFDA Bulk Downloads](https://open.fda.gov/data/downloads/)
+- [openFDA License (CC0, with the GMDN exception)](https://open.fda.gov/license/)
 - [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core)

@@ -1,9 +1,11 @@
 {
   "manifest_version": "0.3",
   "name": "openfda-mcp-server",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Query FDA data on drugs, food, devices, and recalls via openFDA. STDIO or Streamable HTTP.",
-  "author": { "name": "cyanheads" },
+  "author": {
+    "name": "cyanheads"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/cyanheads/openfda-mcp-server"
@@ -20,12 +22,19 @@
         "MCP_TRANSPORT_TYPE": "stdio",
         "MCP_AUTH_MODE": "none",
         "NODE_ENV": "production",
-        "OPENFDA_API_KEY": "${user_config.openfda_api_key}"
+        "OPENFDA_API_KEY": "${user_config.openfda_api_key}",
+        "OPENFDA_MIRROR_ENABLED": "${user_config.openfda_mirror_enabled}",
+        "OPENFDA_MIRROR_PATH": "${user_config.openfda_mirror_path}",
+        "OPENFDA_MIRROR_REFRESH_CRON": "${user_config.openfda_mirror_refresh_cron}",
+        "OPENFDA_MIRROR_FALLBACK_LIVE": "${user_config.openfda_mirror_fallback_live}",
+        "OPENFDA_MIRROR_REFRESH_TIMEOUT_MS": "${user_config.openfda_mirror_refresh_timeout_ms}"
       }
     }
   },
   "compatibility": {
-    "runtimes": { "node": ">=24.0.0" }
+    "runtimes": {
+      "node": ">=24.0.0"
+    }
   },
   "tools_generated": true,
   "prompts_generated": true,
@@ -37,6 +46,41 @@
       "required": false,
       "sensitive": true,
       "default": ""
+    },
+    "openfda_mirror_enabled": {
+      "type": "string",
+      "title": "Enable local bulk mirror",
+      "description": "Set to true to answer exact-key lookups for drug/label, drug/ndc, drug/enforcement, and drug/drugsfda from a local SQLite copy of the openFDA bulk downloads. Requires an out-of-band harvest (mirror:init) before it serves anything.",
+      "required": false,
+      "default": "false"
+    },
+    "openfda_mirror_path": {
+      "type": "string",
+      "title": "Mirror directory",
+      "description": "Directory holding one SQLite file per mirrored dataset.",
+      "required": false,
+      "default": "./data/openfda-mirror"
+    },
+    "openfda_mirror_refresh_cron": {
+      "type": "string",
+      "title": "Mirror refresh schedule",
+      "description": "Cron expression for the in-process refresh. Applies to the HTTP transport only; run mirror:refresh from the host otherwise. Requires the optional node-cron peer dependency.",
+      "required": false,
+      "default": ""
+    },
+    "openfda_mirror_fallback_live": {
+      "type": "string",
+      "title": "Fall back to the live API",
+      "description": "Leave true so a cold, stale, or failing mirror transparently falls back to the openFDA API.",
+      "required": false,
+      "default": "true"
+    },
+    "openfda_mirror_refresh_timeout_ms": {
+      "type": "string",
+      "title": "Refresh timeout (ms)",
+      "description": "Wall-clock budget for one scheduled refresh before it is aborted. Raise it for drug/label, the only multi-partition dataset.",
+      "required": false,
+      "default": "21600000"
     }
   }
 }
