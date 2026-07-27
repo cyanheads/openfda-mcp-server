@@ -78,6 +78,37 @@ describe.each(STAGING_TOOLS.map(([tool, input]) => [tool.name, tool, input] as c
       expect(text).toContain('openfda_dataframe_query');
     });
 
+    it('points a truncated stage at openfda_count_values for whole-population aggregates (#36)', () => {
+      const text = formatText(tool, {
+        meta: { total: 609_468, skip: 0, limit: 0, lastUpdated: '2026-06-01' },
+        results: [],
+        canvas_id: 'cv_1',
+        canvas_table: 'spilled_ab12cd34',
+        spilled: true,
+        staged_rows: 235,
+        truncated: true,
+      });
+      expect(text).toContain('narrow the query');
+      expect(text).toContain('openfda_count_values');
+    });
+
+    it('omits the aggregate route when the whole match reached the table (#36)', () => {
+      const text = formatText(tool, {
+        meta: { total: 235, skip: 0, limit: 0, lastUpdated: '2026-06-01' },
+        results: [],
+        canvas_id: 'cv_1',
+        canvas_table: 'spilled_ab12cd34',
+        spilled: true,
+        staged_rows: 235,
+      });
+      expect(text).not.toContain('openfda_count_values');
+    });
+
+    it('names the aggregate alternative in the stage input description (#36)', () => {
+      const stage = tool.input.shape.stage as { description?: string };
+      expect(stage.description).toContain('openfda_count_values');
+    });
+
     it('points past-the-end offsets at the staged table with a runnable query (#32)', () => {
       const text = formatText(tool, {
         meta: { total: 1175, skip: 300, limit: 0, lastUpdated: '2026-06-01' },

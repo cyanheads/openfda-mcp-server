@@ -33,7 +33,7 @@ vi.mock('@/services/openfda/openfda-service.js', () => {
   };
 });
 
-import { OPENFDA_MAX_ROWS, spillSearch } from '@/services/openfda/canvas-spill.js';
+import { OPENFDA_MAX_ROWS, spillSearch, stagingNotice } from '@/services/openfda/canvas-spill.js';
 
 async function setCanvasMock(c: unknown) {
   const mod = await import('@/services/canvas/canvas-accessor.js');
@@ -300,5 +300,29 @@ describe('spillSearch', () => {
     expect(small.preview).toHaveLength(3);
     expect(large.preview).toHaveLength(50);
     expect(small.stagedRows).toBe(large.stagedRows);
+  });
+});
+
+describe('stagingNotice', () => {
+  const base = {
+    canvasId: 'cv_1',
+    lastUpdated: '2026-06-01',
+    preview: [],
+    skip: 0,
+    spilled: true,
+    stagedRows: 235,
+    tableName: 'spilled_ab12cd34',
+    total: 609_468,
+  };
+
+  it('routes a truncated stage to openfda_count_values for whole-match aggregates (#36)', () => {
+    const notice = stagingNotice({ ...base, truncated: true });
+    expect(notice).toContain('narrow the query');
+    expect(notice).toContain('openfda_count_values');
+  });
+
+  it('omits the aggregate route when the whole match was staged (#36)', () => {
+    const notice = stagingNotice({ ...base, stagedRows: 609_468, truncated: false });
+    expect(notice).not.toContain('openfda_count_values');
   });
 });

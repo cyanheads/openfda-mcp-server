@@ -3,6 +3,8 @@
  * @module mcp-server/tools/format-utils
  */
 
+import { AGGREGATE_ROUTE } from '@/services/openfda/canvas-spill.js';
+
 /** Truncate a string, appending ellipsis when trimmed. */
 export function truncate(value: string | undefined | null, max: number): string {
   if (!value) return 'N/A';
@@ -49,10 +51,27 @@ function renderValue(value: unknown): string | null {
 }
 
 /**
+ * Render one value as a table cell — primitives verbatim, structures as JSON.
+ * `String()` on a nested object yields `[object Object]`, which drops every leaf
+ * under it from `content[]` while `structuredContent` keeps the whole structure.
+ */
+export function formatCell(value: unknown): string {
+  if (value == null) return '';
+  if (isPrimitive(value)) return String(value);
+  return JSON.stringify(value);
+}
+
+/**
  * Render record fields not in the `rendered` set as `**Label:** value` lines.
  * String arrays render as comma-joined values; objects flatten one level into
  * `key=value` pairs; deeper structures fall back to JSON. Skips null, undefined,
  * empty strings, and empty containers.
+ *
+ * `rendered` names only the keys a caller's own lines emit **verbatim and
+ * unconditionally** — that is what keeps `content[]` complete against a dynamic
+ * record. A key whose value is translated (a code mapped to a label), filtered,
+ * partially rendered, or rendered only when a sibling is absent must stay out of
+ * the set so its full value still reaches `content[]`.
  */
 export function formatRemainingFields(
   record: Record<string, unknown>,
@@ -106,7 +125,7 @@ export function canvasStagingLine(total: number, result: CanvasResultFields): st
   }
   const staged = result.staged_rows ?? 0;
   const cut = result.truncated
-    ? ` Truncated: staging stopped at its size budget, so the table holds the first ${staged} records — narrow the query for a complete set.`
+    ? ` Truncated: staging stopped at its size budget, so the table holds the first ${staged} records — narrow the query for a complete set.${AGGREGATE_ROUTE}`
     : '';
   return `> Staged ${staged} of ${total} matched rows on canvas table \`${result.canvas_table}\` (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled}) — query with openfda_dataframe_query.${cut}`;
 }

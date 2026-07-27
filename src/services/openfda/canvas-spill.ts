@@ -43,8 +43,16 @@ export const stageInput = z
   .boolean()
   .default(false)
   .describe(
-    'Stage the matched set on a DataCanvas for SQL analysis with openfda_dataframe_query. Default false — the call returns one page for one upstream request. When true, records are also drained onto a canvas table up to a size budget (staged_rows reports how many reached it). Requires CANVAS_PROVIDER_TYPE=duckdb.',
+    'Stage the matched set on a DataCanvas for SQL analysis with openfda_dataframe_query. Default false — the call returns one page for one upstream request. When true, records are also drained onto a canvas table up to a size budget (staged_rows reports how many reached it). Staging is for record-level SQL over a bounded slice; for a distribution over everything that matched, openfda_count_values aggregates server-side in one request. Requires CANVAS_PROVIDER_TYPE=duckdb.',
   );
+
+/**
+ * Recovery clause appended wherever staging discloses a cut. A truncated table
+ * still supports record-level SQL, but a GROUP BY over it reads as a population
+ * statistic and is not one — openFDA answers that question over the whole match.
+ */
+export const AGGREGATE_ROUTE =
+  ' A GROUP BY over the staged rows describes only those rows — for a distribution over the whole matched set, use openfda_count_values with the same search and a count field.';
 
 /**
  * `canvas_disabled` contract entry shared by every search tool that can stage.
@@ -249,7 +257,7 @@ export function stagingNotice(spill: OpenFdaSpillResult): string {
     return `Nothing was staged on canvas "${spill.canvasId}" — ${spill.total} records matched.`;
   }
   const cut = spill.truncated
-    ? ` Staging stopped at its size budget, so the table holds the first ${spill.stagedRows} records — narrow the query (filters, date range) for a complete set.`
+    ? ` Staging stopped at its size budget, so the table holds the first ${spill.stagedRows} records — narrow the query (filters, date range) for a complete set.${AGGREGATE_ROUTE}`
     : '';
   return `Staged ${spill.stagedRows} of ${spill.total} matched records on canvas table "${spill.tableName}". Query it with openfda_dataframe_query using canvas_id "${spill.canvasId}".${cut}`;
 }
