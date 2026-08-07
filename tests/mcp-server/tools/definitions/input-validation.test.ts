@@ -597,3 +597,91 @@ describe('optional free-text inputs reject blank values', () => {
     }
   });
 });
+
+// ── sort grammar (#38) ────────────────────────────────────────────────────────
+
+/**
+ * `sort` was `nonBlankString()` — any non-blank value reached api.fda.gov and a
+ * malformed one came back as an Elasticsearch mapping error. The schema now
+ * carries openFDA's accepted shape as a `pattern`.
+ *
+ * Every ACCEPTED value below returns HTTP 200 from api.fda.gov (each against an
+ * endpoint that carries its field) and every REJECTED one is refused upstream
+ * (400 "Sorting allowed by non-analyzed fields only" / "Sort not supported", or
+ * 500 `query_shard_exception`). The accepted set is what makes this a narrowing
+ * rather than a break: openFDA validates only the field path — it splits a
+ * segment on its last colon — so an unrecognized direction token (`:ascending`,
+ * `:"desc"`) answers 200 and must keep passing, and it trims spaces around a
+ * segment, so a space after a comma sorts identically to the space-free form.
+ * A space *inside* a field path is not trimmed and stays rejected.
+ */
+describe('sort accepts openFDA’s grammar and rejects only what openFDA rejects', () => {
+  /** Every tool carrying a caller-supplied `sort`, with a minimal valid base input. */
+  const SORT_TOOLS: Array<
+    [string, { parse: (value: unknown) => unknown }, Record<string, unknown>]
+  > = [
+    ['openfda_search_adverse_events', searchAdverseEventsTool.input, { category: 'drug' }],
+    ['openfda_search_recalls', searchRecallsTool.input, { category: 'drug' }],
+    ['openfda_get_drug_label', getDrugLabelTool.input, { search: 'aspirin' }],
+    ['openfda_lookup_ndc', lookupNdcTool.input, { search: 'aspirin' }],
+    ['openfda_search_drug_approvals', searchDrugApprovalsTool.input, {}],
+    ['openfda_search_drug_shortages', searchDrugShortagesTool.input, {}],
+    ['openfda_search_device_clearances', searchDeviceClearancesTool.input, { pathway: '510k' }],
+    ['openfda_search_animal_events', searchAnimalEventsTool.input, {}],
+    ['openfda_search_tobacco_reports', searchTobaccoReportsTool.input, {}],
+  ];
+
+  const ACCEPTED = [
+    'report_date:desc', // the documented form
+    'report_date', // bare field path — 200 upstream
+    'report_date:desc,status.exact:asc', // multi-field sort — 200 upstream
+    'submissions.submission_status_date:desc', // deep dotted path
+    'openfda.brand_name.exact:asc', // .exact subfield
+    'report_date:DESC', // uppercase direction — 200 upstream
+    'report_date:ascending', // unrecognized direction — 200 upstream, so not ours to reject
+    'report_date:"desc"', // quoted direction — 200 upstream
+    'classification.exact:desc, report_date:asc', // space after the comma — 200 upstream, ordering honoured
+    '  report_date:asc  ', // openFDA trims spaces around the whole value
+  ];
+
+  const REJECTED = [
+    'report_date :asc', // 500: a space inside a field path is not trimmed — "report_date "
+    'report_date-desc', // 400: field path "report_date-desc"
+    '(report_date):desc', // 400: field path "(report_date)"
+    '"report_date":desc', // 400: field path "\"report_date\""
+    'report_date desc', // 400: field path "report_date desc"
+    'report_date;drop', // 400 Sort not supported
+    'report_date:desc:asc', // 500: field path becomes "report_date:desc"
+    'report_date:desc,', // 500: empty second segment
+    ',report_date', // 500: empty first segment
+    'report_date:desc,foo-bar:asc', // 500: second field path "foo-bar"
+    ':desc', // 400: empty field path
+  ];
+
+  for (const [label, schema, base] of SORT_TOOLS) {
+    it.each(ACCEPTED)(`${label}.sort accepts %j`, (value) => {
+      expect((schema.parse({ ...base, sort: value }) as { sort: string }).sort).toBe(value);
+    });
+
+    it.each(REJECTED)(`${label}.sort rejects %j`, (value) => {
+      expect(() => schema.parse({ ...base, sort: value })).toThrow();
+    });
+  }
+
+  // The shape reaches the advertised inputSchema, not only the rejection: a client
+  // reading tools/list can self-correct before spending a call.
+  it('advertises the sort shape as a JSON Schema pattern', () => {
+    const schema = z.toJSONSchema(searchRecallsTool.input) as {
+      properties: { sort: { pattern?: string; minLength?: number } };
+    };
+    const pattern = schema.properties.sort.pattern;
+    expect(pattern).toBeDefined();
+    expect(schema.properties.sort.minLength).toBe(1);
+
+    // The advertised pattern is the enforced one — a client applying it locally
+    // reaches the same verdict the server does.
+    const advertised = new RegExp(pattern as string);
+    for (const value of ACCEPTED) expect(advertised.test(value)).toBe(true);
+    for (const value of REJECTED) expect(advertised.test(value)).toBe(false);
+  });
+});

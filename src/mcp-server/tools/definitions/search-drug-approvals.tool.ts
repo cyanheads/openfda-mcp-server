@@ -16,9 +16,13 @@ import {
   noMatchNote,
 } from '@/mcp-server/tools/format-utils.js';
 import {
+  assertSearchDelimitersBalanced,
   assertSkipWithinCeiling,
+  malformedSearchError,
   nonBlankString,
+  SEARCH_BALANCE_NOTE,
   SKIP_DESCRIPTION,
+  sortExpression,
 } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
@@ -55,12 +59,12 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
     search: nonBlankString()
       .optional()
       .describe(
-        'openFDA search query. Examples: openfda.brand_name:"humira", sponsor_name:"PFIZER", submissions.submission_type:"ORIG" AND submissions.review_priority:"PRIORITY". Exact quoted values can be case-sensitive on some fields — sponsor_name is stored uppercase, so use sponsor_name:"PFIZER" (a lowercase quoted value returns no matches). Omit to browse recent.',
+        `openFDA search query. Examples: openfda.brand_name:"humira", sponsor_name:"PFIZER", submissions.submission_type:"ORIG" AND submissions.review_priority:"PRIORITY". Exact quoted values can be case-sensitive on some fields — sponsor_name is stored uppercase, so use sponsor_name:"PFIZER" (a lowercase quoted value returns no matches). Omit to browse recent. ${SEARCH_BALANCE_NOTE}`,
       ),
-    sort: nonBlankString()
+    sort: sortExpression()
       .optional()
       .describe(
-        'Sort expression (field:asc or field:desc). Example: submissions.submission_status_date:desc. Invalid or non-sortable fields cause a query error — use a documented field name.',
+        'Sort expression — a field path optionally suffixed with :asc or :desc; comma-separate for multi-field sort. Example: submissions.submission_status_date:desc. Field paths take only letters, digits, underscores, and dots; anything else is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
       ),
     limit: z
       .number()
@@ -125,6 +129,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       retryable: true,
       recovery: 'Retry after a short wait; if the error persists check api.fda.gov status.',
     },
+    malformedSearchError,
     {
       reason: 'query_error',
       code: JsonRpcErrorCode.ValidationError,
@@ -143,6 +148,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
 
   async handler(input, ctx) {
     assertSkipWithinCeiling(input.skip, ctx);
+    assertSearchDelimitersBalanced(input.search, ctx);
 
     const emptyNotice = (skip: number, total: number) =>
       emptyResultMessage(

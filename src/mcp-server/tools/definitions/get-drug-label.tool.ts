@@ -14,9 +14,13 @@ import {
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import { emptyResultMessage, humanizeField } from '@/mcp-server/tools/format-utils.js';
 import {
+  assertSearchDelimitersBalanced,
   assertSkipWithinCeiling,
+  malformedSearchError,
   nonBlankString,
+  SEARCH_BALANCE_NOTE,
   SKIP_DESCRIPTION,
+  sortExpression,
 } from '@/mcp-server/tools/schema-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
@@ -78,12 +82,12 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
 
   input: z.object({
     search: nonBlankString().describe(
-      'Query targeting label fields. Examples: openfda.brand_name:"aspirin", openfda.generic_name:"metformin", openfda.manufacturer_name:"pfizer". For a specific revision, pass set_id with the SPL UUID returned in earlier results.',
+      `Query targeting label fields. Examples: openfda.brand_name:"aspirin", openfda.generic_name:"metformin", openfda.manufacturer_name:"pfizer". For a specific revision, pass set_id with the SPL UUID returned in earlier results. ${SEARCH_BALANCE_NOTE}`,
     ),
-    sort: nonBlankString()
+    sort: sortExpression()
       .optional()
       .describe(
-        'Sort expression (field:asc or field:desc). Example: effective_time:desc. Invalid or non-sortable fields cause a query error — use a documented field name.',
+        'Sort expression — a field path optionally suffixed with :asc or :desc; comma-separate for multi-field sort. Example: effective_time:desc. Field paths take only letters, digits, underscores, and dots; anything else is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
       ),
     limit: z
       .number()
@@ -169,6 +173,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       retryable: true,
       recovery: 'Retry after a short wait; if the error persists check api.fda.gov status.',
     },
+    malformedSearchError,
     {
       reason: 'query_error',
       code: JsonRpcErrorCode.ValidationError,
@@ -187,6 +192,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
 
   async handler(input, ctx) {
     assertSkipWithinCeiling(input.skip, ctx);
+    assertSearchDelimitersBalanced(input.search, ctx);
 
     const service = getOpenFdaService();
     const response = await service.query(

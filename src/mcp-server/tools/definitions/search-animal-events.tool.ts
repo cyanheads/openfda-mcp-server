@@ -15,9 +15,13 @@ import {
   noMatchNote,
 } from '@/mcp-server/tools/format-utils.js';
 import {
+  assertSearchDelimitersBalanced,
   assertSkipWithinCeiling,
+  malformedSearchError,
   nonBlankString,
+  SEARCH_BALANCE_NOTE,
   SKIP_DESCRIPTION,
+  sortExpression,
 } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
@@ -59,12 +63,12 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
     search: nonBlankString()
       .optional()
       .describe(
-        'openFDA search query using field:value syntax. Examples: animal.species:"Dog", drug.brand_name:"Bravecto", reaction.veddra_term_name:"Vomiting", serious_ae:"true". Omit to browse recent reports.',
+        `openFDA search query using field:value syntax. Examples: animal.species:"Dog", drug.brand_name:"Bravecto", reaction.veddra_term_name:"Vomiting", serious_ae:"true". Omit to browse recent reports. ${SEARCH_BALANCE_NOTE}`,
       ),
-    sort: nonBlankString()
+    sort: sortExpression()
       .optional()
       .describe(
-        'Sort expression (field:asc or field:desc). Example: original_receive_date:desc. Invalid or non-sortable fields cause a query error — use a documented field name.',
+        'Sort expression — a field path optionally suffixed with :asc or :desc; comma-separate for multi-field sort. Example: original_receive_date:desc. Field paths take only letters, digits, underscores, and dots; anything else is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
       ),
     limit: z
       .number()
@@ -129,6 +133,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       retryable: true,
       recovery: 'Retry after a short wait; if the error persists check api.fda.gov status.',
     },
+    malformedSearchError,
     {
       reason: 'query_error',
       code: JsonRpcErrorCode.ValidationError,
@@ -147,6 +152,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
 
   async handler(input, ctx) {
     assertSkipWithinCeiling(input.skip, ctx);
+    assertSearchDelimitersBalanced(input.search, ctx);
 
     const emptyNotice = (skip: number, total: number) =>
       emptyResultMessage(

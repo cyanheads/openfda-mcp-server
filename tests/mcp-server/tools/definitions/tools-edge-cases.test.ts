@@ -6,6 +6,7 @@
  */
 
 import type { Context } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -14,13 +15,20 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 }));
 
 import { countValuesTool } from '@/mcp-server/tools/definitions/count-values.tool.js';
+import { drugProfileTool } from '@/mcp-server/tools/definitions/drug-profile.tool.js';
 import { getDrugLabelTool } from '@/mcp-server/tools/definitions/get-drug-label.tool.js';
 import { lookupNdcTool } from '@/mcp-server/tools/definitions/lookup-ndc.tool.js';
+import { searchAdverseEventsTool } from '@/mcp-server/tools/definitions/search-adverse-events.tool.js';
 import { searchAnimalEventsTool } from '@/mcp-server/tools/definitions/search-animal-events.tool.js';
 import { searchDeviceClearancesTool } from '@/mcp-server/tools/definitions/search-device-clearances.tool.js';
 import { searchDrugApprovalsTool } from '@/mcp-server/tools/definitions/search-drug-approvals.tool.js';
+import { searchDrugShortagesTool } from '@/mcp-server/tools/definitions/search-drug-shortages.tool.js';
 import { searchRecallsTool } from '@/mcp-server/tools/definitions/search-recalls.tool.js';
 import { searchTobaccoReportsTool } from '@/mcp-server/tools/definitions/search-tobacco-reports.tool.js';
+import {
+  findSearchDelimiterFault,
+  type SearchDelimiterFault,
+} from '@/mcp-server/tools/schema-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 const mockQuery = vi.fn();
@@ -886,5 +894,168 @@ describe('security: tool outputs do not contain API key values', () => {
     // The important thing: format() itself does not inject new secrets.
     expect(text).toBeDefined();
     expect(typeof text).toBe('string');
+  });
+});
+
+// ── Cross-tool search delimiter precheck (#38) ────────────────────────────────
+
+/**
+ * `search` was forwarded verbatim to api.fda.gov, so a query whose delimiters
+ * cannot parse cost a network round-trip and came back as an Elasticsearch lexer
+ * message whose column index runs past the submitted string. Every tool taking a
+ * caller-supplied `search` now rejects those locally with the declared
+ * `malformed_search` reason, before any request.
+ *
+ * Both halves are load-bearing, and each value's verdict is openFDA's own. Each
+ * MALFORMED value is refused upstream (500 `token_mgr_error` or `parse_exception`)
+ * — except the trailing-backslash case, which is refused on most endpoints and,
+ * on the ones that append their own index-scoping clause, answers 200 with that
+ * scope dissolved (`recalling_firm:pfizer\` returns 18856 against 155). Each VALID
+ * value is answered upstream and would be broken by a naive delimiter count: a
+ * paren inside a quoted phrase is literal data, so is a paren or quote inside a
+ * range, and a backslash escapes the character after it.
+ */
+describe('search delimiter precheck (#38)', () => {
+  /** Every tool taking a caller-supplied `search`, with a minimal valid base input. */
+  const SEARCH_TOOLS = [
+    ['openfda_count_values', countValuesTool, { endpoint: 'drug/event', count: 'field' }],
+    ['openfda_search_adverse_events', searchAdverseEventsTool, { category: 'drug' }],
+    ['openfda_search_recalls', searchRecallsTool, { category: 'drug' }],
+    ['openfda_get_drug_label', getDrugLabelTool, {}],
+    ['openfda_lookup_ndc', lookupNdcTool, {}],
+    ['openfda_search_drug_approvals', searchDrugApprovalsTool, {}],
+    ['openfda_search_drug_shortages', searchDrugShortagesTool, {}],
+    ['openfda_search_device_clearances', searchDeviceClearancesTool, { pathway: '510k' }],
+    ['openfda_search_animal_events', searchAnimalEventsTool, {}],
+    ['openfda_search_tobacco_reports', searchTobaccoReportsTool, {}],
+  ] as const;
+
+  /** [search, expected message fragment] — each refused upstream. */
+  const MALFORMED = [
+    ['recalling_firm:"pfizer AND product_type:drugs', /unterminated double quote/i],
+    ['product_description:"foo \\" bar', /unterminated double quote/i],
+    ['recalling_firm:foo"bar', /unterminated double quote/i],
+    ['(recalling_firm:pfizer', /leaves a group open/i],
+    ['recalling_firm:pfizer)', /closes a group that was never opened/i],
+    ['report_date:[20200101 TO 20201231', /leaves a range open/i],
+    ['report_date:20200101]', /closes a range that was never opened/i],
+    ['reason_for_recall:foo[bar', /leaves a range open/i],
+    ['recalling_firm:pfizer\\', /ends on a backslash/i],
+  ] as const;
+
+  /** Exotic but valid — each returns a real answer from api.fda.gov. */
+  const VALID = [
+    'product_description:"Packaged as a) 4 FL OZ"', // paren inside a phrase is literal data
+    'product_description:"foo \\" bar"', // backslash-escaped quote inside a phrase
+    'reason_for_recall:foo\\(bar', // backslash-escaped paren outside a phrase
+    '(recalling_firm:pfizer AND status:Ongoing)', // balanced grouping
+    'report_date:[20200101 TO 20201231]', // range query — brackets balance
+    'report_date:[20200101 TO 20201231}', // a range closes on either bracket
+    'report_date:[(20200101 TO 20201231]', // a paren inside a range is literal data
+    'recalling_firm:pfizer\\\\', // an escaped backslash is not a dangling one
+    'recalling_firm:pfizer*', // wildcard
+  ];
+
+  beforeEach(() => {
+    mockQuery.mockReset();
+    mockQuery.mockResolvedValue({
+      meta: { total: 0, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
+      results: [],
+    });
+    vi.mocked(getOpenFdaService).mockReturnValue({ query: mockQuery } as never);
+  });
+
+  for (const [label, toolDef, base] of SEARCH_TOOLS) {
+    const call = (search: string) => {
+      const ctx = createMockContext({ errors: toolDef.errors });
+      return { ctx, run: toolDef.handler({ ...base, search } as never, ctx) };
+    };
+
+    it(`${label} declares the malformed_search contract with a recovery hint`, () => {
+      const entry = toolDef.errors?.find((e) => e.reason === 'malformed_search');
+      expect(entry).toBeDefined();
+      expect(entry?.code).toBe(JsonRpcErrorCode.ValidationError);
+      expect(entry?.recovery).toMatch(/quote|paren/i);
+    });
+
+    it.each(MALFORMED)(`${label} rejects %j before any request`, async (search, fragment) => {
+      const err = (await call(search).run.catch((e: unknown) => e)) as McpError;
+
+      expect(err).toBeInstanceOf(McpError);
+      expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
+      expect(err.data).toMatchObject({ reason: 'malformed_search' });
+      expect(err.message).toMatch(fragment);
+      // The point of a local precheck: openFDA is never reached.
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    it.each(VALID)(`${label} still forwards %j to openFDA`, async (search) => {
+      const { ctx, run } = call(search);
+      await run;
+
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ search }),
+        ctx,
+      );
+    });
+  }
+
+  // A tool that composes its own query is deliberately not covered — the precheck
+  // guards caller-supplied Lucene, and openfda_drug_profile takes a bare term it
+  // quotes itself. It therefore declares no malformed_search reason.
+  it('openfda_drug_profile declares no malformed_search reason', () => {
+    const reasons = drugProfileTool.errors?.map((e) => e.reason);
+    expect(reasons).not.toContain('malformed_search');
+  });
+
+  /**
+   * Which fault each value is, not merely that it is one — the message a caller
+   * reads is keyed off this, so a value classified as the wrong fault sends them
+   * to fix the wrong character. Every row's verdict was probed against
+   * api.fda.gov; the comment records what openFDA answered.
+   */
+  describe('fault classification', () => {
+    const FAULTS: Array<[string, SearchDelimiterFault | undefined]> = [
+      // Refused upstream — 500 token_mgr_error / parse_exception.
+      ['recalling_firm:"pfizer', 'unterminated_quote'],
+      ['recalling_firm:pfizer"', 'unterminated_quote'],
+      ['(recalling_firm:pfizer', 'unclosed_paren'],
+      ['recalling_firm:pfizer)', 'unopened_paren'],
+      ['report_date:[20200101 TO 20201231', 'unclosed_range'],
+      ['report_date:{20200101 TO 20201231', 'unclosed_range'],
+      ['report_date:20200101]', 'unopened_range'],
+      ['report_date:20200101}', 'unopened_range'],
+      ['reason_for_recall:foo[bar', 'unclosed_range'], // an unquoted [ is a range opener mid-term
+      ['reason_for_recall:foo]bar', 'unopened_range'],
+      ['report_date:[20200101 TO 20201231\\]', 'unclosed_range'], // the escape eats the closer
+      ['recalling_firm:pfizer\\', 'dangling_escape'], // 200 with the endpoint scope dissolved
+      ['\\', 'dangling_escape'],
+      ['recalling_firm:pfizer\\\\\\', 'dangling_escape'], // odd-length run: the last one dangles
+      // The first fault positionally wins when a value carries two.
+      ['recalling_firm:"pfizer\\', 'dangling_escape'],
+      ['(report_date:[20200101 TO 20201231)]', 'unclosed_paren'], // range swallows the ), paren left open
+      // Answered upstream — must be forwarded.
+      ['recalling_firm:pfizer', undefined],
+      ['recalling_firm:pfizer\\\\', undefined], // escaped backslash — 200, correct 155 records
+      ['recalling_firm:""', undefined], // empty phrase — 200
+      ['product_description:"a\\""', undefined], // escape before the closing quote — 200
+      ['recalling_firm:"pfi\\"zer"', undefined], // escaped quote mid-phrase
+      ['product_description:"Packaged as a) 4 FL OZ"', undefined], // paren literal in a phrase
+      ['reason_for_recall:"foo[bar"', undefined], // bracket literal in a phrase
+      ['report_date:[20200101 TO 20201231]', undefined],
+      ['report_date:{20200101 TO 20201231}', undefined],
+      ['report_date:[20200101 TO 20201231}', undefined], // mixed brackets close each other
+      ['report_date:[(20200101 TO 20201231]', undefined], // paren literal in a range
+      ['report_date:["20200101 TO 20201231]', undefined], // quote literal in a range
+      ['report_date:[2020\\1231 TO 20201231]', undefined], // escape mid-range — 200
+      ['(report_date:[20200101 TO 20201231])', undefined], // range nested in a group
+      ['reason_for_recall:foo\\(bar', undefined],
+      ['reason_for_recall:foo\\[bar', undefined], // escaped bracket is not a range
+    ];
+
+    it.each(FAULTS)('classifies %j as %s', (search, fault) => {
+      expect(findSearchDelimiterFault(search)).toBe(fault);
+    });
   });
 });

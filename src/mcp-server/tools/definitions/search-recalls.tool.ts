@@ -15,9 +15,13 @@ import {
   noMatchNote,
 } from '@/mcp-server/tools/format-utils.js';
 import {
+  assertSearchDelimitersBalanced,
   assertSkipWithinCeiling,
+  malformedSearchError,
   nonBlankString,
+  SEARCH_BALANCE_NOTE,
   SKIP_DESCRIPTION,
+  sortExpression,
 } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
@@ -75,12 +79,12 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
     search: nonBlankString()
       .optional()
       .describe(
-        'openFDA search query. Examples: classification:"Class I" (also "Class II" or "Class III"), recalling_firm:"pfizer", reason_for_recall:"undeclared allergen". Omit to browse recent.',
+        `openFDA search query. Examples: classification:"Class I" (also "Class II" or "Class III"), recalling_firm:"pfizer", reason_for_recall:"undeclared allergen". Omit to browse recent. ${SEARCH_BALANCE_NOTE}`,
       ),
-    sort: nonBlankString()
+    sort: sortExpression()
       .optional()
       .describe(
-        'Sort expression (field:asc or field:desc). Example: report_date:desc. Invalid or non-sortable fields cause a query error — use a documented field name.',
+        'Sort expression — a field path optionally suffixed with :asc or :desc; comma-separate for multi-field sort (e.g. report_date:desc,status.exact:asc). Field paths take only letters, digits, underscores, and dots; anything else is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
       ),
     limit: z
       .number()
@@ -151,6 +155,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       retryable: true,
       recovery: 'Retry after a short wait; if the error persists check api.fda.gov status.',
     },
+    malformedSearchError,
     {
       reason: 'query_error',
       code: JsonRpcErrorCode.ValidationError,
@@ -169,6 +174,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
 
   async handler(input, ctx) {
     assertSkipWithinCeiling(input.skip, ctx);
+    assertSearchDelimitersBalanced(input.search, ctx);
 
     const endpointValue = input.endpoint ?? 'enforcement';
 

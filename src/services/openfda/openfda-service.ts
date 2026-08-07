@@ -28,7 +28,9 @@ const REQUEST_TIMEOUT_MS = 15_000;
  * - `parse_exception` — the tokens are legal but the grammar is not: an unbalanced
  *   bracket or paren, a dangling `AND`/`OR`, a half-open range (`[20200101 TO]`),
  *   or a bare `_exists_:`.
- * - `illegal_argument_exception` — a `count` on a non-keyword text field.
+ * - `illegal_argument_exception` — a `count` on a non-keyword text field. On a
+ *   count query this is answered by {@link OPENFDA_NOT_AGGREGATABLE_5XX} first;
+ *   the marker stays here to cover the same exception raised without a `count`.
  * - `query_shard_exception` — a sort or filter on a field absent from that index's
  *   mapping (e.g. `receivedate:desc` on food/device, which lack the field).
  *
@@ -55,6 +57,17 @@ const OPENFDA_QUERY_ERROR_5XX =
  * the second is a fixable query error and must not be collapsed into one.
  */
 const OPENFDA_NOTHING_TO_COUNT = /nothing to count/i;
+
+/**
+ * openFDA's marker for aggregating an analyzed text field: Elasticsearch refuses
+ * to build fielddata for it and answers HTTP 5xx with
+ * `illegal_argument_exception`. On a `count` query that is the `.exact`-missing
+ * case, not a syntax error — the field name is already correct — so it routes to
+ * `not_aggregatable` naming `<field>.exact` instead of the generic `query_error`.
+ * The advice that survives in the upstream text (`fielddata=true`) is a
+ * server-side index setting no MCP caller can reach, so it is dropped.
+ */
+const OPENFDA_NOT_AGGREGATABLE_5XX = /illegal_argument_exception/i;
 
 /**
  * The slice of {@link ServerConfig} the client reads. Mirror settings are
@@ -315,6 +328,12 @@ export class OpenFdaService {
     }
 
     if (status >= 500) {
+      // A count on an analyzed text field. Keyed on `params.count` so the error
+      // can name the expression it is correcting; checked before the generic
+      // marker set, which also matches this exception.
+      if (params.count && OPENFDA_NOT_AGGREGATABLE_5XX.test(body)) {
+        throw this.notAggregatableError(endpoint, params.count, ctx, 'analyzed_text');
+      }
       // openFDA reports deterministic, user-fixable query failures (malformed
       // syntax, aggregation on a non-keyword field) as HTTP 5xx. Reclassify those
       // as non-retryable query errors; genuine outages stay retryable.
@@ -338,20 +357,51 @@ export class OpenFdaService {
   }
 
   /**
-   * Build the `not_aggregatable` error for a `Nothing to count` 404 — openFDA
-   * accepted the query but cannot aggregate the count expression as written.
-   * Names the offending expression and, for the dominant `.exact`-on-a-keyword-field
-   * case, the exact correction (the bare field, which openFDA already indexes as
-   * a keyword). Non-retryable: the same expression fails identically every time.
+   * Build the `not_aggregatable` error for a count expression openFDA will not
+   * aggregate, always naming the expression and the correction that applies.
+   *
+   * The two upstream shapes need corrections in opposite directions, so `cause`
+   * selects which:
+   *
+   * - `not_countable` (a `Nothing to count` 404) — the dominant case is `.exact`
+   *   on a field openFDA already indexes as keyword-only, so **drop** the suffix.
+   * - `analyzed_text` (a 5xx `illegal_argument_exception` on a count) — the field
+   *   is analyzed text, so **add** `.exact` to reach its keyword subfield.
+   *
+   * Neither correction is guaranteed to land, because some analyzed fields have no
+   * keyword subfield at all: on `drug/enforcement`, `reason_for_recall` answers the
+   * 5xx and `reason_for_recall.exact` answers the 404, so each direction's fix is
+   * the other's failure. Both messages therefore name the field catalog as the next
+   * step, and neither asserts what the index holds as though it were established.
+   *
+   * Either way, an expression that already carries the suffix the correction
+   * would apply falls back to naming `openfda_describe_fields`. Non-retryable:
+   * the same expression fails identically every time.
    */
-  private notAggregatableError(endpoint: string, expression: string, ctx: Context): McpError {
-    const bare = expression.replace(/\.exact$/, '');
-    const correction =
-      bare !== expression
-        ? `Retry with the bare field "${bare}" — openFDA already indexes it as a keyword, so .exact is redundant and unsupported here.`
-        : `Count a keyword field instead; call openfda_describe_fields for ${endpoint} to see the available field paths.`;
+  private notAggregatableError(
+    endpoint: string,
+    expression: string,
+    ctx: Context,
+    cause: 'not_countable' | 'analyzed_text' = 'not_countable',
+  ): McpError {
+    const hasExact = expression.endsWith('.exact');
+    const describeFields = `Count a keyword field instead; call openfda_describe_fields for ${endpoint} to see the available field paths.`;
+    const { diagnosis, correction } =
+      cause === 'analyzed_text'
+        ? {
+            diagnosis: 'it is an analyzed text field',
+            correction: hasExact
+              ? describeFields
+              : `Retry with "${expression}.exact" to tally whole values; if that reports nothing to count, the field has no keyword subfield — call openfda_describe_fields for ${endpoint} to pick one that does.`,
+          }
+        : {
+            diagnosis: 'the field is not countable as written',
+            correction: hasExact
+              ? `Retry with the bare field "${expression.slice(0, -'.exact'.length)}" — .exact is unsupported on a field openFDA indexes as a keyword. If the bare field fails too, the field is analyzed text with no keyword subfield; call openfda_describe_fields for ${endpoint} to pick a countable one.`
+              : describeFields,
+          };
     return validationError(
-      `openFDA cannot aggregate "${expression}" on ${endpoint}: the field is not countable as written. ${correction}`,
+      `openFDA cannot aggregate "${expression}" on ${endpoint}: ${diagnosis}. ${correction}`,
       {
         reason: 'not_aggregatable',
         endpoint,

@@ -15,9 +15,13 @@ import {
   noMatchNote,
 } from '@/mcp-server/tools/format-utils.js';
 import {
+  assertSearchDelimitersBalanced,
   assertSkipWithinCeiling,
+  malformedSearchError,
   nonBlankString,
+  SEARCH_BALANCE_NOTE,
   SKIP_DESCRIPTION,
+  sortExpression,
 } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
@@ -68,12 +72,12 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
     search: nonBlankString()
       .optional()
       .describe(
-        'openFDA search query. Examples: applicant:"medtronic", advisory_committee_description:"cardiovascular", product_code:"DXN", openfda.device_name:"catheter". Omit to browse recent.',
+        `openFDA search query. Examples: applicant:"medtronic", advisory_committee_description:"cardiovascular", product_code:"DXN", openfda.device_name:"catheter". Omit to browse recent. ${SEARCH_BALANCE_NOTE}`,
       ),
-    sort: nonBlankString()
+    sort: sortExpression()
       .optional()
       .describe(
-        'Sort expression (field:asc or field:desc). Example: decision_date:desc. Invalid or non-sortable fields cause a query error — use a documented field name.',
+        'Sort expression — a field path optionally suffixed with :asc or :desc; comma-separate for multi-field sort. Example: decision_date:desc. Field paths take only letters, digits, underscores, and dots; anything else is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
       ),
     limit: z
       .number()
@@ -138,6 +142,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       retryable: true,
       recovery: 'Retry after a short wait; if the error persists check api.fda.gov status.',
     },
+    malformedSearchError,
     {
       reason: 'query_error',
       code: JsonRpcErrorCode.ValidationError,
@@ -156,6 +161,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
 
   async handler(input, ctx) {
     assertSkipWithinCeiling(input.skip, ctx);
+    assertSearchDelimitersBalanced(input.search, ctx);
 
     const endpoint = `device/${input.pathway}`;
     const emptyNotice = (skip: number, total: number) =>

@@ -13,9 +13,34 @@ import { truncate } from '@/mcp-server/tools/format-utils.js';
 import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
-/** Strip double quotes so a free-text drug name embeds safely in a quoted query clause. */
-function sanitize(term: string): string {
-  return term.replace(/"/g, '').trim();
+/**
+ * Escape a free-text name for the quoted Lucene phrase it is interpolated into.
+ *
+ * `\` and `"` are the only two characters that can end a phrase early, and both
+ * are escaped rather than stripped so the term reaches openFDA as the caller
+ * wrote it. `\` must be replaced first: escaping `"` introduces backslashes of
+ * its own, and doing them in the other order would double those back.
+ *
+ * A backslash is what makes this load-bearing. Stripping only `"` left a term
+ * ending in `\` escaping the phrase's own closing quote — in a two-clause query
+ * that re-parsed the ` OR ` boundary into the phrase and answered HTTP 200 with
+ * an unrelated result set; in a one-clause query it left the phrase open and
+ * failed as a `token_mgr_error`.
+ */
+function phrase(term: string): string {
+  return term.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+}
+
+/**
+ * True when the term carries a character that could belong to a drug name.
+ *
+ * Delimiters and whitespace cannot, so a name made only of those resolves
+ * nothing and raises `blank_drug_name` instead of searching for the literal
+ * delimiters. This replaces the old "did stripping empty the string" test, which
+ * only worked because stripping was destructive.
+ */
+function hasSearchableCharacter(term: string): boolean {
+  return /[^\\"\s]/.test(term);
 }
 
 /** Profile sections a sub-query populates — the key degradation is reported under. */
@@ -357,7 +382,7 @@ export const drugProfileTool = tool('openfda_drug_profile', {
     {
       reason: 'blank_drug_name',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'The drug name is blank, or reduces to nothing once quote characters are stripped.',
+      when: 'The drug name carries no searchable character — only quotes, backslashes, or whitespace.',
       recovery:
         'Supply a brand or generic drug name with at least one searchable character, for example "metformin".',
     },
@@ -379,17 +404,20 @@ export const drugProfileTool = tool('openfda_drug_profile', {
 
   async handler(input, ctx) {
     const svc = getOpenFdaService();
-    const term = sanitize(input.drug);
-    // Guard the normalized term, not just the raw input: a name made only of quote
-    // characters survives the schema but sanitizes to '', which would key every
-    // sub-query off an empty clause and browse unrelated records as a "profile".
-    if (term.length === 0) {
+    const term = input.drug.trim();
+    // Guard on searchable content, not on the raw input: a name made only of
+    // delimiters survives the schema, and searching for the literal delimiters
+    // would return an unrelated record set as a "profile".
+    if (!hasSearchableCharacter(term)) {
       throw ctx.fail(
         'blank_drug_name',
-        `"${input.drug}" has no searchable characters once quotes are stripped, so it cannot be resolved to an FDA drug.`,
+        `"${input.drug}" has no searchable characters, so it cannot be resolved to an FDA drug.`,
         { ...ctx.recoveryFor('blank_drug_name') },
       );
     }
+    // Escaped once here; every interpolation below uses the escaped form, so a
+    // new sub-query cannot reintroduce the defect by interpolating `term` raw.
+    const termPhrase = phrase(term);
 
     const sink: FailureSink = { failures: [] };
 
@@ -404,7 +432,10 @@ export const drugProfileTool = tool('openfda_drug_profile', {
       () =>
         svc.query(
           'drug/label',
-          { search: `openfda.generic_name:"${term}" OR openfda.brand_name:"${term}"`, limit: 5 },
+          {
+            search: `openfda.generic_name:"${termPhrase}" OR openfda.brand_name:"${termPhrase}"`,
+            limit: 5,
+          },
           ctx,
         ),
       sink,
@@ -426,7 +457,7 @@ export const drugProfileTool = tool('openfda_drug_profile', {
         () =>
           svc.query(
             'drug/ndc',
-            { search: `generic_name:"${term}" OR brand_name:"${term}"`, limit: 5 },
+            { search: `generic_name:"${termPhrase}" OR brand_name:"${termPhrase}"`, limit: 5 },
             ctx,
           ),
         sink,
@@ -453,9 +484,11 @@ export const drugProfileTool = tool('openfda_drug_profile', {
      * canonical generic name; the free-text adverse-event field keys off the user's term,
      * which matches the heterogeneous reporter-entered medicinalproduct values with better recall.
      */
-    // A resolved identity whose name sanitizes to nothing falls back to the
-    // (already validated) input term rather than keying sub-queries off an empty clause.
-    const key = sanitize(identity.generic_name ?? identity.brand_names[0] ?? term) || term;
+    // A resolved identity name with no searchable character falls back to the
+    // (already validated) input term rather than keying sub-queries off delimiters.
+    const resolvedKey = identity.generic_name ?? identity.brand_names[0] ?? term;
+    const key = hasSearchableCharacter(resolvedKey) ? resolvedKey.trim() : term;
+    const keyPhrase = phrase(key);
     const [reactionsRes, seriousRes, recallsRes, approvalRes, shortageRes] = await Promise.all([
       settle(
         'adverse_events',
@@ -463,7 +496,7 @@ export const drugProfileTool = tool('openfda_drug_profile', {
           svc.query(
             'drug/event',
             {
-              search: `patient.drug.medicinalproduct:"${term}"`,
+              search: `patient.drug.medicinalproduct:"${termPhrase}"`,
               count: 'patient.reaction.reactionmeddrapt.exact',
               limit: 5,
             },
@@ -476,7 +509,7 @@ export const drugProfileTool = tool('openfda_drug_profile', {
         () =>
           svc.query(
             'drug/event',
-            { search: `patient.drug.medicinalproduct:"${term}"`, count: 'serious' },
+            { search: `patient.drug.medicinalproduct:"${termPhrase}"`, count: 'serious' },
             ctx,
           ),
         sink,
@@ -486,7 +519,7 @@ export const drugProfileTool = tool('openfda_drug_profile', {
         () =>
           svc.query(
             'drug/enforcement',
-            { search: `openfda.generic_name:"${key}"`, sort: 'report_date:desc', limit: 5 },
+            { search: `openfda.generic_name:"${keyPhrase}"`, sort: 'report_date:desc', limit: 5 },
             ctx,
           ),
         sink,
@@ -494,7 +527,11 @@ export const drugProfileTool = tool('openfda_drug_profile', {
       settle(
         'approval',
         () =>
-          svc.query('drug/drugsfda', { search: `openfda.generic_name:"${key}"`, limit: 5 }, ctx),
+          svc.query(
+            'drug/drugsfda',
+            { search: `openfda.generic_name:"${keyPhrase}"`, limit: 5 },
+            ctx,
+          ),
         sink,
       ),
       settle(
@@ -502,7 +539,7 @@ export const drugProfileTool = tool('openfda_drug_profile', {
         () =>
           svc.query(
             'drug/shortages',
-            { search: `generic_name:"${key}"`, sort: 'update_date:desc', limit: 1 },
+            { search: `generic_name:"${keyPhrase}"`, sort: 'update_date:desc', limit: 1 },
             ctx,
           ),
         sink,

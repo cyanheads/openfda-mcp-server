@@ -15,9 +15,13 @@ import {
   noMatchNote,
 } from '@/mcp-server/tools/format-utils.js';
 import {
+  assertSearchDelimitersBalanced,
   assertSkipWithinCeiling,
+  malformedSearchError,
   nonBlankString,
+  SEARCH_BALANCE_NOTE,
   SKIP_DESCRIPTION,
+  sortExpression,
 } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
@@ -85,12 +89,12 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
     search: nonBlankString()
       .optional()
       .describe(
-        'openFDA search query. Examples: patient.drug.medicinalproduct:"aspirin", patient.reaction.reactionmeddrapt:"nausea" AND serious:"1". Omit to browse recent.',
+        `openFDA search query. Examples: patient.drug.medicinalproduct:"aspirin", patient.reaction.reactionmeddrapt:"nausea" AND serious:"1". Omit to browse recent. ${SEARCH_BALANCE_NOTE}`,
       ),
-    sort: nonBlankString()
+    sort: sortExpression()
       .optional()
       .describe(
-        'Sort expression (field:asc or field:desc). Sortable date fields are category-specific: drug → receivedate:desc (or receiptdate), food → date_created:desc (or date_started), device → date_received:desc (or date_of_event). A field from another category (e.g. receivedate on food or device) causes a query error — use the field for this category.',
+        'Sort expression — a field path optionally suffixed with :asc or :desc; comma-separate for multi-field sort. Field paths take only letters, digits, underscores, and dots; anything else is rejected before the request. Sortable date fields are category-specific: drug → receivedate:desc (or receiptdate), food → date_created:desc (or date_started), device → date_received:desc (or date_of_event). A field from another category (e.g. receivedate on food or device) causes a query error — use the field for this category.',
       ),
     limit: z
       .number()
@@ -155,6 +159,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       retryable: true,
       recovery: 'Retry after a short wait; if the error persists check api.fda.gov status.',
     },
+    malformedSearchError,
     {
       reason: 'query_error',
       code: JsonRpcErrorCode.ValidationError,
@@ -173,6 +178,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
 
   async handler(input, ctx) {
     assertSkipWithinCeiling(input.skip, ctx);
+    assertSearchDelimitersBalanced(input.search, ctx);
 
     const endpoint = `${input.category}/event`;
     const emptyNotice = (skip: number, total: number) =>

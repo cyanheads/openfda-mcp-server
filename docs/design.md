@@ -21,6 +21,8 @@ All endpoints share a uniform query interface (`search`, `count`, `sort`, `limit
 
 ## Tools
 
+**Shared `search` / `sort` contract.** Wherever a tool below takes a caller-supplied `search`, every double quote, parenthesis, and range bracket it opens must close, and it must not end on a backslash — each raises `malformed_search` locally, before the request. Wherever it takes a `sort`, the value is one or more comma-separated field paths (multi-field sort is supported, and spaces around a segment are fine), each optionally suffixed with a direction; a field path holds only letters, digits, underscores, and dots. Where a tool composes a query from a caller-supplied *term* instead — `openfda_drug_profile` — the term is escaped for its phrase context rather than rejected. Grammar, rationale, and boundaries: [Query hygiene](#implementation-notes).
+
 ### `openfda_drug_profile`
 
 Resolve one drug name to its FDA identity, then fan out in parallel to the bounded per-drug endpoints and merge into a single consolidated profile. Replaces chaining `openfda_get_drug_label`, `openfda_search_adverse_events`, `openfda_search_recalls`, `openfda_search_drug_approvals`, and `openfda_search_drug_shortages`, and reconciles the identifier drift between endpoints that makes that chaining error-prone.
@@ -306,12 +308,62 @@ The read path gates on the framework's durable completion marker (`mirror.ready(
 - `.exact` suffix on count fields for whole-phrase aggregation vs. tokenized.
 - Date ranges: `[20200101+TO+20201231]`.
 - Wildcard: `field:aspir*`.
+- `sort` takes a comma-separated list, not a single field: `report_date:desc,status.exact:asc` is a working multi-field sort. A bare field path with no direction (`sort=report_date`) is also accepted, and spaces around a segment are trimmed (`a:desc, b:asc` sorts identically to `a:desc,b:asc`).
 
-**Rendering a dynamic record.** Every search tool returns `results[]` as `z.record(z.string(), z.any())` — openFDA records are sparse and heterogeneous, so the shape cannot be pinned. That defeats the definition linter's `format-parity` sentinel walk, which stops at the record boundary and cannot tell whether a formatter rendered every leaf inside it. The convention that replaces it:
+**Query hygiene — two paths, two mechanisms.** A Lucene query reaching openFDA has one of two origins, and they need opposite treatment. Both are handled in `src/mcp-server/tools/schema-utils.ts` (the caller-written half) and `src/mcp-server/tools/definitions/drug-profile.tool.ts` (the tool-composed half).
 
-- A curated summary reads the fields worth leading with; `formatRemainingFields(record, rendered)` then renders everything else, JSON-stringifying nested structures so no leaf is dropped.
-- `rendered` names only keys the summary emits **verbatim and unconditionally**. A key that is translated (`serious: '1'` → "Yes"), filtered, partially rendered, or rendered only when a sibling is absent (`brand_name ?? generic_name`) stays out of the set, so its full value still reaches `content[]`. Duplicating a scalar costs a line; omitting one is a client-visible data loss.
-- `tests/mcp-server/tools/definitions/record-parity.test.ts` holds the coverage the sentinel cannot: per-tool fixtures carrying the real nested blocks, asserting every scalar leaf appears in the rendered text.
+| Origin | Tools | Mechanism | Failure |
+|---|---|---|---|
+| **Caller-written Lucene** — the caller authored the query and owns its syntax | the ten tools taking a `search` and/or `sort` input | **Reject** what is provably malformed, before the request | `malformed_search` for `search`; a schema `ValidationError` for `sort` |
+| **Tool-composed Lucene** — the tool built the query from a caller-supplied *term* | `openfda_drug_profile` (seven clauses off one `drug` name) | **Escape** the term for the phrase context it lands in | none — every term produces a well-formed query |
+
+Philosophy: **reject what is provably malformed locally; let openFDA arbitrate what is merely unknown; and never make the caller answer for a query they did not write.** Where the reject line falls is decided by the upstream's own answer, probed against `api.fda.gov` value by value: every value either mechanism refuses is one openFDA refuses outright, with the single recorded exception under [Out of scope](#out-of-scope-deliberately).
+
+### Caller-written: reject
+
+`search` and `sort` were declared as any non-blank string, so a value that cannot be valid still cost a network round-trip and came back as a raw Lucene/Elasticsearch message — a lexer column index past the end of the submitted string, or a mapping error naming a token the caller never meant as a field.
+
+| Input | Check | Where | Failure |
+|---|---|---|---|
+| `search` | Quotes, parens, and range brackets each close; no trailing escape | `assertSearchDelimitersBalanced`, first lines of each handler | `malformed_search`, naming the specific fault |
+| `sort` | Comma-separated `field-path[:direction]` groups | `SORT_EXPRESSION_PATTERN` on the schema, so it reaches the advertised `inputSchema` as `pattern` | Schema `ValidationError` showing the expected form |
+
+**Decision — the `search` check is a three-context scanner, not a character count.** A delimiter means different things in different contexts, and a count is wrong in both directions:
+
+| Context | Opened by | What the delimiters mean | Upstream evidence |
+|---|---|---|---|
+| Normal | — | `"` opens a phrase, `[`/`{` a range, `(`/`)` group | a `)` or `]`/`}` with no opener is refused; so is a bracket mid-term (`reason_for_recall:foo[bar` → `parse_exception`, since an unquoted `[` is always a range opener) |
+| Phrase | `"` | every other delimiter is literal data | `product_description:"Packaged as a) 4 FL OZ"` (one `)`, no `(`) matches a real `drug/enforcement` record |
+| Range | `[` or `{`, closed by `]` or `}` | same — literal data | `report_date:[(20200101 TO 20201231]` and `report_date:["20200101 TO 20201231]` are both answered, not refused |
+
+A backslash escapes the next character in every one of the three, ranges included — openFDA answers `Term can not end with escape character` when one eats a range's closing bracket. `product_description:"foo \" bar"` is therefore a valid three-quote query, and `[X TO Y}` closes even though the brackets differ.
+
+**Decision — a trailing backslash is rejected, because the alternative is silently wrong data, not an error.** A `\` at the end of the query has nothing to escape. On endpoints that scope a shared index openFDA appends its own clause, so the escape lands on that clause's leading space rather than on end-of-input: `recalling_firm:pfizer\` on `drug/enforcement` answers **HTTP 200 with 18856 records against 155** for `recalling_firm:pfizer`, because the swallowed space dissolves the appended `product_type:drugs` scope and the caller is served another product type's recalls. On an endpoint with nothing appended the same value is a `token_mgr_error` whose echoed tail is empty — the least actionable shape on the surface. Both are locally detectable from one character. `recalling_firm:pfizer\\` (an escaped backslash) is valid and returns the correct 155.
+
+**Decision — the `sort` check constrains only the field path, never the direction.** openFDA splits a sort segment on its **last** colon and validates the left side against the index mapping; the right side is not validated, so `report_date:ascending` and `report_date:"desc"` both answer 200 (unsorted, but accepted). Narrowing the direction to `asc|desc` would reject working calls, so the pattern accepts any direction token free of `,` and `:`. Excluding `:` is what makes `report_date:desc:asc` reject — its field path becomes `report_date:desc`, which openFDA refuses.
+
+**Decision — spaces around a segment are accepted, spaces inside a field path are not.** openFDA trims a segment before looking it up, so `classification.exact:desc, report_date:asc` returns the same ordering as the space-free form and `  report_date:asc  ` sorts normally; a pattern without the whitespace allowance rejects a working multi-field sort written the way a caller naturally writes a list. The trim does not reach inside the path — `report_date :asc` fails upstream with `No mapping found for [report_date ]` — so the field path itself stays space-free, and a tab (400 upstream) is not accepted either.
+
+**Decision — the `search` check is a handler guard, the `sort` check is a schema `pattern`.** `sort`'s grammar is regex-expressible, so putting it on the schema advertises it in `tools/list` and lets a client self-correct before spending a call. `search`'s balance test is not regex-expressible, and a schema-level rejection carries no `structuredContent.error.data.reason` and none of the declared recovery text — the same reasoning that keeps the pagination ceiling out of a schema `.max()`.
+
+### Tool-composed: escape
+
+`openfda_drug_profile` takes a `drug` name, not a query, and interpolates it into seven quoted phrases. A drug name is not caller-written Lucene, so a name carrying a delimiter is not a caller error and must not surface as one.
+
+**Decision — escape `\` and `"`, never strip them.** `\` is replaced first, since escaping `"` introduces backslashes of its own. Stripping only `"` (the original approach) left a term ending in `\` escaping the phrase's own closing quote, and the two failure shapes were both unusable: a two-clause resolve query answered **HTTP 200 with an unrelated result set** (`openfda.generic_name:"aspirin\" OR openfda.brand_name:"aspirin\"` returns 27,101 label records against 743 for the intended query — the escaped quote pulls ` OR openfda.brand_name:` inside the phrase and the remainder re-parses as a bare term), while a single-clause query left the phrase open and failed as `token_mgr_error`. Escaping keeps every composed query well-formed with the ` OR ` boundary intact.
+
+**Escaping costs nothing in matches, which is why it beats stripping outright.** openFDA's analyzer discards the escaped delimiters as non-word characters, so the escaped term matches whatever the stripped term would have: `drug: 'Tylenol "Extra Strength"'` returns the same 29 label records either way, and `drug: 'aspirin\'` now returns the 743 of a plain `aspirin` search where stripping produced 27,101 unrelated ones. The caller gets results, not a `ValidationError` — and the term reaches openFDA as written rather than silently mutated.
+
+**A term of only delimiters is still rejected.** `blank_drug_name` remains the declared reason, retested as "carries no character that could belong to a drug name" rather than "stripping emptied the string" — searching for the literal delimiters would return an unrelated record set as a profile.
+
+### Out of scope, deliberately
+
+Not guarded, each for a reason rather than by omission:
+
+- **Field names, boolean structure, and non-sortable fields.** `openfda_describe_fields` covers discovery, and openFDA names the field in its own 400 — a full Lucene parser buys nothing.
+- **The `^` boost and `~` fuzzy operators.** openFDA refuses them itself with `Search not supported: <the whole query>`, which already names what to remove.
+- **A `/.../` term carrying an unbalanced paren.** This is the one place the reject path is wider than openFDA: `reason_for_recall:/undeclared)/` is *accepted* upstream and answers 404 `No matches found!`, while the scanner reads the `)` as an unopened group and refuses it. Adding a fourth context would mean modelling Lucene's regexp grammar to know where the term ends, and the cost of not doing so is bounded — every regexp form probed answers zero matches (the slashes are stripped by the analyzer, so `/undeclared/` and `undeclared` return the identical 379), and the operators that would make a regexp meaningful are refused upstream anyway. A caller loses an empty result set, not data.
+- **Anything inside `OpenFdaService`.** The service forwards whatever string it is given; `tests/services/openfda/openfda-service-security.test.ts` asserts that pass-through. `openfda_drug_profile` declares no `malformed_search` reason — it has no caller-written query to reject.
 
 **Pagination ceiling.** openFDA refuses a `skip` above 25000. For datasets larger than `skip + limit`, the agent must narrow the search query (e.g., date ranges, additional filters) rather than paginating further.
 
@@ -334,7 +386,10 @@ openFDA returns JSON error objects with `code`, `message`, and sometimes `detail
 
 | Error | API response | Recovery guidance |
 |---|---|---|
-| **Malformed query** | `400` — `{"error": {"code": "BAD_REQUEST", ...}}` with Elasticsearch parse details | Surface the parse error. Common causes: unbalanced quotes, invalid field names, wrong boolean syntax (`AND` instead of `+AND+`). Guide agent to fix query syntax. |
+| **Malformed delimiters** | none — rejected locally before the request | `malformed_search`. An unterminated `"` phrase, an unbalanced `(`/`)` or `[`/`}` outside one, or a query ending on a backslash never reaches openFDA; the message names which of the six faults it is and how to escape a literal delimiter. The trailing-backslash case would otherwise answer 200 with the endpoint's own scope filter dissolved. See [Query hygiene](#implementation-notes). |
+| **Malformed sort shape** | none — rejected by the schema before the request | Schema `ValidationError` showing the expected form. A field path carrying a character no openFDA field path can hold, or an empty comma-separated segment. A well-formed path naming a non-sortable field still goes upstream. |
+| **Malformed query** | `400` — `{"error": {"code": "BAD_REQUEST", ...}}` with Elasticsearch parse details | `query_error`. Surface the parse error. Remaining causes after the local prechecks: invalid field names, wrong boolean syntax (`AND` instead of `+AND+`), a non-sortable field. Guide agent to fix query syntax. |
+| **Not aggregatable** | `404` `"Nothing to count"`, or `5xx` `illegal_argument_exception` on a `count` query | `not_aggregatable`, naming the expression and the `.exact` correction in whichever direction applies: **drop** the suffix on an identifier field openFDA already indexes as a keyword (the 404), **add** it to tally whole values of an analyzed text field (the 5xx). Some fields have no countable form either way — on `drug/enforcement`, `reason_for_recall` answers the 5xx and `reason_for_recall.exact` answers the 404, so each direction's correction is the other's failure — so both messages name the field catalog as the next step rather than pointing at each other. The upstream `fielddata=true` advice is dropped — it is a server-side index setting no caller can reach. Only `openfda_count_values` declares the reason. |
 | **No results** | `404` — `{"error": {"code": "NOT_FOUND", "message": "No matches found!"}}` | Not an error -- the query was valid but matched nothing. Return empty results with a suggestion to broaden the search (remove filters, check spelling, try `openfda.brand_name` vs `brand_name`). |
 | **Skip ceiling** | `400` — `"Skip value must 25000 or less."` | Backstop only — handlers reject an over-ceiling `skip` locally with the typed `pagination_limit_reached` reason before the request goes out. Either path tells the agent to narrow the `search` query (date range, additional filters) instead of increasing skip. |
 | **Rate limit** | `429` — Too Many Requests | Without key: 240 req/min, 1K/day per IP. With key: 240 req/min, 120K/day. Retry after backoff. If hitting daily limit, suggest configuring an API key. |

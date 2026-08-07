@@ -341,17 +341,59 @@ describe('OpenFdaService', () => {
       expect(err.message).toMatch(/lexical error/i); // parser detail preserved
     });
 
-    it('reclassifies a count-on-non-keyword 500 as a non-retryable query_error (count_values case)', async () => {
+    // #40 — a count on an analyzed text field is the `.exact`-missing case, not a
+    // syntax error: the field name is already right. It reaches the caller as
+    // not_aggregatable naming <field>.exact, and the surviving upstream advice
+    // (fielddata=true, a server-side index setting) is dropped.
+    it('routes a count-on-analyzed-text 500 to not_aggregatable naming the .exact subfield', async () => {
       mockFetch.mockResolvedValue(mockResponse(500, AGGREGATION_500));
 
       const err = (await service
         .query('device/classification', { count: 'device_class' }, ctx)
         .catch((e: unknown) => e)) as McpError;
 
+      expect(err.data).toMatchObject({
+        reason: 'not_aggregatable',
+        endpoint: 'device/classification',
+        count: 'device_class',
+      });
+      expect(err.code).toBe(-32007); // ValidationError — outside withRetry's transient set
+      expect(TRANSIENT_CODES.has(err.code)).toBe(false);
+      expect(err.message).toContain('"device_class.exact"'); // the add-suffix correction
+      expect(err.message).toMatch(/analyzed text field/i);
+      expect(err.message).not.toMatch(/fielddata/i); // unreachable server-side advice dropped
+      // Not every analyzed field has a keyword subfield: `reason_for_recall.exact`
+      // on drug/enforcement answers `Nothing to count`, whose own correction is to
+      // drop the suffix. Naming the catalog is what stops the two hints bouncing a
+      // caller between them.
+      expect(err.message).toMatch(/nothing to count/i);
+      expect(err.message).toMatch(/openfda_describe_fields for device\/classification/);
+    });
+
+    // Without a count, the same exception is not the .exact case — it stays a
+    // generic query_error carrying the upstream detail.
+    it('keeps an illegal_argument_exception 500 a query_error when the query has no count', async () => {
+      mockFetch.mockResolvedValue(mockResponse(500, AGGREGATION_500));
+
+      const err = (await service
+        .query('device/classification', { search: 'device_class:"2"' }, ctx)
+        .catch((e: unknown) => e)) as McpError;
+
       expect(err.data).toMatchObject({ reason: 'query_error' });
       expect(err.code).toBe(-32007);
-      expect(TRANSIENT_CODES.has(err.code)).toBe(false);
-      expect(err.message).toMatch(/keyword field/i); // openFDA's fix hint preserved
+      expect(err.message).toMatch(/keyword field/i); // openFDA's own text preserved
+    });
+
+    it('points at a keyword field rather than doubling .exact when the count already carries it', async () => {
+      mockFetch.mockResolvedValue(mockResponse(500, AGGREGATION_500));
+
+      const err = (await service
+        .query('drug/enforcement', { count: 'classification.exact' }, ctx)
+        .catch((e: unknown) => e)) as McpError;
+
+      expect(err.data).toMatchObject({ reason: 'not_aggregatable' });
+      expect(err.message).toMatch(/openfda_describe_fields/);
+      expect(err.message).not.toContain('.exact.exact');
     });
 
     it('reclassifies an unmapped-sort 500 (query_shard_exception) as a non-retryable query_error', async () => {
@@ -487,6 +529,11 @@ describe('OpenFdaService', () => {
       });
       expect(err.message).toContain('product_ndc.exact');
       expect(err.message).toContain('"product_ndc"'); // the bare-field correction
+      // The drop-suffix correction is the dominant case, not a certainty: on
+      // drug/enforcement, `reason_for_recall` answers the 5xx and
+      // `reason_for_recall.exact` answers this 404, so each direction's fix is the
+      // other's failure. Naming the catalog is what stops the two hints looping.
+      expect(err.message).toMatch(/openfda_describe_fields for drug\/ndc/);
     });
 
     it('points at a keyword field when the unaggregatable expression carries no .exact suffix', async () => {

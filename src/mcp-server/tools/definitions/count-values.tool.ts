@@ -6,7 +6,12 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
+import {
+  assertSearchDelimitersBalanced,
+  malformedSearchError,
+  nonBlankString,
+  SEARCH_BALANCE_NOTE,
+} from '@/mcp-server/tools/schema-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 /** All valid openFDA endpoint paths. */
@@ -48,7 +53,7 @@ export const countValuesTool = tool('openfda_count_values', {
     search: nonBlankString()
       .optional()
       .describe(
-        'Filter query to scope the count (e.g. patient.drug.medicinalproduct:"metformin"). Omit to count across every record in the endpoint.',
+        `Filter query to scope the count (e.g. patient.drug.medicinalproduct:"metformin"). Omit to count across every record in the endpoint. ${SEARCH_BALANCE_NOTE}`,
       ),
     limit: z
       .number()
@@ -112,6 +117,7 @@ export const countValuesTool = tool('openfda_count_values', {
       retryable: true,
       recovery: 'Retry after a short wait; if the error persists check api.fda.gov status.',
     },
+    malformedSearchError,
     {
       reason: 'query_error',
       code: JsonRpcErrorCode.ValidationError,
@@ -122,13 +128,15 @@ export const countValuesTool = tool('openfda_count_values', {
     {
       reason: 'not_aggregatable',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'openFDA accepted the query but cannot aggregate the count expression as written.',
+      when: 'openFDA cannot aggregate the count expression as written — an analyzed text field, or .exact on a field already indexed as a keyword.',
       recovery:
-        'Drop the .exact suffix on identifier fields openFDA already indexes as keywords, or count a different keyword field.',
+        'Add .exact to tally whole values of an analyzed text field, or drop .exact from an identifier field openFDA already indexes as a keyword.',
     },
   ],
 
   async handler(input, ctx) {
+    assertSearchDelimitersBalanced(input.search, ctx);
+
     const svc = getOpenFdaService();
     const response = await svc.query(
       input.endpoint,

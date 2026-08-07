@@ -183,5 +183,36 @@ describe('openfda_count_values', () => {
       expect(err.data).toMatchObject({ reason: 'not_aggregatable' });
       expect(getEnrichment(ctx).notice).toBeUndefined();
     });
+
+    // #40 — the mirror-image direction. Counting an analyzed text field without
+    // .exact used to arrive as a generic query_error advising the caller to check
+    // a field name that was already correct.
+    it('carries the add-.exact direction to the caller as the same declared reason', async () => {
+      mockQuery.mockRejectedValue(
+        validationError(
+          'openFDA cannot aggregate "classification" on drug/enforcement: it is an analyzed text field. Retry with "classification.exact" to tally whole values.',
+          { reason: 'not_aggregatable', endpoint: 'drug/enforcement', count: 'classification' },
+        ),
+      );
+
+      const err = (await countValuesTool
+        .handler({ endpoint: 'drug/enforcement', count: 'classification', limit: 5 }, ctx)
+        .catch((e: unknown) => e)) as McpError;
+
+      expect(err).toBeInstanceOf(McpError);
+      expect(err.data).toMatchObject({ reason: 'not_aggregatable' });
+      expect(err.message).toContain('"classification.exact"');
+      expect(getEnrichment(ctx).notice).toBeUndefined();
+    });
+
+    // The declared recovery has to cover both directions now that both are
+    // reachable — a hint naming only "drop .exact" is wrong half the time.
+    it('declares a recovery hint covering both correction directions', () => {
+      const recovery = countValuesTool.errors?.find((e) => e.reason === 'not_aggregatable')
+        ?.recovery as string;
+
+      expect(recovery).toMatch(/add \.exact/i);
+      expect(recovery).toMatch(/drop \.exact/i);
+    });
   });
 });

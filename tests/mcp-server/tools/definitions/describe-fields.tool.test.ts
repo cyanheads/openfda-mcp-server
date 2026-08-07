@@ -96,6 +96,19 @@ describe('openfda_describe_fields', () => {
     expect(queryTips).toMatch(/free-text fields/i);
   });
 
+  // The tips are where a caller learns query syntax before writing a `search`, so
+  // they state the delimiter rule the handlers enforce locally. They also must not
+  // promise that counting an analyzed field bare tallies its words — openFDA
+  // refuses that with illegal_argument_exception (drug/label openfda.brand_name).
+  it('queryTips states the delimiter rule and the .exact direction for free-text fields', async () => {
+    const { queryTips } = await describeFieldsTool.handler({ endpoint: 'drug/label' }, ctx);
+
+    expect(queryTips).toMatch(/must close/i);
+    expect(queryTips).toMatch(/cannot end on a backslash/i);
+    expect(queryTips).toContain('openfda.brand_name.exact');
+    expect(queryTips).not.toMatch(/tallies individual words/i);
+  });
+
   // Issue #16 — the count-only endpoints exposed by openfda_count_values now have
   // field catalogs, so openfda_describe_fields accepts them too.
   const countOnlyEndpoints: Array<[string, string]> = [

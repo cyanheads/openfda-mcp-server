@@ -14,6 +14,7 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 }));
 
 import { drugProfileTool } from '@/mcp-server/tools/definitions/drug-profile.tool.js';
+import { findSearchDelimiterFault } from '@/mcp-server/tools/schema-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 const mockQuery = vi.fn();
@@ -323,11 +324,11 @@ describe('openfda_drug_profile', () => {
     expect(result.label?.indications).toContain('No active');
   });
 
-  // Issue #25 — the schema guards the raw input, but sanitize() strips quotes, so a
-  // name made only of quote characters survived it and keyed every sub-query off an
-  // empty clause: an unfiltered browse returned as a "profile".
+  // Issue #25 — the schema guards the raw input, but a name made only of delimiter
+  // characters survived it and keyed every sub-query off content openFDA cannot
+  // match: an unrelated record set returned as a "profile".
   describe('blank fan-out key (#25)', () => {
-    it('rejects a drug name that sanitizes to nothing, without any upstream request', async () => {
+    it('rejects a drug name with no searchable character, without any upstream request', async () => {
       const failCtx = createMockContext({ errors: drugProfileTool.errors });
 
       const err = (await drugProfileTool
@@ -357,6 +358,96 @@ describe('openfda_drug_profile', () => {
       for (const [, params] of structured) {
         expect(params.search).toContain('metformin');
       }
+    });
+  });
+
+  /**
+   * Issue #42 — the caller's `drug` term is interpolated into seven quoted Lucene
+   * phrases. Stripping only `"` left a term ending in `\\` escaping the phrase's own
+   * closing quote, so the composed query no longer meant what the tool intended.
+   *
+   * Both live-verified against api.fda.gov. The two-clause identity resolve was the
+   * silent case: `openfda.generic_name:"aspirin\\" OR openfda.brand_name:"aspirin\\"`
+   * answers HTTP 200 with total 27101 against 743 for the intended query, because the
+   * escaped quote pulls ` OR openfda.brand_name:` inside the phrase and the remainder
+   * re-parses as a bare term. The five single-clause sub-queries instead left a phrase
+   * open and failed as `token_mgr_error`. Escaping both `\\` and `"` keeps every
+   * composed query well-formed with the ` OR ` boundary intact — proven upstream by an
+   * escaped no-match first clause leaving the second clause's own total unchanged.
+   */
+  describe('term escaping in composed queries (#42)', () => {
+    /** Every search string the handler sent, across all sub-queries. */
+    const sentSearches = () =>
+      mockQuery.mock.calls.map(([, params]) => (params as { search: string }).search);
+
+    beforeEach(() => {
+      mockQuery.mockResolvedValue({ meta: meta(), results: [] });
+    });
+
+    it('escapes a trailing backslash so the OR boundary is not re-parsed', async () => {
+      await drugProfileTool.handler({ drug: 'aspirin\\' }, ctx);
+
+      const resolve = sentSearches().find((s) => s.includes('openfda.generic_name'));
+      // The escaped form: the phrase closes on its own quote, so ` OR ` stays an operator.
+      expect(resolve).toBe(
+        'openfda.generic_name:"aspirin\\\\" OR openfda.brand_name:"aspirin\\\\"',
+      );
+      // The pre-fix composition, which openFDA answered 200 with unrelated records.
+      expect(resolve).not.toBe(
+        'openfda.generic_name:"aspirin\\" OR openfda.brand_name:"aspirin\\"',
+      );
+    });
+
+    it('escapes embedded quotes instead of dropping them from the term', async () => {
+      await drugProfileTool.handler({ drug: 'Tylenol "Extra Strength"' }, ctx);
+
+      const resolve = sentSearches().find((s) => s.includes('openfda.generic_name'));
+      expect(resolve).toBe(
+        'openfda.generic_name:"Tylenol \\"Extra Strength\\"" OR openfda.brand_name:"Tylenol \\"Extra Strength\\""',
+      );
+    });
+
+    it('leaves every composed query with balanced, escape-aware delimiters', async () => {
+      await drugProfileTool.handler({ drug: 'aspirin\\' }, ctx);
+
+      const searches = sentSearches();
+      expect(searches.length).toBeGreaterThan(1);
+      for (const search of searches) {
+        expect(findSearchDelimiterFault(search)).toBeUndefined();
+      }
+    });
+
+    it('escapes the resolved fan-out key on the structured sub-queries', async () => {
+      mockQuery.mockImplementation(async (endpoint: string) =>
+        endpoint === 'drug/label'
+          ? {
+              meta: meta({ total: 1 }),
+              results: [{ openfda: { generic_name: ['odd\\name'], brand_name: ['Odd'] } }],
+            }
+          : { meta: meta(), results: [] },
+      );
+
+      const result = await drugProfileTool.handler({ drug: 'odd' }, ctx);
+
+      // fanOutKey is reported unescaped — escaping is a query-encoding concern.
+      expect(result.meta.fanOutKey).toBe('odd\\name');
+      const structured = mockQuery.mock.calls.filter(([endpoint]) =>
+        ['drug/enforcement', 'drug/drugsfda', 'drug/shortages'].includes(endpoint as string),
+      );
+      expect(structured).toHaveLength(3);
+      for (const [, params] of structured) {
+        const search = (params as { search: string }).search;
+        expect(search).toContain('odd\\\\name');
+        expect(findSearchDelimiterFault(search)).toBeUndefined();
+      }
+    });
+
+    it('keeps a plain term byte-identical to the pre-escape composition', async () => {
+      await drugProfileTool.handler({ drug: 'metformin' }, ctx);
+
+      expect(sentSearches()).toContain(
+        'openfda.generic_name:"metformin" OR openfda.brand_name:"metformin"',
+      );
     });
   });
 
