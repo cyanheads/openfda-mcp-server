@@ -3,7 +3,9 @@
  * opt-in: a search only reaches this module when the caller asked for it
  * (`stage: true`, or a `canvas_id` to accumulate onto). It returns the same
  * inline page the plain search path returns — `limit`/`skip` address the matched
- * set identically in both modes — and, alongside it, registers a bounded drain of
+ * set identically in both modes, and the page carries the same inline byte budget
+ * (`page-budget.ts`), so a staged call and an unstaged one never disagree about
+ * what a window holds — and, alongside it, registers a bounded drain of
  * the matched set as a canvas table the agent queries with
  * openfda_dataframe_query. The drain is capped by a serialized-byte budget as
  * well as openFDA's 25,000-row `skip` ceiling, so a staged call on a
@@ -17,6 +19,11 @@ import type { ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import {
+  boundPageToBudget,
+  type PageBudgetFields,
+  pageBudgetFields,
+} from '@/services/openfda/page-budget.js';
 
 /** openFDA hard pagination ceiling — `skip` may not exceed this. */
 export const OPENFDA_MAX_ROWS = 25_000;
@@ -112,8 +119,13 @@ export interface OpenFdaSpillResult {
   canvasId: string;
   /** Dataset `last_updated` date from upstream metadata. */
   lastUpdated: string;
-  /** Inline page — the caller's `limit`/`skip` window over the matched set, identical to the non-staged path. */
+  /**
+   * Inline page — the caller's `limit`/`skip` window over the matched set,
+   * bounded by the same inline byte budget the non-staged path applies.
+   */
   preview: Record<string, unknown>[];
+  /** Byte-budget disclosure for `preview` — empty when the whole window fit. */
+  previewBudget: PageBudgetFields;
   /** Pagination offset applied to the inline page. */
   skip: number;
   /** True when rows were registered on the canvas. */
@@ -142,8 +154,9 @@ function newTableName(): string {
  * `getCanvas()` is defined before invoking.
  *
  * The inline page is the same `limit`/`skip` window the plain search path
- * returns; the drain always starts at offset 0 and runs until the byte budget,
- * the row ceiling, or the matched set is exhausted.
+ * returns, under the same inline byte budget; the drain always starts at offset 0
+ * and runs until its own (much larger) byte budget, the row ceiling, or the
+ * matched set is exhausted.
  */
 export async function spillSearch(opts: {
   endpoint: string;
@@ -179,16 +192,26 @@ export async function spillSearch(opts: {
 
   const probeCoversWindow =
     skip + limit <= probe.results.length || probe.results.length < PROBE_ROWS;
-  const preview = probeCoversWindow
+  const requested = probeCoversWindow
     ? probe.results.slice(skip, skip + limit)
     : (await svc.query<Record<string, unknown>>(endpoint, { search, sort, limit, skip }, ctx))
         .results;
+
+  /*
+   * The staged page carries the same inline byte budget the plain path applies —
+   * a staged call and an unstaged one must agree about what a `limit`/`skip`
+   * window holds, and staging is not a reason to hand back an unholdable page.
+   */
+  const page = boundPageToBudget(requested);
+  const preview = page.records;
+  const previewBudget = pageBudgetFields(page);
 
   if (probe.results.length === 0) {
     return {
       canvasId: instance.canvasId,
       lastUpdated,
       preview,
+      previewBudget,
       skip,
       spilled: false,
       stagedRows: 0,
@@ -239,6 +262,7 @@ export async function spillSearch(opts: {
     canvasId: instance.canvasId,
     lastUpdated,
     preview,
+    previewBudget,
     skip,
     spilled: true,
     stagedRows: handle.rowCount,
@@ -276,6 +300,7 @@ export function canvasResult(spill: OpenFdaSpillResult) {
       lastUpdated: spill.lastUpdated,
     },
     results: spill.preview,
+    ...spill.previewBudget,
     canvas_id: spill.canvasId,
     spilled: spill.spilled,
     staged_rows: spill.stagedRows,

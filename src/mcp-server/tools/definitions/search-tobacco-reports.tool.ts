@@ -1,5 +1,8 @@
 /**
  * @fileoverview Tool for searching openFDA tobacco product problem reports.
+ * Records are the smallest openFDA serves, but `limit` reaches 1000, so the inline
+ * page is bounded by a serialized-byte budget and discloses any records it withheld
+ * along with the routes to them.
  * @module mcp-server/tools/definitions/search-tobacco-reports
  */
 
@@ -33,6 +36,14 @@ import {
   stagingNotice,
 } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import {
+  boundedPage,
+  META_LIMIT_DESCRIPTION,
+  PAGE_BUDGET_NOTE,
+  pageBudgetLine,
+  pageBudgetNotice,
+  pageBudgetOutputShape,
+} from '@/services/openfda/page-budget.js';
 
 /**
  * Canvas table projection for tobacco problem reports. Count fields are stored as
@@ -72,7 +83,7 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
       .min(1)
       .max(1000)
       .default(10)
-      .describe('Maximum number of records to return (1-1000, default 10)'),
+      .describe(`Maximum number of records to return (1-1000, default 10). ${PAGE_BUDGET_NOTE}`),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     stage: stageInput,
     canvas_id: nonBlankString()
@@ -87,7 +98,7 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
       .object({
         total: z.number().describe('Total matching records in the dataset'),
         skip: z.number().describe('Pagination offset'),
-        limit: z.number().describe('Records returned in this response'),
+        limit: z.number().describe(META_LIMIT_DESCRIPTION),
         lastUpdated: z.string().describe('Dataset last updated date'),
       })
       .describe('Response metadata'),
@@ -96,6 +107,7 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
       .describe(
         'Tobacco problem report records. Key fields: report_id, date_submitted, tobacco_products[] (product type description), reported_health_problems[] (health effects), reported_product_problems[] (device/product defects), number_tobacco_products, number_health_problems, number_product_problems, nonuser_affected.',
       ),
+    ...pageBudgetOutputShape,
     ...canvasOutputShape,
   }),
 
@@ -109,7 +121,7 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
       .string()
       .optional()
       .describe(
-        'Canvas staging disclosure when the call staged, and guidance when results are empty or paging overshot — how to broaden filters or adjust the query.',
+        'Canvas staging disclosure when the call staged, the byte-budget disclosure and the routes to the withheld records when the inline page was bounded, and guidance when results are empty or paging overshot — how to broaden filters or adjust the query.',
       ),
   },
 
@@ -179,14 +191,19 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
         skip: input.skip,
         ctx,
       });
+      const staged = canvasResult(spill);
       ctx.enrich({ totalResults: spill.total });
       if (input.search) ctx.enrich.echo(input.search);
       ctx.enrich.notice(
-        spill.preview.length === 0
-          ? `${emptyNotice(spill.skip, spill.total)} ${stagingNotice(spill)}`
-          : stagingNotice(spill),
+        [
+          spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
+          pageBudgetNotice(staged),
+          stagingNotice(spill),
+        ]
+          .filter(Boolean)
+          .join(' '),
       );
-      return canvasResult(spill);
+      return staged;
     }
 
     const svc = getOpenFdaService();
@@ -201,18 +218,23 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
       ctx,
     );
 
+    const page = boundedPage(response);
+
     ctx.log.info('Tobacco problem report search completed', {
       total: response.meta.total,
-      returned: response.results.length,
+      returned: page.results.length,
+      pageOmitted: page.page_omitted,
     });
 
     ctx.enrich({ totalResults: response.meta.total });
     if (input.search) ctx.enrich.echo(input.search);
-    if (response.results.length === 0) {
-      ctx.enrich.notice(emptyNotice(response.meta.skip, response.meta.total));
-    }
+    const notices = [
+      page.results.length === 0 ? emptyNotice(response.meta.skip, response.meta.total) : undefined,
+      pageBudgetNotice(page),
+    ].filter(Boolean);
+    if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
-    return { meta: response.meta, results: response.results };
+    return page;
   },
 
   format: (result) => {
@@ -228,6 +250,9 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
     const lines: string[] = [
       `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Data updated: ${result.meta.lastUpdated}\n`,
     ];
+
+    const budget = pageBudgetLine(result);
+    if (budget) lines.push(`${budget}\n`);
 
     const staging = canvasStagingLine(result.meta.total, result);
     if (staging) lines.push(`${staging}\n`);

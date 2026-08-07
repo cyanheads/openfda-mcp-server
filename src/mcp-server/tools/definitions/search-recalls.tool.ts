@@ -1,5 +1,8 @@
 /**
  * @fileoverview Tool for searching openFDA enforcement reports and recall actions.
+ * Device enforcement and recall records run several kilobytes each, so the inline
+ * page is bounded by a serialized-byte budget and discloses any records it
+ * withheld along with the routes to them.
  * @module mcp-server/tools/definitions/search-recalls
  */
 
@@ -33,6 +36,14 @@ import {
   stagingNotice,
 } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import {
+  boundedPage,
+  META_LIMIT_DESCRIPTION,
+  PAGE_BUDGET_NOTE,
+  pageBudgetLine,
+  pageBudgetNotice,
+  pageBudgetOutputShape,
+} from '@/services/openfda/page-budget.js';
 
 /**
  * Canvas table projection for enforcement/recall records. Scalars are VARCHAR
@@ -91,7 +102,9 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       .min(1)
       .max(1000)
       .default(10)
-      .describe('Maximum number of records to return (1-1000).'),
+      .describe(
+        `Maximum number of records to return (1-1000, default 10). ${PAGE_BUDGET_NOTE} Device records are the largest here — a device enforcement or recall record runs several kilobytes where a drug or food enforcement record is around one.`,
+      ),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     stage: stageInput,
     canvas_id: nonBlankString()
@@ -106,7 +119,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       .object({
         total: z.number().describe('Total matching records'),
         skip: z.number().describe('Pagination offset'),
-        limit: z.number().describe('Records returned'),
+        limit: z.number().describe(META_LIMIT_DESCRIPTION),
         lastUpdated: z.string().describe('Dataset last updated date'),
       })
       .describe('Response metadata'),
@@ -115,6 +128,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       .describe(
         'Enforcement or recall records — recall_number, classification, recalling_firm, product_description, reason_for_recall, status, voluntary_mandated, distribution_pattern, report_date. Field set varies between enforcement and recall endpoints.',
       ),
+    ...pageBudgetOutputShape,
     ...canvasOutputShape,
   }),
 
@@ -128,7 +142,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       .string()
       .optional()
       .describe(
-        'Canvas staging disclosure when the call staged, and guidance when results are empty — how to broaden filters or correct field names.',
+        'Canvas staging disclosure when the call staged, the byte-budget disclosure and the routes to the withheld records when the inline page was bounded, and guidance when results are empty — how to broaden filters or correct field names.',
       ),
   },
 
@@ -215,14 +229,19 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
         skip: input.skip,
         ctx,
       });
+      const staged = canvasResult(spill);
       ctx.enrich({ totalResults: spill.total });
       if (input.search) ctx.enrich.echo(input.search);
       ctx.enrich.notice(
-        spill.preview.length === 0
-          ? `${emptyNotice(spill.skip, spill.total)} ${stagingNotice(spill)}`
-          : stagingNotice(spill),
+        [
+          spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
+          pageBudgetNotice(staged),
+          stagingNotice(spill),
+        ]
+          .filter(Boolean)
+          .join(' '),
       );
-      return canvasResult(spill);
+      return staged;
     }
 
     const service = getOpenFdaService();
@@ -237,19 +256,25 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       ctx,
     );
 
+    const page = boundedPage(response);
+
     ctx.log.info('Recall search completed', {
       category: input.category,
       endpoint: endpointValue,
       total: response.meta.total,
+      returned: page.results.length,
+      pageOmitted: page.page_omitted,
     });
 
     ctx.enrich({ totalResults: response.meta.total });
     if (input.search) ctx.enrich.echo(input.search);
-    if (response.results.length === 0) {
-      ctx.enrich.notice(emptyNotice(response.meta.skip, response.meta.total));
-    }
+    const notices = [
+      page.results.length === 0 ? emptyNotice(response.meta.skip, response.meta.total) : undefined,
+      pageBudgetNotice(page),
+    ].filter(Boolean);
+    if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
-    return { meta: response.meta, results: response.results };
+    return page;
   },
 
   format: (result) => {
@@ -258,6 +283,8 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
     }
 
     const header = `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Last updated: ${result.meta.lastUpdated}\n`;
+    const budget = pageBudgetLine(result);
+    const budgetHint = budget ? `${budget}\n\n` : '';
     const staging = canvasStagingLine(result.meta.total, result);
     const canvasHint = staging ? `${staging}\n\n` : '';
 
@@ -265,7 +292,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       return [
         {
           type: 'text' as const,
-          text: `${header}\n${canvasHint}${emptyPageNote(result.meta.total, result.meta.skip, result)}`,
+          text: `${header}\n${budgetHint}${canvasHint}${emptyPageNote(result.meta.total, result.meta.skip, result)}`,
         },
       ];
     }
@@ -298,6 +325,6 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
 
     const body = records.join('\n\n---\n\n');
 
-    return [{ type: 'text' as const, text: `${header}\n${canvasHint}${body}` }];
+    return [{ type: 'text' as const, text: `${header}\n${budgetHint}${canvasHint}${body}` }];
   },
 });

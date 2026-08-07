@@ -23,6 +23,8 @@ All endpoints share a uniform query interface (`search`, `count`, `sort`, `limit
 
 **Shared `search` / `sort` contract.** Wherever a tool below takes a caller-supplied `search`, every double quote, parenthesis, and range bracket it opens must close, and it must not end on a backslash — each raises `malformed_search` locally, before the request. Wherever it takes a `sort`, the value is one or more comma-separated field paths (multi-field sort is supported, and spaces around a segment are fine), each optionally suffixed with a direction; a field path holds only letters, digits, underscores, and dots. Where a tool composes a query from a caller-supplied *term* instead — `openfda_drug_profile` — the term is escaped for its phrase context rather than rejected. Grammar, rationale, and boundaries: [Query hygiene](#implementation-notes).
 
+**Shared size contract.** Each of the eight multi-row search tools bounds its page of upstream records at 24,000 serialized bytes and discloses any it withheld; `openfda_get_drug_label` measures the same budget but returns a section outline instead, because its payload is one document rather than many rows. Both are described under [Response size](#response-size), along with the tools the budget does not reach.
+
 ### `openfda_drug_profile`
 
 Resolve one drug name to its FDA identity, then fan out in parallel to the bounded per-drug endpoints and merge into a single consolidated profile. Replaces chaining `openfda_get_drug_label`, `openfda_search_adverse_events`, `openfda_search_recalls`, `openfda_search_drug_approvals`, and `openfda_search_drug_shortages`, and reconciles the identifier drift between endpoints that makes that chaining error-prone.
@@ -44,7 +46,7 @@ Search adverse event reports across drugs, food, and devices. Use to investigate
 | `category` | `"drug"` \| `"food"` \| `"device"` | Yes | Product category. Each has different field schemas -- drug reports include patient demographics and suspect drugs, device reports include device details and event type, food reports include industry and outcomes. |
 | `search` | string | No | Elasticsearch query string. Field-value pairs joined by `+AND+` or `+OR+`. Examples: `patient.drug.medicinalproduct:"aspirin"`, `patient.reaction.reactionmeddrapt:"nausea"+AND+serious:"1"`. Omit to browse recent reports. |
 | `sort` | string | No | Sort field and direction. Sortable date fields are category-specific: drug → `receivedate:desc` (or `receiptdate`), food → `date_created:desc` (or `date_started`), device → `date_received:desc` (or `date_of_event`). A field from another category (e.g. `receivedate` on food or device) causes a query error. |
-| `limit` | number | No | Results to return (1-1000, default 10). |
+| `limit` | number | No | Results to return (1-1000, default 10). An upper bound: the page is also bounded at 24,000 serialized bytes, and a page that overruns it returns fewer records and reports the cut on `page_omitted`. See [Response size](#response-size). |
 | `skip` | number | No | Pagination offset. Above 25000 the handler raises `pagination_limit_reached`; for deeper access, narrow the search query instead. |
 
 **Returns:** `meta` (total count, skip, limit) + array of adverse event records. Drug records include `safetyreportid`, `patient` (age, sex, reactions[], drugs[]), `serious` flag, `receivedate`. Device records include `report_number`, `device[]` (brand, generic name, manufacturer), `event_type`. Food records include `reactions`, `outcomes`, `products`.
@@ -59,7 +61,7 @@ Search enforcement reports and recall actions across drugs, food, and devices. U
 | `endpoint` | `"enforcement"` \| `"recall"` | No | Default `enforcement`. `recall` is only valid for devices and includes additional fields like `res_event_number` and root cause analysis. |
 | `search` | string | No | Query string. Examples: `classification:"Class+I"`, `recalling_firm:"pfizer"`, `reason_for_recall:"undeclared+allergen"`. |
 | `sort` | string | No | Sort field and direction. Example: `report_date:desc`. |
-| `limit` | number | No | Results to return (1-1000, default 10). |
+| `limit` | number | No | Results to return (1-1000, default 10). An upper bound: the page is also bounded at 24,000 serialized bytes, and a page that overruns it returns fewer records and reports the cut on `page_omitted`. See [Response size](#response-size). |
 | `skip` | number | No | Pagination offset. Above 25000 the handler raises `pagination_limit_reached`. |
 
 **Returns:** `meta` (total count) + array of enforcement/recall records: `recall_number`, `classification` (Class I/II/III), `recalling_firm`, `product_description`, `reason_for_recall`, `distribution_pattern`, `status`, `voluntary_mandated`, dates.
@@ -96,20 +98,24 @@ Look up FDA drug labeling (package inserts / SPL documents). Use to check indica
 |---|---|---|---|
 | `search` | string | Yes | Query targeting label fields. Common patterns: `openfda.brand_name:"aspirin"`, `openfda.generic_name:"metformin"`, `openfda.manufacturer_name:"pfizer"`, `set_id:"uuid"`. Combine with `+AND+` for specificity. |
 | `sort` | string | No | Sort field. Example: `effective_time:desc` for most recent labels. |
-| `limit` | number | No | Results to return (1-1000, default 5). Labels are large -- keep limit low unless browsing. |
+| `limit` | number | No | Results to return (1-1000, default 5). Labels are large -- keep limit low unless browsing; a section's retrieval cost is summed across the page, so it scales with this limit. |
 | `skip` | number | No | Pagination offset. Above 25000 the handler raises `pagination_limit_reached`. |
-| `sections` | string[] | No | Top-level label sections to return, e.g. `["boxed_warning","indications_and_usage"]`. Omit for the whole label. |
+| `sections` | string[] | No | Top-level label sections to return, e.g. `["boxed_warning","indications_and_usage"]`. Omit for the whole label. Returned whole even when the projection clears the inline budget, with its serialized size reported on the notice. |
 
 **Returns:** `meta`, a `kind` discriminator, and one of two arms.
 
 `kind: "full"` carries `results[]` — label records with structured sections: `indications_and_usage`, `warnings`, `dosage_and_administration`, `contraindications`, `adverse_reactions`, `drug_interactions`, `active_ingredient`, `inactive_ingredient`, `purpose`, `do_not_use`, `pregnancy_or_breast_feeding`, plus `openfda` enrichment (brand name, generic name, manufacturer, route, substance, pharm class, application number).
 
-**Outline on overflow.** A single SPL record runs to tens of thousands of tokens — a warfarin label is ~130 KB across 36 top-level keys, of which ~39 KB is `*_table` raw HTML duplicating adjacent prose. Trimming only `format()` would desync `content[]` from `structuredContent`, so the size lever is caller-driven instead, via the framework's `outlineOnOverflow` helper (`@cyanheads/mcp-ts-core/utils`):
+**Outline on overflow.** This is the one-document half of the shared [size contract](#response-size); the eight multi-row search tools bound a page of records instead. A single SPL record runs to tens of thousands of tokens — a warfarin label is ~130 KB across 36 top-level keys, of which ~39 KB is `*_table` raw HTML duplicating adjacent prose. Trimming only `format()` would desync `content[]` from `structuredContent`, so the size lever is caller-driven instead, via the framework's `outlineOnOverflow` helper (`@cyanheads/mcp-ts-core/utils`):
 
-- With `sections`, each record is projected to the requested keys plus the always-kept metadata (`openfda`, `set_id`, `id`, `effective_time`, `version`) and returned as `kind: "full"`. A name no record on the page carries is reported on `enrichment.notice` — with the names the page does carry when nothing matched at all, since a typo and a genuinely absent section otherwise produce the same metadata-only record.
+- With `sections`, each record is projected to the requested keys plus the always-kept metadata (`openfda`, `set_id`, `id`, `effective_time`, `version`) and returned as `kind: "full"`. A name no record on the page carries is reported on `enrichment.notice` — with the names the page does carry when nothing matched at all, since a typo and a genuinely absent section otherwise produce the same metadata-only record. A projection over the budget is returned whole and reports its serialized size on the same notice.
 - Without `sections`, the page is measured against the helper's 24,000-byte budget. Under it, the records come back whole. Over it, the response is `kind: "outline"` with `outline[]` — every section name present on the page and its serialized size, largest first — and the re-call guidance on `enrichment.notice`. The re-call is stateless: the same `search` plus `sections` reproduces the record and slices it.
 
+**Sizes are per page, not per record, so the guidance is measured rather than asserted.** An `outline[]` entry sums its section across every record on the page, so a section's retrieval cost is a function of `limit` and cannot be read off the section alone. The re-call guidance therefore projects candidate sections at this page's record count and names the largest one that measures within the budget, quoting that byte figure inline — following the notice returns exactly what it claims. Two candidates are skipped: the always-kept metadata keys, which ride every response, and the page's single most expensive section, since offering it as the worked example would recommend the one re-call the outline exists to head off. When metadata alone clears the budget — 40 metformin records carry ~31 KB of it — no example can fit, and the notice says so and points at `limit`.
+
 **Decision — the outline arm is a deliberate default-path change.** Before this, a `structuredContent` reader always got the complete label for any query that matched. Complex prescription drugs overflow the budget by 5-10x, so those queries now return an outline until the caller names sections. Bounding the default payload is the point: the alternative (one-sided `format()` truncation) hid the same data from `content[]` clients while claiming completeness.
+
+**Decision — an over-budget `sections` selection is disclosed, never trimmed.** The selection path is the caller's own size decision, so it stays unconditional: `kind` remains `"full"`, every requested key is returned whole, and no content is stripped. What it adds is honesty about cost — the serialized size on `enrichment.notice`, which reaches `structuredContent` as `notice` and `content[]` as the enrichment trailer, so neither surface can read as in-budget when it isn't. Truncating or restructuring that arm to fit the budget would trade one silent failure for another: a caller who asked for `clinical_pharmacology_table` across ten records is asking for ~203 KB, and the useful answer is the payload plus its price, not a shortened payload.
 
 ### `openfda_search_drug_approvals`
 
@@ -119,7 +125,7 @@ Search the Drugs@FDA database for drug application approvals, including NDAs and
 |---|---|---|---|
 | `search` | string | Yes | Query string. Examples: `openfda.brand_name:"humira"`, `sponsor_name:"PFIZER"`, `submissions.submission_type:"ORIG"+AND+submissions.review_priority:"PRIORITY"`. Exact quoted values can be case-sensitive on some fields — `sponsor_name` is stored uppercase, so a lowercase quoted value returns no matches. |
 | `sort` | string | No | Sort field and direction. Example: `submissions.submission_status_date:desc`. |
-| `limit` | number | No | Results to return (1-1000, default 10). |
+| `limit` | number | No | Results to return (1-1000, default 10). An upper bound: the page is also bounded at 24,000 serialized bytes, and a page that overruns it returns fewer records and reports the cut on `page_omitted`. See [Response size](#response-size). |
 | `skip` | number | No | Pagination offset. Above 25000 the handler raises `pagination_limit_reached`. |
 
 **Returns:** Application records: `application_number` (NDA/ANDA), `sponsor_name`, `submissions[]` (type, status, status date, review priority, class code), plus `openfda` enrichment (brand name, generic name, manufacturer, route, substance, product type).
@@ -133,7 +139,7 @@ Search FDA device premarket notifications -- 510(k) clearances and PMA (premarke
 | `pathway` | `"510k"` \| `"pma"` | Yes | Premarket pathway. 510(k) is the most common clearance route (174K+ records). PMA is for higher-risk devices requiring clinical evidence. |
 | `search` | string | Yes | Query string. Examples: `applicant:"medtronic"`, `advisory_committee_description:"cardiovascular"`, `product_code:"DXN"`, `openfda.device_name:"catheter"`. |
 | `sort` | string | No | Sort field. Example: `decision_date:desc`. |
-| `limit` | number | No | Results to return (1-1000, default 10). |
+| `limit` | number | No | Results to return (1-1000, default 10). An upper bound: the page is also bounded at 24,000 serialized bytes, and a page that overruns it returns fewer records and reports the cut on `page_omitted`. See [Response size](#response-size). |
 | `skip` | number | No | Pagination offset. Above 25000 the handler raises `pagination_limit_reached`. |
 
 **Returns:** 510(k): `k_number`, `applicant`, `device_name`, `product_code`, `decision_date`, `decision_description`, `advisory_committee`, `statement_or_summary`. PMA: `pma_number`, `applicant`, `advisory_committee`, `product_code`, `decision_date`, `decision_code`.
@@ -146,7 +152,7 @@ Look up drugs in the NDC (National Drug Code) Directory. Use to identify drug pr
 |---|---|---|---|
 | `search` | string | Yes | Query string. Examples: `product_ndc:"0363-0218"`, `brand_name:"aspirin"`, `generic_name:"metformin"`, `openfda.manufacturer_name:"walgreen"`, `active_ingredients.name:"ASPIRIN"`. |
 | `sort` | string | No | Sort field and direction. Example: `listing_expiration_date:desc`. |
-| `limit` | number | No | Results to return (1-1000, default 10). |
+| `limit` | number | No | Results to return (1-1000, default 10). An upper bound: the page is also bounded at 24,000 serialized bytes, and a page that overruns it returns fewer records and reports the cut on `page_omitted`. See [Response size](#response-size). |
 | `skip` | number | No | Pagination offset. Above 25000 the handler raises `pagination_limit_reached`. |
 
 **Returns:** NDC records: `product_ndc`, `brand_name`, `generic_name`, `labeler_name`, `active_ingredients[]` (name, strength), `dosage_form`, `route`, `marketing_category`, `packaging[]` (package NDC, description), `finished` flag, `listing_expiration_date`, plus `openfda` enrichment (manufacturer, rxcui, pharm class, UPC).
@@ -159,7 +165,7 @@ Search adverse event reports for veterinary drugs and devices. Use to investigat
 |---|---|---|---|
 | `search` | string | No | openFDA query syntax. Examples: `animal.species:"Dog"`, `drug.brand_name:"Bravecto"`, `reaction.veddra_term_name:"Vomiting"`, `serious_ae:"true"`. Omit to browse recent reports. |
 | `sort` | string | No | Sort field and direction. Example: `original_receive_date:desc`. |
-| `limit` | number | No | Results to return (1-1000, default 10). |
+| `limit` | number | No | Results to return (1-1000, default 10). An upper bound: the page is also bounded at 24,000 serialized bytes, and a page that overruns it returns fewer records and reports the cut on `page_omitted`. See [Response size](#response-size). |
 | `skip` | number | No | Pagination offset. Above 25000 the handler raises `pagination_limit_reached`. |
 
 **Returns:** Animal adverse event records: `unique_aer_id_number`, `original_receive_date`, `serious_ae`, `animal` (species, gender, breed, age, weight), `drug[]` (brand_name, active_ingredients, route, dose, administered_by), `reaction[]` (veddra_term_name, number_of_animals_affected), `outcome[]` (medical_status), `primary_reporter`, `type_of_information`.
@@ -172,7 +178,7 @@ Search FDA drug shortage records. Returns per-product shortage status, availabil
 |---|---|---|---|
 | `search` | string | No | Elasticsearch query. Examples: `status:"Current"`, `therapeutic_category:"Oncology"`, `generic_name:"carboplatin"`, `company_name:"pfizer"`. Omit to browse all. |
 | `sort` | string | No | Sort field and direction. Example: `update_date:desc`. |
-| `limit` | number | No | Results to return (1-1000, default 10). |
+| `limit` | number | No | Results to return (1-1000, default 10). An upper bound: the page is also bounded at 24,000 serialized bytes, and a page that overruns it returns fewer records and reports the cut on `page_omitted`. See [Response size](#response-size). |
 | `skip` | number | No | Pagination offset. Above 25000 the handler raises `pagination_limit_reached`. |
 
 **Returns:** Shortage records with `generic_name`, `status` (Current/Resolved), `availability`, `therapeutic_category`, `dosage_form`, `presentation`, `package_ndc`, `company_name`, `contact_info`, `initial_posting_date`, `update_date`, `update_type`, plus `openfda` block (`brand_name`, `product_ndc`, `rxcui`, `spl_set_id`).
@@ -197,7 +203,7 @@ Search problem reports submitted to the FDA for tobacco products, including e-ci
 |---|---|---|---|
 | `search` | string | No | openFDA query syntax. Examples: `tobacco_products:"Electronic cigarette"`, `reported_health_problems:"Seizure"`, `nonuser_affected:"Yes"`. Omit to browse recent reports. |
 | `sort` | string | No | Sort field and direction. Example: `date_submitted:desc`. |
-| `limit` | number | No | Results to return (1-1000, default 10). |
+| `limit` | number | No | Results to return (1-1000, default 10). An upper bound: the page is also bounded at 24,000 serialized bytes, and a page that overruns it returns fewer records and reports the cut on `page_omitted`. See [Response size](#response-size). |
 | `skip` | number | No | Pagination offset. Above 25000 the handler raises `pagination_limit_reached`. |
 
 **Returns:** Tobacco problem reports: `report_id`, `date_submitted`, `tobacco_products[]` (product type description), `reported_health_problems[]` (health effects), `reported_product_problems[]` (device/product defects), `number_tobacco_products`, `number_health_problems`, `number_product_problems`, `nonuser_affected`.
@@ -225,6 +231,33 @@ List the tables and column schemas on a DataCanvas. Call before `openfda_datafra
 
 ---
 
+## Response size
+
+A response the caller cannot hold is not a successful response. openFDA payload size is driven by the upstream record shape, not by anything the caller can see in advance: a `drug/event` report averages ~34 KB with a 830-byte-to-127 KB spread, while a `food/event` report is ~440 bytes, so `limit: 10` spans three orders of magnitude across the surface. Every tool that hands back upstream records therefore measures what it is about to return against one 24,000-byte serialized budget — the framework's `DEFAULT_OUTLINE_BUDGET_BYTES` — and one budget means one threshold a caller can reason about.
+
+The budget is enforced differently depending on the payload's shape, because the two record-bearing shapes have different escape hatches:
+
+| Shape | Tools | Technique |
+|---|---|---|
+| One large document | `openfda_get_drug_label` | Section outline plus a stateless `sections` re-call — see [Outline on overflow](#openfda_get_drug_label) |
+| Many rows | the eight multi-row search tools | Bounded page plus disclosure and the routes to the rest (below) |
+| Aggregate | `openfda_count_values`, `openfda_describe_fields` | Not measured — a term-count pair and a field entry are fixed-width, so `limit` alone prices the response (1000 terms is ~44 KB, the default 100 is ~4 KB) |
+| Composed / caller-shaped | `openfda_drug_profile`, `openfda_dataframe_query` | Not measured — a profile is a fixed set of bounded sections, and a SQL result is the caller's own projection |
+
+### Bounded page (many rows)
+
+`src/services/openfda/page-budget.ts` measures the `limit`/`skip` window record by record and drops records from its tail until the serialized array fits the budget. What is withheld is disclosed on both surfaces at once — `page_bytes` and `page_omitted` in the response body, the same sentence rendered into `content[]` and onto `enrichment.notice` — and it names the four routes to the withheld records: the exact `skip` the next window starts at, a lower `limit`, record-level SQL over the staged drain (the notice says `stage: true` on an unstaged call and points at the table on a staged one), and `openfda_count_values` for a distribution without records at all. Both fields are absent unless the bound fired, so a page that fits returns exactly the response it returned before the budget existed.
+
+**Decision — the budget is universal, not an allowlist of large endpoints.** Measured single-record averages put five endpoints over the budget at the default `limit: 10` — `drug/event` (~34,200 B/record), `device/recall` (~8,100), `device/enforcement` (~7,200), `device/event` (~6,000), `device/510k` (~4,300) — with `drug/drugsfda` (~2,400) sitting on the line. An allowlist drawn from that list would still leave every other tool open, because `limit` reaches 1000 everywhere: the smallest-record endpoints on the surface overflow at high limits, and a live `limit: 1000` call returns 50 of 1000 `tobacco/problem` records and 53 of 1000 `food/event` records. A per-endpoint threshold would also go stale silently the first time openFDA changes a record shape, whereas a measured page cannot.
+
+**Decision — bound the page, do not merely disclose its size.** Disclosure alone would arrive inside the payload that already overran the caller's context, which describes the problem rather than fixing it. #18, #30, and #31 constrain how the bound may work, and reading their text closely, they permit it: #18 asked for `min(limit, budget-fit)` rows in as many words, and #31 asked that the page "guarantees at least one record when any matched." What those issues forbade was `limit` being *silently* overridden (a `limit: 3` call answering with 34 records) and a page *emptied* by record size (a real match rendering as "No results found."). So the bound never exceeds `limit`, never returns zero records when one matched, and states every cut in `content[]` as well as in `structuredContent` — the three properties those fixes established, intact.
+
+**Decision — a single oversized record is returned whole, and the overrun is stated.** When the first record alone clears the budget it is kept, `page_bytes` reports a figure above the budget, and the disclosure says why. Emptying the page is the failure #31 fixed; trimming *within* a record is worse still, because `structuredContent` and `content[]` derive from the same array — a partial record would either desync the two surfaces or hand back a record whose missing fields are indistinguishable from openFDA's own sparsity.
+
+**Decision — the page is measured, the drain is estimated.** [DataCanvas staging](#datacanvas-staging-analytical-sql) derives its row cap from an average taken over a 100-row probe, because the rows it bounds have not been fetched yet. The inline page is already in hand, so it is measured record by record instead: `drug/event`'s median record is ~6 KB against its ~34 KB mean, so an average would misprice the very page it is meant to bound. The two budgets are deliberately separate — ~16 MB for the drain, 24,000 bytes for the page — because one feeds a SQL table and the other feeds a context window.
+
+---
+
 ## DataCanvas staging (analytical SQL)
 
 **Opt-in twice over.** The deployment enables the surface with `CANVAS_PROVIDER_TYPE=duckdb` (requires the optional `@duckdb/node-api` dependency; unavailable on the Workers runtime, where it fails closed at init), and the caller asks for staging per call. Without both, a search issues exactly one upstream request and returns one page — identical to a deployment with no canvas at all.
@@ -234,7 +267,7 @@ Every multi-row search tool — `openfda_search_adverse_events`, `_recalls`, `_d
 - `stage` (boolean, default `false`) — stage the matched set for SQL. Passing a `canvas_id` implies it, so successive searches accumulate onto one canvas for cross-table joins.
 - Output fields `canvas_id`, `canvas_table`, `spilled`, `staged_rows`, `truncated` (all absent unless the call staged).
 
-`limit`/`skip` mean the same thing in both modes: a window over the matched set, served from the drain's first page when it covers the window and fetched directly otherwise. A staged call therefore never disagrees with an unstaged one about whether records exist at a given offset, and record size never empties the page.
+`limit`/`skip` mean the same thing in both modes: a window over the matched set, served from the drain's first page when it covers the window and fetched directly otherwise, and bounded by the same [inline byte budget](#bounded-page-many-rows). A staged call therefore never disagrees with an unstaged one about whether records exist at a given offset or about how many of a window fit inline, and record size never empties the page.
 
 **Bounded drain.** Staging drains from offset 0 until whichever comes first: openFDA's 25,000-row `skip` ceiling, or a ~16 MB serialized-JSON budget (`STAGE_MAX_BYTES`). The budget is converted to a row cap and a page size from a 100-row probe, because record size spans three orders of magnitude across endpoints — a `drug/shortages` row is ~1 KB, a `drug/event` report ~65 KB — so a flat row cap either starves the small endpoints or stalls the large ones. `staged_rows` versus `meta.total` discloses exactly how much of the match reached the table, in `structuredContent` and in `content[]`; `truncated: true` when they differ. A truncated stage also names `openfda_count_values` in its disclosure: a `GROUP BY` over the staged rows describes only those rows, while a count query answers the same distribution over the whole matched set server-side in one request.
 

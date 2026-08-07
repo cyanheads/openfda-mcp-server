@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.7.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.30.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.14-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.7.3-blue.svg?style=flat-square)](./CHANGELOG.md) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^1.30.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.3.14-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -48,6 +48,8 @@ Fourteen tools for querying FDA data across drugs, food, devices, animal/veterin
 | `openfda_dataframe_query` | Run read-only SQL over a result set staged on a DataCanvas (opt-in) |
 | `openfda_dataframe_describe` | List tables and column schemas staged on a DataCanvas (opt-in) |
 
+**The nine record-returning tools bound their page at ~24 KB.** openFDA record size is not something a caller can see in advance — a `drug/event` report averages ~34 KB against ~440 bytes for a `food/event` report, so `limit: 10` means very different things per endpoint. The eight multi-row search tools return as many records of the requested window as fit, then report the withheld count on `page_omitted` alongside the byte figure and the routes to the rest (the exact `skip` to continue from, a lower `limit`, `stage: true` for SQL, or `openfda_count_values` for a distribution). Whenever anything matched, at least one record comes back, whatever it measures. `openfda_get_drug_label` returns a section outline instead, since its payload is one document rather than many rows.
+
 ### `openfda_drug_profile`
 
 Resolve one drug name to its FDA identity, then return a consolidated profile in a single call — replacing four or five chained lookups.
@@ -66,6 +68,7 @@ Search adverse event reports across drugs, food, and devices. Use to investigate
 - Category selection: `drug`, `food`, or `device` — each returns different field schemas
 - Elasticsearch query syntax for filtering by product, reaction, seriousness, date range
 - Pagination via `limit` (up to 1000) and `skip` (openFDA's ceiling is 25000 — past it the call returns a typed `pagination_limit_reached` error with recovery guidance)
+- `drug/event` is the largest-record endpoint openFDA serves, so this is where the ~24 KB page budget bites hardest: a default `limit: 10` on drug reports typically returns one to three of them with the rest disclosed on `page_omitted`, where the same call on food reports returns all ten
 - Formatted output includes report ID, seriousness, patient demographics, reactions, drugs with characterization/indication/route, and all remaining fields
 
 ---
@@ -108,7 +111,8 @@ Look up FDA drug labeling (package inserts / SPL documents). Check indications, 
 - Search by brand name, generic name, manufacturer, or set ID
 - Formatted output dynamically renders all label sections and openfda metadata present in the record, in full — `content[]` and `structuredContent` carry the same text
 - A page over the ~24 KB inline budget returns `kind: "outline"` — the section names and their sizes — instead of the label text; re-call with `sections: [...]` for the ones you need
-- `sections` narrows each record to the requested keys plus metadata (`openfda`, `set_id`, `id`, `effective_time`, `version`)
+- Outline sizes are summed across the page, so a section's cost scales with `limit` — the re-call guidance names a section measured to fit the budget at the requested limit and quotes its byte size
+- `sections` narrows each record to the requested keys plus metadata (`openfda`, `set_id`, `id`, `effective_time`, `version`); a selection over the budget is returned whole, never trimmed, with its serialized size reported
 - Default limit of 5 — labels are large documents (a warfarin label is ~130 KB on its own)
 
 ---
@@ -197,6 +201,7 @@ openFDA-specific:
 
 - Generic API client for all openFDA endpoints with retry (exponential backoff) and rate-limit awareness
 - Automatic error normalization — 404 returns empty results, 429/5xx retries, 400 provides actionable messages
+- A ~24 KB serialized budget on every page of upstream records, measured rather than assumed — oversized pages are bounded and disclosed on both `content[]` and `structuredContent`, never silently truncated and never emptied
 - Optional API key support — works without a key (1K requests/day), increases to 120K/day with a free key
 - Optional DataCanvas staging (`CANVAS_PROVIDER_TYPE=duckdb`, per call with `stage: true`) — stage large result sets as DuckDB tables and run SQL via `openfda_dataframe_query`
 - Optional local bulk mirror (`OPENFDA_MIRROR_ENABLED=true`) — a self-refreshing SQLite copy of the four drug bulk downloads that answers exact-key lookups without spending API budget, with live fallback

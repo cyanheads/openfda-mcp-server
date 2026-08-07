@@ -1,6 +1,8 @@
 /**
  * @fileoverview Tool for searching FDA drug application approvals (NDAs and ANDAs)
- * via the Drugs@FDA endpoint.
+ * via the Drugs@FDA endpoint. An application's full submission history makes record
+ * size vary widely, so the inline page is bounded by a serialized-byte budget and
+ * discloses any records it withheld along with the routes to them.
  * @module mcp-server/tools/definitions/search-drug-approvals
  */
 
@@ -34,6 +36,14 @@ import {
   stagingNotice,
 } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import {
+  boundedPage,
+  META_LIMIT_DESCRIPTION,
+  PAGE_BUDGET_NOTE,
+  pageBudgetLine,
+  pageBudgetNotice,
+  pageBudgetOutputShape,
+} from '@/services/openfda/page-budget.js';
 
 /**
  * Canvas table projection for Drugs@FDA application records. The analytical
@@ -71,7 +81,9 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       .min(1)
       .max(1000)
       .default(10)
-      .describe('Maximum number of records to return (1-1000, default 10)'),
+      .describe(
+        `Maximum number of records to return (1-1000, default 10). ${PAGE_BUDGET_NOTE} A record carries its application's whole submission history, so a long-running application is an order of magnitude larger than a recent one.`,
+      ),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     stage: stageInput,
     canvas_id: nonBlankString()
@@ -86,7 +98,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       .object({
         total: z.number().describe('Total matching records'),
         skip: z.number().describe('Pagination offset'),
-        limit: z.number().describe('Records returned'),
+        limit: z.number().describe(META_LIMIT_DESCRIPTION),
         lastUpdated: z.string().describe('Dataset last updated date'),
       })
       .describe('Response metadata'),
@@ -95,6 +107,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       .describe(
         'Drug application records — application_number, sponsor_name, openfda block (brand_name, generic_name, route, product_type, substance_name), products[] (active_ingredients, dosage_form, marketing_status), submissions[] (submission_type, submission_status, submission_status_date, review_priority).',
       ),
+    ...pageBudgetOutputShape,
     ...canvasOutputShape,
   }),
 
@@ -108,7 +121,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       .string()
       .optional()
       .describe(
-        'Canvas staging disclosure when the call staged, and guidance when results are empty — how to broaden filters or correct field names.',
+        'Canvas staging disclosure when the call staged, the byte-budget disclosure and the routes to the withheld records when the inline page was bounded, and guidance when results are empty — how to broaden filters or correct field names.',
       ),
   },
 
@@ -178,14 +191,19 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
         skip: input.skip,
         ctx,
       });
+      const staged = canvasResult(spill);
       ctx.enrich({ totalResults: spill.total });
       if (input.search) ctx.enrich.echo(input.search);
       ctx.enrich.notice(
-        spill.preview.length === 0
-          ? `${emptyNotice(spill.skip, spill.total)} ${stagingNotice(spill)}`
-          : stagingNotice(spill),
+        [
+          spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
+          pageBudgetNotice(staged),
+          stagingNotice(spill),
+        ]
+          .filter(Boolean)
+          .join(' '),
       );
-      return canvasResult(spill);
+      return staged;
     }
 
     const service = getOpenFdaService();
@@ -201,22 +219,24 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       ctx,
     );
 
+    const page = boundedPage(response);
+
     ctx.log.info('Drug approval search completed', {
       search: input.search,
       total: response.meta.total,
-      returned: response.results.length,
+      returned: page.results.length,
+      pageOmitted: page.page_omitted,
     });
 
     ctx.enrich({ totalResults: response.meta.total });
     if (input.search) ctx.enrich.echo(input.search);
-    if (response.results.length === 0) {
-      ctx.enrich.notice(emptyNotice(response.meta.skip, response.meta.total));
-    }
+    const notices = [
+      page.results.length === 0 ? emptyNotice(response.meta.skip, response.meta.total) : undefined,
+      pageBudgetNotice(page),
+    ].filter(Boolean);
+    if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
-    return {
-      meta: response.meta,
-      results: response.results,
-    };
+    return page;
   },
 
   format: (result) => {
@@ -229,6 +249,9 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
     const lines: string[] = [
       `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Data updated: ${result.meta.lastUpdated}\n`,
     ];
+
+    const budget = pageBudgetLine(result);
+    if (budget) lines.push(`${budget}\n`);
 
     const staging = canvasStagingLine(result.meta.total, result);
     if (staging) lines.push(`${staging}\n`);

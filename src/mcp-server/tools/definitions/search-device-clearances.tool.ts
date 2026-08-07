@@ -1,5 +1,8 @@
 /**
- * @fileoverview Tool for searching FDA device premarket notifications (510(k) clearances and PMA approvals).
+ * @fileoverview Tool for searching FDA device premarket notifications (510(k)
+ * clearances and PMA approvals). 510(k) records carry a summary narrative and run
+ * several kilobytes each, so the inline page is bounded by a serialized-byte budget
+ * and discloses any records it withheld along with the routes to them.
  * @module mcp-server/tools/definitions/search-device-clearances
  */
 
@@ -33,6 +36,14 @@ import {
   stagingNotice,
 } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import {
+  boundedPage,
+  META_LIMIT_DESCRIPTION,
+  PAGE_BUDGET_NOTE,
+  pageBudgetLine,
+  pageBudgetNotice,
+  pageBudgetOutputShape,
+} from '@/services/openfda/page-budget.js';
 
 /**
  * Canvas table projection covering both 510(k) and PMA records (one pathway per
@@ -84,7 +95,9 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       .min(1)
       .max(1000)
       .default(10)
-      .describe('Maximum number of records to return (1-1000).'),
+      .describe(
+        `Maximum number of records to return (1-1000, default 10). ${PAGE_BUDGET_NOTE} A 510(k) record carries a summary narrative and is several times the size of a PMA record.`,
+      ),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     stage: stageInput,
     canvas_id: nonBlankString()
@@ -99,7 +112,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       .object({
         total: z.number().describe('Total matching records'),
         skip: z.number().describe('Pagination offset'),
-        limit: z.number().describe('Records returned'),
+        limit: z.number().describe(META_LIMIT_DESCRIPTION),
         lastUpdated: z.string().describe('Dataset last updated date'),
       })
       .describe('Response metadata'),
@@ -108,6 +121,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       .describe(
         '510(k) or PMA records — 510(k) carries k_number, device_name, applicant, product_code, decision_date, decision_description, advisory_committee_description; PMA carries pma_number, trade_name, generic_name, supplement_number plus shared applicant/product_code/decision_date/decision_description.',
       ),
+    ...pageBudgetOutputShape,
     ...canvasOutputShape,
   }),
 
@@ -121,7 +135,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       .string()
       .optional()
       .describe(
-        'Canvas staging disclosure when the call staged, and guidance when results are empty — how to broaden filters or correct field names.',
+        'Canvas staging disclosure when the call staged, the byte-budget disclosure and the routes to the withheld records when the inline page was bounded, and guidance when results are empty — how to broaden filters or correct field names.',
       ),
   },
 
@@ -192,14 +206,19 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
         skip: input.skip,
         ctx,
       });
+      const staged = canvasResult(spill);
       ctx.enrich({ totalResults: spill.total });
       if (input.search) ctx.enrich.echo(input.search);
       ctx.enrich.notice(
-        spill.preview.length === 0
-          ? `${emptyNotice(spill.skip, spill.total)} ${stagingNotice(spill)}`
-          : stagingNotice(spill),
+        [
+          spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
+          pageBudgetNotice(staged),
+          stagingNotice(spill),
+        ]
+          .filter(Boolean)
+          .join(' '),
       );
-      return canvasResult(spill);
+      return staged;
     }
 
     const service = getOpenFdaService();
@@ -214,19 +233,24 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       ctx,
     );
 
+    const page = boundedPage(response);
+
     ctx.log.info('Device clearance search completed', {
       pathway: input.pathway,
       total: response.meta.total,
-      returned: response.results.length,
+      returned: page.results.length,
+      pageOmitted: page.page_omitted,
     });
 
     ctx.enrich({ totalResults: response.meta.total });
     if (input.search) ctx.enrich.echo(input.search);
-    if (response.results.length === 0) {
-      ctx.enrich.notice(emptyNotice(response.meta.skip, response.meta.total));
-    }
+    const notices = [
+      page.results.length === 0 ? emptyNotice(response.meta.skip, response.meta.total) : undefined,
+      pageBudgetNotice(page),
+    ].filter(Boolean);
+    if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
-    return { meta: response.meta, results: response.results };
+    return page;
   },
 
   format: (result) => {
@@ -242,6 +266,9 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
     const lines: string[] = [
       `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Data updated: ${result.meta.lastUpdated}\n`,
     ];
+
+    const budget = pageBudgetLine(result);
+    if (budget) lines.push(`${budget}\n`);
 
     const staging = canvasStagingLine(result.meta.total, result);
     if (staging) lines.push(`${staging}\n`);

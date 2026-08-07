@@ -1,5 +1,7 @@
 /**
- * @fileoverview Tool for searching openFDA animal and veterinary adverse event reports.
+ * @fileoverview Tool for searching openFDA animal and veterinary adverse event
+ * reports. The inline page is bounded by a serialized-byte budget and discloses any
+ * records it withheld along with the routes to them.
  * @module mcp-server/tools/definitions/search-animal-events
  */
 
@@ -33,6 +35,14 @@ import {
   stagingNotice,
 } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import {
+  boundedPage,
+  META_LIMIT_DESCRIPTION,
+  PAGE_BUDGET_NOTE,
+  pageBudgetLine,
+  pageBudgetNotice,
+  pageBudgetOutputShape,
+} from '@/services/openfda/page-budget.js';
 
 /**
  * Canvas table projection for veterinary adverse event records. Scalars are
@@ -75,7 +85,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       .min(1)
       .max(1000)
       .default(10)
-      .describe('Maximum number of records to return (1-1000, default 10)'),
+      .describe(`Maximum number of records to return (1-1000, default 10). ${PAGE_BUDGET_NOTE}`),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     stage: stageInput,
     canvas_id: nonBlankString()
@@ -90,7 +100,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       .object({
         total: z.number().describe('Total matching records in the dataset'),
         skip: z.number().describe('Pagination offset'),
-        limit: z.number().describe('Records returned in this response'),
+        limit: z.number().describe(META_LIMIT_DESCRIPTION),
         lastUpdated: z.string().describe('Dataset last updated date'),
       })
       .describe('Response metadata'),
@@ -99,6 +109,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       .describe(
         'Animal adverse event records. Key fields: unique_aer_id_number, original_receive_date, serious_ae, animal (species, gender, breed, age, weight), drug[] (brand_name, active_ingredients, route, dose, administered_by), reaction[] (veddra_term_name, number_of_animals_affected), outcome[] (medical_status), primary_reporter, type_of_information.',
       ),
+    ...pageBudgetOutputShape,
     ...canvasOutputShape,
   }),
 
@@ -112,7 +123,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       .string()
       .optional()
       .describe(
-        'Canvas staging disclosure when the call staged, and guidance when results are empty or paging overshot — how to broaden filters or adjust the query.',
+        'Canvas staging disclosure when the call staged, the byte-budget disclosure and the routes to the withheld records when the inline page was bounded, and guidance when results are empty or paging overshot — how to broaden filters or adjust the query.',
       ),
   },
 
@@ -182,14 +193,19 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
         skip: input.skip,
         ctx,
       });
+      const staged = canvasResult(spill);
       ctx.enrich({ totalResults: spill.total });
       if (input.search) ctx.enrich.echo(input.search);
       ctx.enrich.notice(
-        spill.preview.length === 0
-          ? `${emptyNotice(spill.skip, spill.total)} ${stagingNotice(spill)}`
-          : stagingNotice(spill),
+        [
+          spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
+          pageBudgetNotice(staged),
+          stagingNotice(spill),
+        ]
+          .filter(Boolean)
+          .join(' '),
       );
-      return canvasResult(spill);
+      return staged;
     }
 
     const svc = getOpenFdaService();
@@ -204,18 +220,23 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       ctx,
     );
 
+    const page = boundedPage(response);
+
     ctx.log.info('Animal adverse event search completed', {
       total: response.meta.total,
-      returned: response.results.length,
+      returned: page.results.length,
+      pageOmitted: page.page_omitted,
     });
 
     ctx.enrich({ totalResults: response.meta.total });
     if (input.search) ctx.enrich.echo(input.search);
-    if (response.results.length === 0) {
-      ctx.enrich.notice(emptyNotice(response.meta.skip, response.meta.total));
-    }
+    const notices = [
+      page.results.length === 0 ? emptyNotice(response.meta.skip, response.meta.total) : undefined,
+      pageBudgetNotice(page),
+    ].filter(Boolean);
+    if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
-    return { meta: response.meta, results: response.results };
+    return page;
   },
 
   format: (result) => {
@@ -231,6 +252,9 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
     const lines: string[] = [
       `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Data updated: ${result.meta.lastUpdated}\n`,
     ];
+
+    const budget = pageBudgetLine(result);
+    if (budget) lines.push(`${budget}\n`);
 
     const staging = canvasStagingLine(result.meta.total, result);
     if (staging) lines.push(`${staging}\n`);

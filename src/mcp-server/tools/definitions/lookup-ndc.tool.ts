@@ -1,5 +1,8 @@
 /**
- * @fileoverview MCP tool for looking up drugs in the openFDA NDC (National Drug Code) Directory.
+ * @fileoverview MCP tool for looking up drugs in the openFDA NDC (National Drug
+ * Code) Directory. A record grows with its packaging list and `limit` reaches 1000,
+ * so the inline page is bounded by a serialized-byte budget and discloses any records
+ * it withheld along with the routes to them.
  * @module mcp-server/tools/definitions/lookup-ndc
  */
 
@@ -33,6 +36,14 @@ import {
   stagingNotice,
 } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import {
+  boundedPage,
+  META_LIMIT_DESCRIPTION,
+  PAGE_BUDGET_NOTE,
+  pageBudgetLine,
+  pageBudgetNotice,
+  pageBudgetOutputShape,
+} from '@/services/openfda/page-budget.js';
 
 /**
  * Canvas table projection for NDC directory records. Scalars are VARCHAR; route
@@ -77,7 +88,9 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
       .min(1)
       .max(1000)
       .default(10)
-      .describe('Maximum number of records to return (1-1000, default 10)'),
+      .describe(
+        `Maximum number of records to return (1-1000, default 10). ${PAGE_BUDGET_NOTE} A record grows with its packaging list, so a product with many package configurations is several times the size of one with a single package.`,
+      ),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     stage: stageInput,
     canvas_id: nonBlankString()
@@ -92,7 +105,7 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
       .object({
         total: z.number().describe('Total matching records'),
         skip: z.number().describe('Pagination offset'),
-        limit: z.number().describe('Records returned'),
+        limit: z.number().describe(META_LIMIT_DESCRIPTION),
         lastUpdated: z.string().describe('Dataset last updated date'),
       })
       .describe('Response metadata'),
@@ -101,6 +114,7 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
       .describe(
         'NDC directory records — product_ndc, brand_name, generic_name, labeler_name, dosage_form, route, marketing_category, active_ingredients[], packaging[], listing_expiration_date.',
       ),
+    ...pageBudgetOutputShape,
     ...canvasOutputShape,
   }),
 
@@ -113,7 +127,7 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
       .string()
       .optional()
       .describe(
-        'Canvas staging disclosure when the call staged, and guidance when results are empty — how to broaden filters or correct field names.',
+        'Canvas staging disclosure when the call staged, the byte-budget disclosure and the routes to the withheld records when the inline page was bounded, and guidance when results are empty — how to broaden filters or correct field names.',
       ),
   },
 
@@ -183,33 +197,40 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
         skip: input.skip,
         ctx,
       });
+      const staged = canvasResult(spill);
       ctx.enrich({ totalResults: spill.total, effectiveQuery: input.search });
       ctx.enrich.notice(
-        spill.preview.length === 0
-          ? `${emptyNotice(spill.skip, spill.total)} ${stagingNotice(spill)}`
-          : stagingNotice(spill),
+        [
+          spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
+          pageBudgetNotice(staged),
+          stagingNotice(spill),
+        ]
+          .filter(Boolean)
+          .join(' '),
       );
-      return canvasResult(spill);
+      return staged;
     }
 
     const service = getOpenFdaService();
     const response = await service.query('drug/ndc', input, ctx);
 
+    const page = boundedPage(response);
+
     ctx.log.info('NDC lookup completed', {
       search: input.search,
       total: response.meta.total,
-      returned: response.results.length,
+      returned: page.results.length,
+      pageOmitted: page.page_omitted,
     });
 
     ctx.enrich({ totalResults: response.meta.total, effectiveQuery: input.search });
-    if (response.results.length === 0) {
-      ctx.enrich.notice(emptyNotice(response.meta.skip, response.meta.total));
-    }
+    const notices = [
+      page.results.length === 0 ? emptyNotice(response.meta.skip, response.meta.total) : undefined,
+      pageBudgetNotice(page),
+    ].filter(Boolean);
+    if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
-    return {
-      meta: response.meta,
-      results: response.results,
-    };
+    return page;
   },
 
   format: (result) => {
@@ -222,6 +243,9 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
     const lines: string[] = [
       `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Data updated: ${result.meta.lastUpdated}\n`,
     ];
+
+    const budget = pageBudgetLine(result);
+    if (budget) lines.push(`${budget}\n`);
 
     const staging = canvasStagingLine(result.meta.total, result);
     if (staging) lines.push(`${staging}\n`);

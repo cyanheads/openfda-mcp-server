@@ -17,6 +17,9 @@ import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 const mockQuery = vi.fn();
 
+/** The framework budget the outline and the selection disclosure both measure against. */
+const BUDGET = 24_000;
+
 /** A label record whose serialized size clears the 24,000-byte outline budget. */
 function oversizedLabel(): Record<string, unknown> {
   return {
@@ -29,6 +32,55 @@ function oversizedLabel(): Record<string, unknown> {
     warnings_and_cautions: ['W'.repeat(9_000)],
     clinical_studies_table: ['T'.repeat(9_000)],
   };
+}
+
+/**
+ * A label whose sections straddle the budget: the two largest cannot be
+ * retrieved within it, the rest can. The shape a worked re-call example has to
+ * navigate — mirrors a live metformin page, where the largest section costs
+ * ~195 KB summed across ten records against a 24 KB budget.
+ */
+function tieredLabel(): Record<string, unknown> {
+  return {
+    openfda: { brand_name: ['Metformin'], generic_name: ['metformin hydrochloride'] },
+    set_id: 'set-2',
+    id: 'id-2',
+    effective_time: '20260201',
+    version: '3',
+    clinical_pharmacology_table: ['P'.repeat(30_000)],
+    warnings_and_cautions: ['W'.repeat(20_000)],
+    boxed_warning: ['B'.repeat(12_000)],
+    indications_and_usage: ['I'.repeat(5_000)],
+  };
+}
+
+/**
+ * A label whose page overflows on the sum of its sections while every one of
+ * them is retrievable on its own. `tieredLabel` cannot tell a deliberate skip
+ * from a size rejection — its largest section overruns the budget either way —
+ * so this is the fixture that isolates the rule that the page's most expensive
+ * section is never the worked example.
+ */
+function evenlyTieredLabel(): Record<string, unknown> {
+  return {
+    openfda: { brand_name: ['Metformin'] },
+    set_id: 'set-4',
+    id: 'id-4',
+    effective_time: '20260301',
+    version: '4',
+    clinical_studies: ['A'.repeat(5_000)],
+    adverse_reactions: ['B'.repeat(4_800)],
+    warnings_and_cautions: ['C'.repeat(4_600)],
+    drug_interactions: ['D'.repeat(4_400)],
+    dosage_and_administration: ['E'.repeat(4_200)],
+    indications_and_usage: ['F'.repeat(4_000)],
+    description: ['G'.repeat(3_800)],
+  };
+}
+
+/** Serialized size of the returned records, measured the way the handler measures it. */
+function recordBytes(results: unknown): number {
+  return JSON.stringify({ results }).length;
 }
 
 describe('openfda_get_drug_label', () => {
@@ -228,6 +280,178 @@ describe('openfda_get_drug_label', () => {
       expect(result.kind).toBe('full');
       expect(result.outline).toBeUndefined();
       expect(result.results?.[0]?.warnings).toEqual(['Short.']);
+    });
+  });
+
+  describe('the outline offers a retrievable example, and selections state their cost (#41)', () => {
+    /** The `sections:["name"]` example and the byte figure the notice quotes for it. */
+    function workedExample(notice: string): { bytes: number; name: string } | undefined {
+      const name = notice.match(/sections:\["([^"]+)"\]/)?.[1];
+      const bytes = Number(notice.match(/returns (\d+) bytes/)?.[1]);
+      return name && Number.isFinite(bytes) ? { bytes, name } : undefined;
+    }
+
+    beforeEach(() => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 1, skip: 0, limit: 5, lastUpdated: '2026-01-01' },
+        results: [tieredLabel()],
+      });
+    });
+
+    it('names an example that is not the largest section on the page', async () => {
+      const result = await getDrugLabelTool.handler(
+        { search: 'openfda.generic_name:"metformin"' },
+        ctx,
+      );
+
+      const example = workedExample(String(getEnrichment(ctx).notice));
+      expect(example?.name).toBeDefined();
+      expect(example?.name).not.toBe(result.outline?.[0]?.name);
+      expect(result.outline?.[0]?.name).toBe('clinical_pharmacology_table');
+    });
+
+    it('skips the most expensive section even when that section would have fit', async () => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 1, skip: 0, limit: 5, lastUpdated: '2026-01-01' },
+        results: [evenlyTieredLabel()],
+      });
+
+      const result = await getDrugLabelTool.handler(
+        { search: 'openfda.generic_name:"metformin"' },
+        ctx,
+      );
+      expect(result.kind).toBe('outline');
+      const largest = result.outline?.[0]?.name;
+      expect(largest).toBe('clinical_studies');
+
+      const example = workedExample(String(getEnrichment(ctx).notice));
+      expect(example?.name).toBe('adverse_reactions');
+
+      /*
+       * The skip has to be the rule rather than the measurement: retrieving the
+       * largest section here is comfortably inside the budget, so nothing but
+       * the rule keeps it out of the example.
+       */
+      const largestCtx = createMockContext({ errors: getDrugLabelTool.errors });
+      const retrieved = await getDrugLabelTool.handler(
+        { search: 'openfda.generic_name:"metformin"', sections: [largest ?? ''] },
+        largestCtx,
+      );
+      expect(recordBytes(retrieved.results)).toBeLessThan(BUDGET);
+      expect(String(getEnrichment(largestCtx).notice ?? '')).not.toMatch(/inline size budget/);
+    });
+
+    it('quotes the example size, and following the example returns that many bytes within budget', async () => {
+      await getDrugLabelTool.handler({ search: 'openfda.generic_name:"metformin"' }, ctx);
+      const example = workedExample(String(getEnrichment(ctx).notice));
+      expect(example).toBeDefined();
+
+      const followed = await getDrugLabelTool.handler(
+        { search: 'openfda.generic_name:"metformin"', sections: [example?.name ?? ''] },
+        createMockContext({ errors: getDrugLabelTool.errors }),
+      );
+
+      expect(recordBytes(followed.results)).toBe(example?.bytes);
+      expect(example?.bytes).toBeLessThanOrEqual(BUDGET);
+    });
+
+    it('following the example draws no overflow disclosure', async () => {
+      await getDrugLabelTool.handler({ search: 'openfda.generic_name:"metformin"' }, ctx);
+      const example = workedExample(String(getEnrichment(ctx).notice));
+
+      const followCtx = createMockContext({ errors: getDrugLabelTool.errors });
+      await getDrugLabelTool.handler(
+        { search: 'openfda.generic_name:"metformin"', sections: [example?.name ?? ''] },
+        followCtx,
+      );
+
+      expect(String(getEnrichment(followCtx).notice ?? '')).not.toMatch(/inline size budget/);
+    });
+
+    it('tells the caller to lower limit when metadata alone clears the budget', async () => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 60, skip: 0, limit: 6, lastUpdated: '2026-01-01' },
+        results: Array.from({ length: 6 }, (_, i) => ({
+          openfda: { brand_name: [`Product ${i}`], substance_name: ['S'.repeat(5_000)] },
+          set_id: `set-${i}`,
+          boxed_warning: ['B'.repeat(400)],
+          indications_and_usage: ['I'.repeat(400)],
+        })),
+      });
+
+      const result = await getDrugLabelTool.handler(
+        { search: 'openfda.generic_name:"metformin"', limit: 6 },
+        ctx,
+      );
+
+      expect(result.kind).toBe('outline');
+      const notice = String(getEnrichment(ctx).notice);
+      expect(notice).toMatch(/no single section fits/);
+      expect(notice).toMatch(/lower limit/);
+      expect(notice).not.toMatch(/sections:\["[^"]+"\] returns/);
+    });
+
+    it('discloses an over-budget selection, returning it whole as kind "full"', async () => {
+      const result = await getDrugLabelTool.handler(
+        {
+          search: 'openfda.generic_name:"metformin"',
+          sections: ['clinical_pharmacology_table', 'warnings_and_cautions'],
+        },
+        ctx,
+      );
+
+      expect(result.kind).toBe('full');
+      const record = result.results?.[0] ?? {};
+      // Returned whole — neither section is trimmed, stripped, or replaced.
+      expect(record.clinical_pharmacology_table).toEqual(['P'.repeat(30_000)]);
+      expect(record.warnings_and_cautions).toEqual(['W'.repeat(20_000)]);
+
+      const bytes = recordBytes(result.results);
+      expect(bytes).toBeGreaterThan(BUDGET);
+      const notice = String(getEnrichment(ctx).notice);
+      expect(notice).toContain(String(bytes));
+      expect(notice).toMatch(/not truncated/);
+    });
+
+    it('stays quiet when the selection fits the budget', async () => {
+      await getDrugLabelTool.handler(
+        { search: 'openfda.generic_name:"metformin"', sections: ['indications_and_usage'] },
+        ctx,
+      );
+
+      expect(getEnrichment(ctx).notice).toBeUndefined();
+    });
+
+    it('discloses the same selection at a higher limit but not a lower one', async () => {
+      const record = () => ({
+        openfda: { brand_name: ['Metformin'] },
+        set_id: 'set-3',
+        clinical_studies: ['C'.repeat(6_000)],
+        indications_and_usage: ['I'.repeat(200)],
+      });
+      const page = (n: number) => ({
+        meta: { total: 20, skip: 0, limit: n, lastUpdated: '2026-01-01' },
+        results: Array.from({ length: n }, record),
+      });
+
+      mockQuery.mockResolvedValue(page(1));
+      const oneCtx = createMockContext({ errors: getDrugLabelTool.errors });
+      await getDrugLabelTool.handler(
+        { search: 'openfda.generic_name:"metformin"', limit: 1, sections: ['clinical_studies'] },
+        oneCtx,
+      );
+
+      mockQuery.mockResolvedValue(page(5));
+      const fiveCtx = createMockContext({ errors: getDrugLabelTool.errors });
+      const five = await getDrugLabelTool.handler(
+        { search: 'openfda.generic_name:"metformin"', limit: 5, sections: ['clinical_studies'] },
+        fiveCtx,
+      );
+
+      expect(String(getEnrichment(oneCtx).notice ?? '')).not.toMatch(/inline size budget/);
+      expect(String(getEnrichment(fiveCtx).notice)).toMatch(/inline size budget/);
+      expect(five.kind).toBe('full');
+      expect(recordBytes(five.results)).toBeGreaterThan(BUDGET);
     });
   });
 

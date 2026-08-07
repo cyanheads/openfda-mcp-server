@@ -233,8 +233,15 @@ describe('spillSearch', () => {
     expect(result.stagedRows).toBe(50);
   });
 
-  it('keeps the inline page even when a single record is larger than any preview budget (#31)', async () => {
-    // One 70 KB record could never fit a character-budgeted preview.
+  it('never empties the inline page, whatever a single record measures (#31)', async () => {
+    /*
+     * The invariant #31 fixed is that record size cannot empty the page — a 70 KB
+     * `drug/event` report must not render as "No results found." for a match of
+     * hundreds. It is not that the page always holds the full `limit`: #18 asked
+     * for `min(limit, budget-fit)` rows, and #39's byte budget supplies the
+     * budget-fit half. One record here is 70 KB against a 24,000-byte page budget,
+     * so the page holds exactly one — returned whole, never trimmed — and says so.
+     */
     const svc = makeSvc(600, 70_000);
     await setSvcMock(svc);
     const { canvas } = makeCanvas();
@@ -249,7 +256,9 @@ describe('spillSearch', () => {
       skip: 0,
     });
 
-    expect(result.preview).toHaveLength(2);
+    expect(result.preview).toHaveLength(1);
+    expect(result.preview[0]?.blob).toHaveLength(70_000);
+    expect(result.previewBudget.page_omitted).toBe(1);
     expect(result.total).toBe(600);
   });
 

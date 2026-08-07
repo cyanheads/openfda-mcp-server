@@ -1,11 +1,15 @@
 /**
  * @fileoverview Tool definition for looking up FDA drug labeling (package inserts / SPL documents).
+ * Oversized pages return a section outline whose worked re-call example is measured
+ * against the same byte budget, and a `sections` selection that overflows that
+ * budget is disclosed rather than silently returned oversized.
  * @module mcp-server/tools/definitions/get-drug-label
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import {
+  DEFAULT_OUTLINE_BUDGET_BYTES,
   OUTLINE_VARIANT,
   outlineOnOverflow,
   type SectionMeta,
@@ -69,10 +73,72 @@ function unknownSectionNotice(
   return `Not present on this page: ${unknown.join(', ')}.${listing}`;
 }
 
-/** Re-call guidance for an overflowed page, naming the three largest sections. */
-function outlineGuidance(sections: SectionMeta[], records: number): string {
-  const largest = sections.slice(0, 3).map((s) => s.name);
-  return `${records} label record(s) exceed the inline size budget, so this response lists the sections available instead of the label text. Re-call with the same search plus sections:[...] to retrieve specific ones — e.g. sections:["${largest[0]}"]. Largest sections here: ${largest.join(', ')}. Metadata (${LABEL_METADATA_KEYS.join(', ')}) is always returned.`;
+/**
+ * Projects a page to the requested sections plus the always-kept metadata and
+ * measures the result the way the outline budget is measured, so a byte figure
+ * quoted in a notice is the figure a caller following that notice gets back.
+ */
+function projectPage(
+  records: Record<string, unknown>[],
+  sections: string[],
+): { bytes: number; results: Partial<Record<string, unknown>>[] } {
+  const results = records.map((record) =>
+    selectSections(record, sections, { alwaysKeep: LABEL_METADATA_KEYS }),
+  );
+  return { bytes: JSON.stringify({ results }).length, results };
+}
+
+/**
+ * The largest section a `sections:[name]` re-call can retrieve from this page
+ * without overflowing the budget again — or nothing, when none can.
+ *
+ * Outline sizes are summed across every record on the page, so a section's cost
+ * is a function of `limit` and can't be read off the section alone: each
+ * candidate is projected and measured at this page's record count. Skipped are
+ * the always-kept metadata keys (they ride every response, so naming one
+ * retrieves nothing new) and the page's single most expensive section — offering
+ * that as the worked example would recommend the one re-call the outline exists
+ * to head off.
+ */
+function exampleSection(
+  sections: SectionMeta[],
+  records: Record<string, unknown>[],
+  metadataBytes: number,
+): SectionMeta | undefined {
+  if (metadataBytes > DEFAULT_OUTLINE_BUDGET_BYTES) return;
+  for (const { name } of sections.slice(1)) {
+    if (LABEL_METADATA_KEYS.includes(name)) continue;
+    const { bytes } = projectPage(records, [name]);
+    if (bytes <= DEFAULT_OUTLINE_BUDGET_BYTES) return { name, bytes };
+  }
+  return;
+}
+
+/**
+ * Re-call guidance for an overflowed page. The worked example is a section
+ * measured to fit the budget at this page's record count, with that size stated
+ * inline — the names the outline lists largest-first are the cost to weigh, not
+ * a retrieval to imitate.
+ */
+function outlineGuidance(sections: SectionMeta[], records: Record<string, unknown>[]): string {
+  const metadataBytes = projectPage(records, []).bytes;
+  const example = exampleSection(sections, records, metadataBytes);
+  const worked = example
+    ? `e.g. sections:["${example.name}"] returns ${example.bytes} bytes across the ${records.length} record(s) on this page`
+    : `but no single section fits that budget across the ${records.length} record(s) on this page: metadata alone is ${metadataBytes} bytes, so lower limit before naming sections`;
+  return `This page of ${records.length} label record(s) exceeds the ${DEFAULT_OUTLINE_BUDGET_BYTES}-byte inline size budget, so the response lists the sections available instead of the label text. Re-call with the same search plus sections:[...] to retrieve specific ones — ${worked}. Each listed size is summed across the page, so a section's cost scales with limit; a selection over the budget is still returned whole and reports its size. Metadata (${LABEL_METADATA_KEYS.join(', ')}) is returned either way and counts toward these figures.`;
+}
+
+/**
+ * Size disclosure for a `sections` selection that overflows the same budget the
+ * outline enforces. The selection is returned whole — the escape hatch is not
+ * truncated, only made to state its cost, since a caller who followed an outline
+ * otherwise has no signal that the re-call blew the budget it was offered to
+ * respect.
+ */
+function selectionOverflowNotice(bytes: number, records: number): string | undefined {
+  if (bytes <= DEFAULT_OUTLINE_BUDGET_BYTES) return;
+  return `Selection is ${bytes} bytes across ${records} record(s), over the ${DEFAULT_OUTLINE_BUDGET_BYTES}-byte inline size budget — returned whole, not truncated. Lower limit or name fewer sections to reduce it.`;
 }
 
 export const getDrugLabelTool = tool('openfda_get_drug_label', {
@@ -94,13 +160,15 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       .min(1)
       .max(1000)
       .default(5)
-      .describe('Maximum number of results to return (1-1000). Default 5. Labels are large.'),
+      .describe(
+        'Maximum number of results to return (1-1000). Default 5. Labels are large, and the cost of a sections selection is the section summed across every record on the page — so it scales with this limit. Lower it before widening a selection.',
+      ),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     sections: z
       .array(nonBlankString().describe('A top-level label section name.'))
       .optional()
       .describe(
-        'Label sections to return, e.g. ["boxed_warning","indications_and_usage"]. Names come from the outline an oversized page returns, or from openfda_describe_fields. Omit for the whole label — which returns the section outline instead when the page exceeds the inline size budget. Metadata (openfda, set_id, id, effective_time, version) is returned either way.',
+        'Label sections to return, e.g. ["boxed_warning","indications_and_usage"]. Names come from the outline an oversized page returns, or from openfda_describe_fields. Omit for the whole label — which returns the section outline instead when the page exceeds the inline size budget. A selection is returned whole even when it exceeds that budget, with its serialized size reported on the notice; the outline names a section measured to fit at the requested limit. Metadata (openfda, set_id, id, effective_time, version) is returned either way and counts toward the size.',
       ),
   }),
 
@@ -153,7 +221,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       .string()
       .optional()
       .describe(
-        'Guidance when results are empty or paging overshot — how to broaden filters or correct field names. Absent when results are returned.',
+        'Guidance for this page: how to broaden filters or correct field names when results are empty or paging overshot, the sized re-call example when a page overflowed to its section outline, section names no record carried, and the serialized size when a sections selection exceeds the inline budget. Absent when nothing needs saying.',
       ),
   },
 
@@ -232,24 +300,33 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       });
     }
 
-    /* Selection path — the agent named the sections it wants, so no size decision is needed. */
+    /*
+     * Selection path — the agent named the sections it wants, so the size is its
+     * call to make: the projection is returned whole whatever it measures, and
+     * an overflow is disclosed rather than trimmed.
+     */
     if (input.sections && input.sections.length > 0) {
       const sections = input.sections;
       const available = new Set(response.results.flatMap((r) => Object.keys(r)));
       const unknown = sections.filter((name) => !available.has(name));
-      const notice = [pageNotice, unknownSectionNotice(unknown, sections, available)]
+      const { bytes, results } = projectPage(
+        response.results as Record<string, unknown>[],
+        sections,
+      );
+      const overflow = selectionOverflowNotice(bytes, response.results.length);
+      if (overflow) {
+        ctx.log.info('Drug label section selection exceeded the inline size budget', {
+          bytes,
+          budget: DEFAULT_OUTLINE_BUDGET_BYTES,
+          records: response.results.length,
+          sections,
+        });
+      }
+      const notice = [pageNotice, unknownSectionNotice(unknown, sections, available), overflow]
         .filter(Boolean)
         .join(' ');
       if (notice) ctx.enrich.notice(notice);
-      return {
-        meta: response.meta,
-        kind: 'full' as const,
-        results: response.results.map((record) =>
-          selectSections(record as Record<string, unknown>, sections, {
-            alwaysKeep: LABEL_METADATA_KEYS,
-          }),
-        ),
-      };
+      return { meta: response.meta, kind: 'full' as const, results };
     }
 
     /* Disclosure path — return the page whole, or its section outline when it overflows. */
@@ -267,7 +344,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       records: response.results.length,
     });
     ctx.enrich.notice(
-      [pageNotice, outlineGuidance(outcome.sections, response.results.length)]
+      [pageNotice, outlineGuidance(outcome.sections, response.results as Record<string, unknown>[])]
         .filter(Boolean)
         .join(' '),
     );
