@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.3](changelog/0.7.x/0.7.3.md) — 2026-08-07
+
+The eight multi-row search tools bound their inline page to a 24,000-byte budget and disclose any records withheld (#39); openfda_get_drug_label's overflow re-call example is now measured to fit that same budget, and an over-budget sections selection discloses its size instead of returning oversized (#41)
+
 ## [0.7.2](changelog/0.7.x/0.7.2.md) — 2026-08-07
 
 Rejects locally-detectable malformed search/sort before the upstream request on every search-bearing tool (#38, #43); openfda_count_values names the .exact correction in both directions (#40); openfda_drug_profile escapes its composed queries instead of stripping quotes (#42); @cyanheads/mcp-ts-core ^0.11.0 → ^0.11.1

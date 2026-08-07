@@ -1,6 +1,6 @@
 # openfda-mcp-server - Directory Structure
 
-Generated on: 2026-07-27 07:20:58
+Generated on: 2026-08-07 09:31:48
 
 ```text
 openfda-mcp-server/
@@ -172,6 +172,7 @@ openfda-mcp-server/
 │   │       │   └── refresh-schedule.ts
 │   │       ├── canvas-spill.ts
 │   │       ├── openfda-service.ts
+│   │       ├── page-budget.ts
 │   │       └── types.ts
 │   └── index.ts
 ├── tests/
@@ -189,6 +190,7 @@ openfda-mcp-server/
 │   │       │   ├── get-drug-label.tool.test.ts
 │   │       │   ├── input-validation.test.ts
 │   │       │   ├── lookup-ndc.tool.test.ts
+│   │       │   ├── page-budget-contract.test.ts
 │   │       │   ├── pagination-contract.test.ts
 │   │       │   ├── record-parity.test.ts
 │   │       │   ├── search-adverse-events-edge.test.ts
