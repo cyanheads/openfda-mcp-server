@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.2](changelog/0.7.x/0.7.2.md) — 2026-08-07
+
+Rejects locally-detectable malformed search/sort before the upstream request on every search-bearing tool (#38, #43); openfda_count_values names the .exact correction in both directions (#40); openfda_drug_profile escapes its composed queries instead of stripping quotes (#42); @cyanheads/mcp-ts-core ^0.11.0 → ^0.11.1
+
 ## [0.7.1](changelog/0.7.x/0.7.1.md) — 2026-07-27
 
 Narrows the local mirror's non-unique-key eligibility gate to a single-record match, fixing an order divergence between mirrored and live recall/NDC/label lookups (#37)

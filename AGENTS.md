@@ -1,10 +1,10 @@
 # Agent Protocol
 
 **Server:** openfda-mcp-server
-**Version:** 0.7.1
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.11.0`
+**Version:** 0.7.2
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.11.1`
 **Engines:** Bun ≥1.3.0, Node ≥24.0.0
-**MCP SDK:** `@modelcontextprotocol/sdk` ^1.29.0
+**MCP SDK:** `@modelcontextprotocol/sdk` ^1.30.0
 **Zod:** ^4.4.3
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -283,6 +283,8 @@ When you complete a skill's checklist, check the boxes and add a completion time
 | `bun run start:http` | Production mode (HTTP, after build) |
 
 Smoke-test path is `bun run rebuild && bun run start:stdio` (or `start:http`) — run against the built tree to match production.
+
+**`scripts/tree.ts` carries a deliberate local override.** It appends a trailing slash so directory-only `.gitignore` patterns match, which the framework's copy does not yet do ([mcp-ts-core#304](https://github.com/cyanheads/mcp-ts-core/issues/304)). The `maintenance` skill's framework-script sync overwrites this file blindly — restore the override after any maintenance pass until #304 lands upstream.
 
 ---
 
