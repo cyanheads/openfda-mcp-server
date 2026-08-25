@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.4](changelog/0.7.x/0.7.4.md) — 2026-08-25
+
+Adopts @cyanheads/mcp-ts-core 0.12.x and its MCP SDK v2 migration — every tool advertises strict inputs and JSON Schema 2020-12, outputSchema declares the failure envelope, and the HTTP endpoint serves protocol revision 2026-07-28
+
 ## [0.7.3](changelog/0.7.x/0.7.3.md) — 2026-08-07
 
 The eight multi-row search tools bound their inline page to a 24,000-byte budget and disclose any records withheld (#39); openfda_get_drug_label's overflow re-call example is now measured to fit that same budget, and an over-budget sections selection discloses its size instead of returning oversized (#41)

@@ -1,10 +1,10 @@
 # Agent Protocol
 
 **Server:** openfda-mcp-server
-**Version:** 0.7.3
-**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.11.1`
+**Version:** 0.7.4
+**Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.12.3`
 **Engines:** Bun ≥1.3.0, Node ≥24.0.0
-**MCP SDK:** `@modelcontextprotocol/sdk` ^1.30.0
+**MCP SDK:** `@modelcontextprotocol/server` ^2.0.0 (via the framework)
 **Zod:** ^4.4.3
 
 > **Read the framework docs first:** `node_modules/@cyanheads/mcp-ts-core/CLAUDE.md` contains the full API reference — builders, Context, error codes, exports, patterns. This file covers server-specific conventions only.
@@ -37,7 +37,7 @@ Tailor suggestions to what's actually missing or stale — don't recite the full
 - **Logic throws, framework catches.** Tool/resource handlers are pure — throw on failure, no `try/catch`. Plain `Error` is fine; the framework catches, classifies, and formats. Use error factories (`notFound()`, `validationError()`, etc.) when the error code matters.
 - **Use `ctx.log`** for request-scoped logging. No `console` calls.
 - **Use `ctx.state`** for tenant-scoped storage. Never access persistence directly.
-- **Check `ctx.elicit` / `ctx.sample`** for presence before calling.
+- **Need input the caller didn't supply?** `return ctx.requestInput(...)` and read `ctx.inputs` when the handler is re-entered. Never `await` for user input mid-handler.
 - **Secrets in env vars only** — never hardcoded.
 - **Close the loop on issues.** When implementing work tracked by a GitHub issue, comment on the issue with what landed and close it. Do both — a comment without a close leaves stale issues open; a close without a comment leaves no record of what shipped. The comment is for future readers — state the concrete changes, not the conversation that produced them.
 
@@ -112,10 +112,10 @@ Handlers receive a unified `ctx` object. Key properties:
 |:---------|:------------|
 | `ctx.log` | Request-scoped logger — `.debug()`, `.info()`, `.notice()`, `.warning()`, `.error()`. Auto-correlates requestId, traceId, tenantId. |
 | `ctx.state` | Tenant-scoped KV — `.get(key)`, `.set(key, value, { ttl? })`, `.delete(key)`, `.list(prefix, { cursor, limit })`. Accepts any serializable value. |
-| `ctx.elicit` | Ask user for structured input. **Check for presence first:** `if (ctx.elicit) { ... }` |
-| `ctx.sample` | Request LLM completion from the client. **Check for presence first:** `if (ctx.sample) { ... }` |
+| `ctx.requestInput` | Suspend and ask the caller for more input — `return ctx.requestInput({ inputRequests: { key: inputRequired.elicit({ message, requestedSchema }) } })`. Never returns; the handler is re-entered with the answers. Always present. Replaced `ctx.elicit` in 0.12.0. |
+| `ctx.inputs` | Reader over a re-entered request's responses — `.accepted(key, schema)`, `.view(key)`, `.state()`, `.dropped`. Empty on the first round. |
+| `ctx.enrich` | Success-path agent context — `.notice()` / `.total()` / `.echo()` / `.truncated()`. Reaches `structuredContent` and `content[]`; lands only where the definition declares an `enrichment` block. |
 | `ctx.signal` | `AbortSignal` for cancellation. Used by the openFDA service for request timeouts and retry abort. |
-| `ctx.progress` | Task progress (present when `task: true`) — `.setTotal(n)`, `.increment()`, `.update(message)`. |
 | `ctx.requestId` | Unique request ID. Passed to the service layer for retry context. |
 | `ctx.tenantId` | Tenant ID from JWT or `'default'` for stdio. |
 | `ctx.fail` | Typed error builder when an `errors[]` contract is declared. `ctx.fail('reason', msg?, data?)` builds an `McpError` keyed against the contract's reasons. |
@@ -284,7 +284,7 @@ When you complete a skill's checklist, check the boxes and add a completion time
 
 Smoke-test path is `bun run rebuild && bun run start:stdio` (or `start:http`) — run against the built tree to match production.
 
-**`scripts/tree.ts` carries a deliberate local override.** It appends a trailing slash so directory-only `.gitignore` patterns match, which the framework's copy does not yet do ([mcp-ts-core#304](https://github.com/cyanheads/mcp-ts-core/issues/304)). The `maintenance` skill's framework-script sync overwrites this file blindly — restore the override after any maintenance pass until #304 lands upstream.
+**`scripts/devcheck.ts` carries a deliberate local override.** Its `classifyAuditVulns` parser accepts both `bun audit` output formats — Bun ≥ 1.4 writes the block header as `pkg@versions` and separates dependency paths with ASCII `>`, where Bun ≤ 1.3 used `pkg  <range>` and `›` (U+203A). The framework's copy recognizes only the older spelling, so under the Bun 1.4 pin every block fails to parse, every transitive advisory is reported as a direct hit, and the Security Audit step hard-fails a clean tree ([mcp-ts-core#390](https://github.com/cyanheads/mcp-ts-core/issues/390)). The `maintenance` skill's framework-script sync overwrites this file blindly — restore the override after any maintenance pass until the fix lands upstream.
 
 ---
 

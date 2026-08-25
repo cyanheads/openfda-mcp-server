@@ -1,6 +1,6 @@
 # openfda-mcp-server - Directory Structure
 
-Generated on: 2026-08-07 09:31:48
+Generated on: 2026-08-25 07:51:26
 
 ```text
 openfda-mcp-server/
@@ -14,6 +14,8 @@ openfda-mcp-server/
 │   │   ├── bug_report.yml
 │   │   ├── config.yml
 │   │   └── feature_request.yml
+│   ├── CODE_OF_CONDUCT.md
+│   ├── CONTRIBUTING.md
 │   ├── FUNDING.yml
 │   └── SECURITY.md
 ├── .vscode/
@@ -202,7 +204,8 @@ openfda-mcp-server/
 │   │       │   ├── search-recalls-canvas.test.ts
 │   │       │   ├── search-recalls.tool.test.ts
 │   │       │   ├── search-tobacco-reports.tool.test.ts
-│   │       │   └── tools-edge-cases.test.ts
+│   │       │   ├── tools-edge-cases.test.ts
+│   │       │   └── wire-contract.test.ts
 │   │       └── format-utils.test.ts
 │   └── services/
 │       └── openfda/
