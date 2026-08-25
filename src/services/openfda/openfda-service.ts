@@ -181,13 +181,11 @@ export class OpenFdaService {
         const url = this.buildUrl(endpoint, params);
         ctx.log.debug('Querying openFDA', { endpoint, params });
 
-        // fetchWithTimeout wants a RequestContext (log bindings); carry the
-        // correlation id + operation so its logs/metrics join the request trace.
-        const requestContext = {
-          requestId: ctx.requestId,
-          timestamp: ctx.timestamp,
-          operation: `openFDA:${endpoint}`,
-        };
+        // `Context extends RequestContext`, so the handler context goes through
+        // whole — trace, span, session, and tenant ids join the request trace
+        // alongside the correlation id. Only `operation` is overridden, to name
+        // the upstream call rather than the tool execution that wraps it.
+        const requestContext = { ...ctx, operation: `openFDA:${endpoint}` };
         try {
           // openFDA answers a valid zero-match query with 404; `expectedStatuses`
           // drops that to a debug log so a handled empty result stops reading as
@@ -205,7 +203,7 @@ export class OpenFdaService {
       },
       {
         operation: `openFDA:${endpoint}`,
-        context: { requestId: ctx.requestId, timestamp: ctx.timestamp },
+        context: ctx,
         baseDelayMs: 1_000,
         signal: ctx.signal,
       },

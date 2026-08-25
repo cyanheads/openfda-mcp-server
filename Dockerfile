@@ -4,7 +4,7 @@
 # This stage installs all dependencies (including dev), builds the TypeScript
 # source code into JavaScript, and prepares the production assets.
 # ==============================================================================
-FROM oven/bun:1.3.14 AS build
+FROM --platform=$BUILDPLATFORM oven/bun:1.4.0 AS build
 
 WORKDIR /usr/src/app
 
@@ -14,7 +14,9 @@ COPY package.json bun.lock ./
 # Install all dependencies (including dev). --ignore-scripts skips lifecycle
 # scripts (native postinstalls); the build only runs tsc, and @duckdb/node-api
 # ships its native binary via prebuilt platform packages, not a postinstall.
-RUN bun install --frozen-lockfile --ignore-scripts
+# The BuildKit cache mount persists Bun's global package cache across builds.
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install --frozen-lockfile --ignore-scripts
 
 # Copy the rest of the source code
 COPY . .
@@ -30,7 +32,7 @@ RUN bun run build
 # application. It uses a slim base image and only includes production
 # dependencies and build artifacts.
 # ==============================================================================
-FROM oven/bun:1.3.14-slim AS production
+FROM oven/bun:1.4.0-slim AS production
 
 WORKDIR /usr/src/app
 
@@ -51,14 +53,21 @@ COPY package.json bun.lock ./
 
 # Install only production dependencies, ignoring any lifecycle scripts (like 'prepare')
 # that are not needed in the final production image.
-RUN bun install --production --frozen-lockfile --ignore-scripts
+# `--omit=peer` drops the framework's optional peer tiers (test runner, service
+# SDKs, parsers) that Bun would otherwise auto-install. Anything this server
+# actually imports belongs in its own `dependencies`, so nothing needed at
+# runtime is lost. The OTEL step below carries the same flag — without it, that
+# install re-resolves the graph and pulls every optional peer back in.
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install --production --omit=peer --frozen-lockfile --ignore-scripts
 
 # Conditionally install OpenTelemetry optional peer dependencies (Tier 3).
 # These are not bundled by default to keep the base image lean. Enable at build time
 # with: docker build --build-arg OTEL_ENABLED=true
 ARG OTEL_ENABLED=true
-RUN if [ "$OTEL_ENABLED" = "true" ]; then \
-      bun add --omit=dev --ignore-scripts @hono/otel \
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    if [ "$OTEL_ENABLED" = "true" ]; then \
+      bun add --omit=dev --omit=peer --ignore-scripts @hono/otel \
         @opentelemetry/instrumentation-http \
         @opentelemetry/exporter-metrics-otlp-http \
         @opentelemetry/exporter-trace-otlp-http \
@@ -87,6 +96,15 @@ RUN echo '{"compilerOptions":{"baseUrl":".","paths":{"@/*":["./dist/*"]}}}' > ts
 
 # Create and set permissions for the log directory, assigning ownership to the 'bun' user.
 RUN mkdir -p /var/log/openfda-mcp-server && chown -R bun:bun /var/log/openfda-mcp-server
+
+# Writable data dir for the opt-in bulk mirror's SQLite files (OPENFDA_MIRROR_PATH,
+# default ./data/openfda-mirror), owned by the runtime user — the app runs as
+# `bun` and cannot create it under a root-owned WORKDIR. Mount a volume over it
+# in production so a harvest survives a container replacement. Running the mirror
+# in-container also needs `better-sqlite3` (and `node-cron` for the refresh cron)
+# installed into this stage; both are optional peers, absent by default.
+RUN mkdir -p /usr/src/app/data/openfda-mirror \
+  && chown -R bun:bun /usr/src/app/data
 
 # Switch to the non-root user
 USER bun

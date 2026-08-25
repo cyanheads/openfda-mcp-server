@@ -11,7 +11,12 @@
  */
 
 import type { MirrorLogger } from '@cyanheads/mcp-ts-core/mirror';
-import { logger, type RequestContext, schedulerService } from '@cyanheads/mcp-ts-core/utils';
+import {
+  logger,
+  type RequestContext,
+  schedulerService,
+  withExtra,
+} from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
 import { MIRRORED_ENDPOINTS, type MirroredEndpoint } from './datasets.js';
 import { getMirror } from './mirror-registry.js';
@@ -55,7 +60,7 @@ export async function refreshMirrors(
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       outcomes.push({ endpoint, error: message });
-      logger.error('openFDA mirror refresh failed', { ...ctx, endpoint, error: message });
+      logger.error('openFDA mirror refresh failed', withExtra(ctx, { endpoint, error: message }));
     }
   }
   return outcomes;
@@ -82,7 +87,7 @@ export async function scheduleMirrorRefresh(transport: 'http' | 'stdio'): Promis
     config.mirrorRefreshCron,
     async (ctx) => {
       const outcomes = await refreshMirrors(config.mirrorRefreshTimeoutMs, ctx);
-      logger.info('openFDA mirror refresh pass complete', { ...ctx, outcomes });
+      logger.info('openFDA mirror refresh pass complete', withExtra(ctx, { outcomes }));
     },
     'Re-harvests the openFDA bulk dumps into the local mirror',
   );
