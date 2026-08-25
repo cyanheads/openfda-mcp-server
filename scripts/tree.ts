@@ -132,9 +132,10 @@ async function loadIgnoreHandler(
 }
 
 /**
- * A gitignore pattern written with a trailing slash (`/data/`) matches only a
- * directory, and the matcher can only tell a directory from a file by the
- * trailing slash on the path it is given — so directories are tested with one.
+ * A directory-only pattern (`/data/`, `.claude/`) matches only when the tested
+ * path carries the trailing slash too — `ignore` has no other way to tell a
+ * directory from a file of the same name. The caller holds the `Dirent`, so the
+ * flag is free.
  */
 function isIgnored(entryPath: string, root: string, ig: Ignore, isDirectory: boolean): boolean {
   const rel = relative(root, entryPath).split(sep).join(posix.sep);
