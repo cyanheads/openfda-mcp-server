@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.5](changelog/0.7.x/0.7.5.md) — 2026-09-16 · 🛡️ Security
+
+Adopts mcp-ts-core 0.13.x: the HTTP transport declares itself stateless, shutdown closes the local bulk mirror through a teardown hook, and three inherited framework security fixes land — an SSRF DNS-guard bypass, an unevictable rate-limit key, and a linear-time SQL-comment scan.
+
 ## [0.7.4](changelog/0.7.x/0.7.4.md) — 2026-08-25
 
 Adopts @cyanheads/mcp-ts-core 0.12.x and its MCP SDK v2 migration — every tool advertises strict inputs and JSON Schema 2020-12, outputSchema declares the failure envelope, and the HTTP endpoint serves protocol revision 2026-07-28
