@@ -23,6 +23,12 @@ describe('getServerConfig', () => {
     expect(config.baseUrl).toBe('https://custom.fda.test');
   });
 
+  it('reads an unsubstituted placeholder as unset', async () => {
+    vi.stubEnv('OPENFDA_API_KEY', `\${${'user_config.openfda_api_key'}}`);
+    const { getServerConfig } = await import('@/config/server-config.js');
+    expect(getServerConfig().apiKey).toBeUndefined();
+  });
+
   it('caches after first call', async () => {
     vi.stubEnv('OPENFDA_API_KEY', '');
     const { getServerConfig } = await import('@/config/server-config.js');

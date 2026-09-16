@@ -64,7 +64,7 @@ export function getMirror(endpoint: MirroredEndpoint, log?: MirrorLogger): Mirro
   return mirror;
 }
 
-/** Close every opened mirror. Used by CLI scripts and tests. */
+/** Close every opened mirror. Called by the server teardown hook, CLI scripts, and tests. */
 export async function closeMirrors(): Promise<void> {
   const opened = [...instances.values()];
   instances.clear();

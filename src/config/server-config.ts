@@ -8,10 +8,8 @@ import { parseEnvConfig } from '@cyanheads/mcp-ts-core/config';
 
 const ServerConfigSchema = z.object({
   apiKey: z
-    .preprocess(
-      (v) => (typeof v === 'string' && /^\$\{/.test(v) ? undefined : v || undefined),
-      z.string().optional(),
-    )
+    .string()
+    .optional()
     .describe('openFDA API key — increases daily request limit from 1K to 120K'),
   baseUrl: z.string().default('https://api.fda.gov').describe('openFDA API base URL'),
 
