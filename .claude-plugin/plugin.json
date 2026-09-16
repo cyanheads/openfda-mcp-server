@@ -1,20 +1,33 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "openfda-mcp-server",
   "version": "0.7.4",
   "description": "Query FDA data on drugs, food, devices, and recalls via openFDA. STDIO or Streamable HTTP.",
   "author": {
-    "name": "cyanheads"
+    "name": "cyanheads",
+    "email": "casey@caseyjhand.com",
+    "url": "https://github.com/cyanheads"
   },
   "homepage": "https://github.com/cyanheads/openfda-mcp-server#readme",
   "repository": "https://github.com/cyanheads/openfda-mcp-server",
   "license": "Apache-2.0",
+  "keywords": ["mcp", "mcp-server", "model-context-protocol", "openfda", "fda", "drug-safety", "adverse-events"],
+  "userConfig": {
+    "openfda_api_key": {
+      "type": "string",
+      "title": "openFDA API key",
+      "description": "Optional. Free key from open.fda.gov/apis/authentication raises the daily limit from 1K to 120K requests.",
+      "sensitive": true,
+      "default": ""
+    }
+  },
   "mcpServers": {
     "openfda-mcp-server": {
       "command": "npx",
       "args": ["-y", "@cyanheads/openfda-mcp-server"],
       "env": {
         "MCP_TRANSPORT_TYPE": "stdio",
-        "OPENFDA_API_KEY": ""
+        "OPENFDA_API_KEY": "${user_config.openfda_api_key}"
       }
     }
   }
