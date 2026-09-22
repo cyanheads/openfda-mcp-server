@@ -266,6 +266,7 @@ export const drugProfileTool = tool('openfda_drug_profile', {
       'Drug name to profile — brand or generic (e.g. "metformin", "Humira", "Glucophage"). Resolved once to canonical FDA identifiers, which then key every sub-query.',
     ),
   }),
+  inputAliases: { drug_name: 'drug', name: 'drug' },
 
   output: z.object({
     meta: z
