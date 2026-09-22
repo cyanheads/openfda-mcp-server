@@ -93,6 +93,17 @@ describe('service-raised error reasons', () => {
   it.each(declared)('%s marks %s as thrownBy: service', (_name, _reason, entry) => {
     expect(entry.thrownBy).toBe('service');
   });
+
+  it.each([...RERAISED_BY_HANDLER])('%s is declared and left unmarked', (pair) => {
+    const [name, reason] = pair.split(':');
+    const definitions: readonly AnyToolDefinition[] = allToolDefinitions;
+    const entry = definitions
+      .find((definition) => definition.name === name)
+      ?.errors?.find((e) => e.reason === reason);
+
+    expect(entry).toBeDefined();
+    expect(entry?.thrownBy).toBeUndefined();
+  });
 });
 
 describe('reserved error key', () => {
