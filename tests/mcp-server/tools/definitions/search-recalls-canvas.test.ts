@@ -36,6 +36,7 @@ vi.mock('@/services/openfda/openfda-service.js', () => {
 });
 
 import { searchRecallsTool } from '@/mcp-server/tools/definitions/search-recalls.tool.js';
+import { textOf } from '../../../helpers/content.js';
 
 async function setCanvasMock(c: unknown) {
   const mod = await import('@/services/canvas/canvas-accessor.js');
@@ -95,7 +96,9 @@ describe('openfda_search_recalls — canvas disabled', () => {
   it('fails with a typed canvas_disabled error when staging is requested (#30)', async () => {
     const ctx = createMockContext({ errors: searchRecallsTool.errors });
     const input = searchRecallsTool.input.parse({ category: 'drug', stage: true });
-    const err = (await searchRecallsTool.handler(input, ctx).catch((e) => e)) as McpError;
+    const err = (await Promise.resolve(searchRecallsTool.handler(input, ctx)).catch(
+      (e) => e,
+    )) as McpError;
     expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
     expect(err.data).toMatchObject({ reason: 'canvas_disabled' });
   });
@@ -118,7 +121,7 @@ describe('openfda_search_recalls — canvas enabled', () => {
 
     expect(canvas.acquire).not.toHaveBeenCalled();
     expect(svc.query).toHaveBeenCalledOnce();
-    expect(svc.query.mock.calls[0][1]).toMatchObject({ limit: 10, skip: 0 });
+    expect(svc.query.mock.calls[0]![1]).toMatchObject({ limit: 10, skip: 0 });
     expect(result.results).toHaveLength(10);
     expect(result.spilled).toBeUndefined();
   });
@@ -204,7 +207,7 @@ describe('openfda_search_recalls — canvas enabled', () => {
 
 describe('openfda_search_recalls — format', () => {
   it('renders the staging line with the staged-vs-matched counts', () => {
-    const blocks = searchRecallsTool.format({
+    const blocks = searchRecallsTool.format!({
       meta: { total: 2500, skip: 0, limit: 1, lastUpdated: '2026-06-01' },
       results: [{ recall_number: 'R-0', classification: 'Class I' }],
       canvas_id: 'cv_recalls',
@@ -212,14 +215,14 @@ describe('openfda_search_recalls — format', () => {
       spilled: true,
       staged_rows: 2500,
     });
-    const text = blocks[0].text;
+    const text = textOf(blocks);
     expect(text).toContain('spilled_x');
     expect(text).toContain('Staged 2500 of 2500');
     expect(text).toContain('openfda_dataframe_query');
   });
 
   it('discloses truncation in the staging line', () => {
-    const blocks = searchRecallsTool.format({
+    const blocks = searchRecallsTool.format!({
       meta: { total: 609_468, skip: 0, limit: 1, lastUpdated: '2026-06-01' },
       results: [{ recall_number: 'R-0', classification: 'Class I' }],
       canvas_id: 'cv_recalls',
@@ -228,13 +231,13 @@ describe('openfda_search_recalls — format', () => {
       staged_rows: 235,
       truncated: true,
     });
-    const text = blocks[0].text;
+    const text = textOf(blocks);
     expect(text).toContain('Staged 235 of 609468');
     expect(text).toMatch(/size budget/i);
   });
 
   it('never renders "No results found." for a query that matched records (#31)', () => {
-    const blocks = searchRecallsTool.format({
+    const blocks = searchRecallsTool.format!({
       meta: { total: 609_468, skip: 700_000, limit: 0, lastUpdated: '2026-06-01' },
       results: [],
       canvas_id: 'cv_recalls',
@@ -243,7 +246,7 @@ describe('openfda_search_recalls — format', () => {
       staged_rows: 235,
       truncated: true,
     });
-    const text = blocks[0].text;
+    const text = textOf(blocks);
     expect(text).not.toContain('No results found.');
     expect(text).toContain('609468');
     expect(text).toContain('spilled_x');
@@ -253,19 +256,19 @@ describe('openfda_search_recalls — format', () => {
   });
 
   it('keeps the no-match wording when nothing matched', () => {
-    const blocks = searchRecallsTool.format({
+    const blocks = searchRecallsTool.format!({
       meta: { total: 0, skip: 0, limit: 0, lastUpdated: '2026-06-01' },
       results: [],
     });
-    expect(blocks[0].text).toBe('No results found.');
+    expect(textOf(blocks)).toBe('No results found.');
   });
 
   it('qualifies the no-match wording when the request carried an offset', () => {
-    const blocks = searchRecallsTool.format({
+    const blocks = searchRecallsTool.format!({
       meta: { total: 0, skip: 2000, limit: 0, lastUpdated: '2026-06-01' },
       results: [],
     });
-    expect(blocks[0].text).toContain('at skip=2000');
-    expect(blocks[0].text).toContain('Retry with skip=0');
+    expect(textOf(blocks)).toContain('at skip=2000');
+    expect(textOf(blocks)).toContain('Retry with skip=0');
   });
 });

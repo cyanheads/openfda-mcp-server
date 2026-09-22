@@ -3,7 +3,6 @@
  * @module tests/mcp-server/tools/definitions/search-animal-events.tool.test
  */
 
-import type { Context } from '@cyanheads/mcp-ts-core';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -13,16 +12,17 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 
 import { searchAnimalEventsTool } from '@/mcp-server/tools/definitions/search-animal-events.tool.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import { textOf } from '../../../helpers/content.js';
 
 const mockQuery = vi.fn();
 
 describe('openfda_search_animal_events', () => {
-  let ctx: Context;
+  let ctx: ReturnType<typeof createMockContext<typeof searchAnimalEventsTool.errors>>;
 
   beforeEach(() => {
     mockQuery.mockReset();
     vi.mocked(getOpenFdaService).mockReturnValue({ query: mockQuery } as never);
-    ctx = createMockContext();
+    ctx = createMockContext({ errors: searchAnimalEventsTool.errors });
   });
 
   it('queries animalandveterinary/event endpoint', async () => {
@@ -31,9 +31,12 @@ describe('openfda_search_animal_events', () => {
       results: [{ unique_aer_id_number: 'AER-1' }],
     });
 
-    const result = await searchAnimalEventsTool.handler({}, ctx);
+    const result = await searchAnimalEventsTool.handler(
+      searchAnimalEventsTool.input.parse({}),
+      ctx,
+    );
 
-    expect(mockQuery.mock.calls[0][0]).toBe('animalandveterinary/event');
+    expect(mockQuery.mock.calls[0]![0]).toBe('animalandveterinary/event');
     expect(result.results).toHaveLength(1);
   });
 
@@ -44,7 +47,12 @@ describe('openfda_search_animal_events', () => {
     });
 
     await searchAnimalEventsTool.handler(
-      { search: 'animal.species:"Dog"', sort: 'original_receive_date:desc', limit: 5, skip: 10 },
+      searchAnimalEventsTool.input.parse({
+        search: 'animal.species:"Dog"',
+        sort: 'original_receive_date:desc',
+        limit: 5,
+        skip: 10,
+      }),
       ctx,
     );
 
@@ -66,7 +74,7 @@ describe('openfda_search_animal_events', () => {
       results: [{ unique_aer_id_number: 'AER-3' }],
     });
 
-    await searchAnimalEventsTool.handler({}, ctx);
+    await searchAnimalEventsTool.handler(searchAnimalEventsTool.input.parse({}), ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.totalResults).toBe(99);
@@ -78,7 +86,10 @@ describe('openfda_search_animal_events', () => {
       results: [{ unique_aer_id_number: 'AER-4' }],
     });
 
-    await searchAnimalEventsTool.handler({ search: 'drug.brand_name:"Bravecto"' }, ctx);
+    await searchAnimalEventsTool.handler(
+      searchAnimalEventsTool.input.parse({ search: 'drug.brand_name:"Bravecto"' }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.effectiveQuery).toBe('drug.brand_name:"Bravecto"');
@@ -90,7 +101,7 @@ describe('openfda_search_animal_events', () => {
       results: [{ unique_aer_id_number: 'AER-5' }],
     });
 
-    await searchAnimalEventsTool.handler({}, ctx);
+    await searchAnimalEventsTool.handler(searchAnimalEventsTool.input.parse({}), ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.effectiveQuery).toBeUndefined();
@@ -102,7 +113,10 @@ describe('openfda_search_animal_events', () => {
       results: [],
     });
 
-    await searchAnimalEventsTool.handler({ search: 'animal.species:"Unicorn"' }, ctx);
+    await searchAnimalEventsTool.handler(
+      searchAnimalEventsTool.input.parse({ search: 'animal.species:"Unicorn"' }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toBeDefined();
@@ -114,14 +128,14 @@ describe('openfda_search_animal_events', () => {
       results: [],
     });
 
-    await searchAnimalEventsTool.handler({ skip: 100 }, ctx);
+    await searchAnimalEventsTool.handler(searchAnimalEventsTool.input.parse({ skip: 100 }), ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toMatch(/skip=100/);
   });
 
   it('formats records with animal and reaction fields', () => {
-    const content = searchAnimalEventsTool.format({
+    const content = searchAnimalEventsTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
       results: [
         {
@@ -141,7 +155,7 @@ describe('openfda_search_animal_events', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('AER-FMT-1');
     expect(text).toContain('20260115');
     expect(text).toContain('Dog');
@@ -154,39 +168,39 @@ describe('openfda_search_animal_events', () => {
 
   it('format handles sparse payload — all optional fields absent', () => {
     // Upstream record with only the unique ID — all other fields omitted
-    const content = searchAnimalEventsTool.format({
+    const content = searchAnimalEventsTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
       results: [{ unique_aer_id_number: 'SPARSE-AER' }],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('SPARSE-AER');
     // Should not crash on missing optional fields
     expect(typeof text).toBe('string');
   });
 
   it('format returns "No animal adverse event reports found." for empty results', () => {
-    const content = searchAnimalEventsTool.format({
+    const content = searchAnimalEventsTool.format!({
       meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
       results: [],
     });
 
-    expect(content[0].text).toBe('No animal adverse event reports found.');
+    expect(textOf(content)).toBe('No animal adverse event reports found.');
   });
 
   it('format includes meta header with totals', () => {
-    const content = searchAnimalEventsTool.format({
+    const content = searchAnimalEventsTool.format!({
       meta: { total: 150, skip: 0, limit: 10, lastUpdated: '2026-03-01' },
       results: [{ unique_aer_id_number: 'AER-HDR' }],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('150 total results');
     expect(text).toContain('2026-03-01');
   });
 
   it('format renders number_of_animals counts when present', () => {
-    const content = searchAnimalEventsTool.format({
+    const content = searchAnimalEventsTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [
         {
@@ -197,7 +211,7 @@ describe('openfda_search_animal_events', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('treated: 5');
     expect(text).toContain('affected: 2');
   });

@@ -4,7 +4,6 @@
  * @module tests/mcp-server/tools/definitions/get-drug-label.tool.test
  */
 
-import type { Context } from '@cyanheads/mcp-ts-core';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -14,6 +13,7 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 
 import { getDrugLabelTool } from '@/mcp-server/tools/definitions/get-drug-label.tool.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import { textOf } from '../../../helpers/content.js';
 
 const mockQuery = vi.fn();
 
@@ -84,7 +84,7 @@ function recordBytes(results: unknown): number {
 }
 
 describe('openfda_get_drug_label', () => {
-  let ctx: Context;
+  let ctx: ReturnType<typeof createMockContext<typeof getDrugLabelTool.errors>>;
 
   beforeEach(() => {
     mockQuery.mockReset();
@@ -98,9 +98,12 @@ describe('openfda_get_drug_label', () => {
       results: [{ openfda: { brand_name: ['Aspirin'] } }],
     });
 
-    const result = await getDrugLabelTool.handler({ search: 'openfda.brand_name:"aspirin"' }, ctx);
+    const result = await getDrugLabelTool.handler(
+      getDrugLabelTool.input.parse({ search: 'openfda.brand_name:"aspirin"' }),
+      ctx,
+    );
 
-    expect(mockQuery.mock.calls[0][0]).toBe('drug/label');
+    expect(mockQuery.mock.calls[0]![0]).toBe('drug/label');
     expect(result.kind).toBe('full');
     expect(result.results).toHaveLength(1);
   });
@@ -111,7 +114,10 @@ describe('openfda_get_drug_label', () => {
       results: [{ openfda: { brand_name: ['Aspirin'] } }],
     });
 
-    await getDrugLabelTool.handler({ search: 'openfda.brand_name:"aspirin"' }, ctx);
+    await getDrugLabelTool.handler(
+      getDrugLabelTool.input.parse({ search: 'openfda.brand_name:"aspirin"' }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.totalResults).toBe(1);
@@ -124,7 +130,10 @@ describe('openfda_get_drug_label', () => {
       results: Array.from({ length: 5 }, () => ({ openfda: { brand_name: ['Aspirin'] } })),
     });
 
-    await getDrugLabelTool.handler({ search: 'openfda.generic_name:"aspirin"', limit: 5 }, ctx);
+    await getDrugLabelTool.handler(
+      getDrugLabelTool.input.parse({ search: 'openfda.generic_name:"aspirin"', limit: 5 }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.truncated).toBe(true);
@@ -138,7 +147,10 @@ describe('openfda_get_drug_label', () => {
       results: Array.from({ length: 3 }, () => ({ openfda: { brand_name: ['Aspirin'] } })),
     });
 
-    await getDrugLabelTool.handler({ search: 'openfda.generic_name:"aspirin"', limit: 5 }, ctx);
+    await getDrugLabelTool.handler(
+      getDrugLabelTool.input.parse({ search: 'openfda.generic_name:"aspirin"', limit: 5 }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.truncated).toBeUndefined();
@@ -150,7 +162,10 @@ describe('openfda_get_drug_label', () => {
       results: [],
     });
 
-    const result = await getDrugLabelTool.handler({ search: 'nonexistent' }, ctx);
+    const result = await getDrugLabelTool.handler(
+      getDrugLabelTool.input.parse({ search: 'nonexistent' }),
+      ctx,
+    );
 
     expect(result.kind).toBe('full');
     expect(result.results).toEqual([]);
@@ -159,7 +174,10 @@ describe('openfda_get_drug_label', () => {
 
   it('raises the declared pagination contract above the openFDA ceiling (#27)', async () => {
     await expect(
-      getDrugLabelTool.handler({ search: 'aspirin', skip: 25_001 }, ctx),
+      getDrugLabelTool.handler(
+        getDrugLabelTool.input.parse({ search: 'aspirin', skip: 25_001 }),
+        ctx,
+      ),
     ).rejects.toMatchObject({ data: { reason: 'pagination_limit_reached' } });
     expect(mockQuery).not.toHaveBeenCalled();
   });
@@ -174,7 +192,10 @@ describe('openfda_get_drug_label', () => {
 
     it('returns only the requested sections plus metadata', async () => {
       const result = await getDrugLabelTool.handler(
-        { search: 'openfda.brand_name:"warfarin"', sections: ['boxed_warning'] },
+        getDrugLabelTool.input.parse({
+          search: 'openfda.brand_name:"warfarin"',
+          sections: ['boxed_warning'],
+        }),
         ctx,
       );
 
@@ -188,7 +209,10 @@ describe('openfda_get_drug_label', () => {
 
     it('returns metadata only for an unknown section name', async () => {
       const result = await getDrugLabelTool.handler(
-        { search: 'openfda.brand_name:"warfarin"', sections: ['not_a_real_section'] },
+        getDrugLabelTool.input.parse({
+          search: 'openfda.brand_name:"warfarin"',
+          sections: ['not_a_real_section'],
+        }),
         ctx,
       );
 
@@ -203,7 +227,10 @@ describe('openfda_get_drug_label', () => {
 
     it('names the unmatched section and the available ones, so a typo is recoverable', async () => {
       await getDrugLabelTool.handler(
-        { search: 'openfda.brand_name:"warfarin"', sections: ['boxed_warnings'] },
+        getDrugLabelTool.input.parse({
+          search: 'openfda.brand_name:"warfarin"',
+          sections: ['boxed_warnings'],
+        }),
         ctx,
       );
 
@@ -215,7 +242,10 @@ describe('openfda_get_drug_label', () => {
 
     it('names only the unmatched section when others resolved', async () => {
       await getDrugLabelTool.handler(
-        { search: 'openfda.brand_name:"warfarin"', sections: ['boxed_warning', 'no_such_section'] },
+        getDrugLabelTool.input.parse({
+          search: 'openfda.brand_name:"warfarin"',
+          sections: ['boxed_warning', 'no_such_section'],
+        }),
         ctx,
       );
 
@@ -226,7 +256,10 @@ describe('openfda_get_drug_label', () => {
 
     it('cuts the payload well below the unfiltered record', async () => {
       const selected = await getDrugLabelTool.handler(
-        { search: 'openfda.brand_name:"warfarin"', sections: ['boxed_warning'] },
+        getDrugLabelTool.input.parse({
+          search: 'openfda.brand_name:"warfarin"',
+          sections: ['boxed_warning'],
+        }),
         ctx,
       );
 
@@ -246,7 +279,7 @@ describe('openfda_get_drug_label', () => {
 
     it('returns the section outline instead of the label when the page overflows', async () => {
       const result = await getDrugLabelTool.handler(
-        { search: 'openfda.brand_name:"warfarin"' },
+        getDrugLabelTool.input.parse({ search: 'openfda.brand_name:"warfarin"' }),
         ctx,
       );
 
@@ -262,7 +295,10 @@ describe('openfda_get_drug_label', () => {
     });
 
     it('names the re-call path in enrichment so both response paths carry it', async () => {
-      await getDrugLabelTool.handler({ search: 'openfda.brand_name:"warfarin"' }, ctx);
+      await getDrugLabelTool.handler(
+        getDrugLabelTool.input.parse({ search: 'openfda.brand_name:"warfarin"' }),
+        ctx,
+      );
 
       const notice = String(getEnrichment(ctx).notice);
       expect(notice).toContain('sections');
@@ -275,7 +311,10 @@ describe('openfda_get_drug_label', () => {
         results: [{ openfda: { brand_name: ['Aspirin'] }, warnings: ['Short.'] }],
       });
 
-      const result = await getDrugLabelTool.handler({ search: 'aspirin' }, ctx);
+      const result = await getDrugLabelTool.handler(
+        getDrugLabelTool.input.parse({ search: 'aspirin' }),
+        ctx,
+      );
 
       expect(result.kind).toBe('full');
       expect(result.outline).toBeUndefined();
@@ -300,7 +339,7 @@ describe('openfda_get_drug_label', () => {
 
     it('names an example that is not the largest section on the page', async () => {
       const result = await getDrugLabelTool.handler(
-        { search: 'openfda.generic_name:"metformin"' },
+        getDrugLabelTool.input.parse({ search: 'openfda.generic_name:"metformin"' }),
         ctx,
       );
 
@@ -317,7 +356,7 @@ describe('openfda_get_drug_label', () => {
       });
 
       const result = await getDrugLabelTool.handler(
-        { search: 'openfda.generic_name:"metformin"' },
+        getDrugLabelTool.input.parse({ search: 'openfda.generic_name:"metformin"' }),
         ctx,
       );
       expect(result.kind).toBe('outline');
@@ -334,7 +373,10 @@ describe('openfda_get_drug_label', () => {
        */
       const largestCtx = createMockContext({ errors: getDrugLabelTool.errors });
       const retrieved = await getDrugLabelTool.handler(
-        { search: 'openfda.generic_name:"metformin"', sections: [largest ?? ''] },
+        getDrugLabelTool.input.parse({
+          search: 'openfda.generic_name:"metformin"',
+          sections: [largest ?? ''],
+        }),
         largestCtx,
       );
       expect(recordBytes(retrieved.results)).toBeLessThan(BUDGET);
@@ -342,12 +384,18 @@ describe('openfda_get_drug_label', () => {
     });
 
     it('quotes the example size, and following the example returns that many bytes within budget', async () => {
-      await getDrugLabelTool.handler({ search: 'openfda.generic_name:"metformin"' }, ctx);
+      await getDrugLabelTool.handler(
+        getDrugLabelTool.input.parse({ search: 'openfda.generic_name:"metformin"' }),
+        ctx,
+      );
       const example = workedExample(String(getEnrichment(ctx).notice));
       expect(example).toBeDefined();
 
       const followed = await getDrugLabelTool.handler(
-        { search: 'openfda.generic_name:"metformin"', sections: [example?.name ?? ''] },
+        getDrugLabelTool.input.parse({
+          search: 'openfda.generic_name:"metformin"',
+          sections: [example?.name ?? ''],
+        }),
         createMockContext({ errors: getDrugLabelTool.errors }),
       );
 
@@ -356,12 +404,18 @@ describe('openfda_get_drug_label', () => {
     });
 
     it('following the example draws no overflow disclosure', async () => {
-      await getDrugLabelTool.handler({ search: 'openfda.generic_name:"metformin"' }, ctx);
+      await getDrugLabelTool.handler(
+        getDrugLabelTool.input.parse({ search: 'openfda.generic_name:"metformin"' }),
+        ctx,
+      );
       const example = workedExample(String(getEnrichment(ctx).notice));
 
       const followCtx = createMockContext({ errors: getDrugLabelTool.errors });
       await getDrugLabelTool.handler(
-        { search: 'openfda.generic_name:"metformin"', sections: [example?.name ?? ''] },
+        getDrugLabelTool.input.parse({
+          search: 'openfda.generic_name:"metformin"',
+          sections: [example?.name ?? ''],
+        }),
         followCtx,
       );
 
@@ -380,7 +434,7 @@ describe('openfda_get_drug_label', () => {
       });
 
       const result = await getDrugLabelTool.handler(
-        { search: 'openfda.generic_name:"metformin"', limit: 6 },
+        getDrugLabelTool.input.parse({ search: 'openfda.generic_name:"metformin"', limit: 6 }),
         ctx,
       );
 
@@ -393,10 +447,10 @@ describe('openfda_get_drug_label', () => {
 
     it('discloses an over-budget selection, returning it whole as kind "full"', async () => {
       const result = await getDrugLabelTool.handler(
-        {
+        getDrugLabelTool.input.parse({
           search: 'openfda.generic_name:"metformin"',
           sections: ['clinical_pharmacology_table', 'warnings_and_cautions'],
-        },
+        }),
         ctx,
       );
 
@@ -415,7 +469,10 @@ describe('openfda_get_drug_label', () => {
 
     it('stays quiet when the selection fits the budget', async () => {
       await getDrugLabelTool.handler(
-        { search: 'openfda.generic_name:"metformin"', sections: ['indications_and_usage'] },
+        getDrugLabelTool.input.parse({
+          search: 'openfda.generic_name:"metformin"',
+          sections: ['indications_and_usage'],
+        }),
         ctx,
       );
 
@@ -437,14 +494,22 @@ describe('openfda_get_drug_label', () => {
       mockQuery.mockResolvedValue(page(1));
       const oneCtx = createMockContext({ errors: getDrugLabelTool.errors });
       await getDrugLabelTool.handler(
-        { search: 'openfda.generic_name:"metformin"', limit: 1, sections: ['clinical_studies'] },
+        getDrugLabelTool.input.parse({
+          search: 'openfda.generic_name:"metformin"',
+          limit: 1,
+          sections: ['clinical_studies'],
+        }),
         oneCtx,
       );
 
       mockQuery.mockResolvedValue(page(5));
       const fiveCtx = createMockContext({ errors: getDrugLabelTool.errors });
       const five = await getDrugLabelTool.handler(
-        { search: 'openfda.generic_name:"metformin"', limit: 5, sections: ['clinical_studies'] },
+        getDrugLabelTool.input.parse({
+          search: 'openfda.generic_name:"metformin"',
+          limit: 5,
+          sections: ['clinical_studies'],
+        }),
         fiveCtx,
       );
 
@@ -457,7 +522,7 @@ describe('openfda_get_drug_label', () => {
 
   describe('format()', () => {
     it('renders label sections', () => {
-      const content = getDrugLabelTool.format({
+      const content = getDrugLabelTool.format!({
         meta: { total: 1, skip: 0, limit: 5, lastUpdated: '2026-01-01' },
         kind: 'full',
         results: [
@@ -474,7 +539,7 @@ describe('openfda_get_drug_label', () => {
         ],
       });
 
-      const text = content[0].text;
+      const text = textOf(content);
       expect(text).toContain('Aspirin');
       expect(text).toContain('Bayer');
       expect(text).toContain('For pain relief.');
@@ -483,38 +548,38 @@ describe('openfda_get_drug_label', () => {
 
     it('renders long sections whole — content[] matches structuredContent (#11, #24)', () => {
       const longText = 'A'.repeat(2000);
-      const content = getDrugLabelTool.format({
+      const content = getDrugLabelTool.format!({
         meta: { total: 1, skip: 0, limit: 5, lastUpdated: '' },
         kind: 'full',
         results: [{ openfda: { brand_name: ['Test'] }, warnings: [longText] }],
       });
 
-      const text = content[0].text;
+      const text = textOf(content);
       expect(text).toContain(longText);
       expect(text).not.toContain('(truncated)');
     });
 
     it('renders the outline arm on field presence, not on kind', () => {
-      const content = getDrugLabelTool.format({
+      const content = getDrugLabelTool.format!({
         meta: { total: 1, skip: 0, limit: 5, lastUpdated: '' },
         kind: 'outline',
         outline: [{ name: 'boxed_warning', bytes: 9012 }],
       });
 
-      const text = content[0].text;
+      const text = textOf(content);
       expect(text).toContain('boxed_warning');
       expect(text).toContain('9012');
     });
 
     it('renders both arms when both fields are present (parity sentinel shape)', () => {
-      const content = getDrugLabelTool.format({
+      const content = getDrugLabelTool.format!({
         meta: { total: 1, skip: 0, limit: 5, lastUpdated: '' },
         kind: 'full',
         results: [{ openfda: { brand_name: ['Both'] }, warnings: ['Careful.'] }],
         outline: [{ name: 'warnings', bytes: 11 }],
       });
 
-      const text = content[0].text;
+      const text = textOf(content);
       expect(text).toContain('Careful.');
       expect(text).toContain('`warnings` — 11 bytes');
     });

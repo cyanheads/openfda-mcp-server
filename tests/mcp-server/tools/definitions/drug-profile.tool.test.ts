@@ -1,4 +1,3 @@
-import type { Context } from '@cyanheads/mcp-ts-core';
 import {
   forbidden,
   JsonRpcErrorCode,
@@ -16,6 +15,7 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 import { drugProfileTool } from '@/mcp-server/tools/definitions/drug-profile.tool.js';
 import { findSearchDelimiterFault } from '@/mcp-server/tools/schema-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import { textOf } from '../../../helpers/content.js';
 
 const mockQuery = vi.fn();
 
@@ -104,12 +104,12 @@ function fullUpstream(endpoint: string, params: { count?: string }) {
 }
 
 describe('openfda_drug_profile', () => {
-  let ctx: Context;
+  let ctx: ReturnType<typeof createMockContext<typeof drugProfileTool.errors>>;
 
   beforeEach(() => {
     mockQuery.mockReset();
     vi.mocked(getOpenFdaService).mockReturnValue({ query: mockQuery } as never);
-    ctx = createMockContext();
+    ctx = createMockContext({ errors: drugProfileTool.errors });
   });
 
   it('resolves identity via drug/label and merges all sections', async () => {
@@ -117,7 +117,10 @@ describe('openfda_drug_profile', () => {
       fullUpstream(endpoint, params),
     );
 
-    const result = await drugProfileTool.handler({ drug: 'metformin' }, ctx);
+    const result = await drugProfileTool.handler(
+      drugProfileTool.input.parse({ drug: 'metformin' }),
+      ctx,
+    );
 
     expect(result.meta.resolvedVia).toBe('label');
     expect(result.meta.fanOutKey).toBe('metformin hydrochloride');
@@ -130,8 +133,8 @@ describe('openfda_drug_profile', () => {
     expect(result.adverse_events?.seriousCount).toBe(500);
     expect(result.adverse_events?.topReactions[0]).toEqual({ term: 'NAUSEA', count: 1200 });
     expect(result.recalls).toHaveLength(1);
-    expect(result.recalls[0].classification).toBe('Class II');
-    expect(result.recalls[0].date).toBe('20240110');
+    expect(result.recalls[0]!.classification).toBe('Class II');
+    expect(result.recalls[0]!.date).toBe('20240110');
     expect(result.approval?.applicationNumber).toBe('NDA020357');
     expect(result.approval?.marketingStatus).toBe('Prescription');
     expect(result.shortage?.status).toBe('Current');
@@ -146,7 +149,7 @@ describe('openfda_drug_profile', () => {
       fullUpstream(endpoint, params),
     );
 
-    await drugProfileTool.handler({ drug: 'Glucophage' }, ctx);
+    await drugProfileTool.handler(drugProfileTool.input.parse({ drug: 'Glucophage' }), ctx);
 
     const calls = mockQuery.mock.calls;
     const structured = calls.filter(([endpoint]) =>
@@ -171,7 +174,10 @@ describe('openfda_drug_profile', () => {
       return fullUpstream(endpoint, params);
     });
 
-    const result = await drugProfileTool.handler({ drug: 'metformin' }, ctx);
+    const result = await drugProfileTool.handler(
+      drugProfileTool.input.parse({ drug: 'metformin' }),
+      ctx,
+    );
 
     expect(result.recalls).toEqual([]);
     expect(result.label).not.toBeNull();
@@ -197,7 +203,10 @@ describe('openfda_drug_profile', () => {
       return { meta: meta(), results: [] };
     });
 
-    const result = await drugProfileTool.handler({ drug: 'Tylenol' }, ctx);
+    const result = await drugProfileTool.handler(
+      drugProfileTool.input.parse({ drug: 'Tylenol' }),
+      ctx,
+    );
 
     expect(result.meta.resolvedVia).toBe('ndc');
     expect(result.meta.fanOutKey).toBe('acetaminophen');
@@ -210,7 +219,10 @@ describe('openfda_drug_profile', () => {
   it('sets a notice when the drug cannot be resolved at all', async () => {
     mockQuery.mockResolvedValue({ meta: meta(), results: [] });
 
-    const result = await drugProfileTool.handler({ drug: 'notadrug' }, ctx);
+    const result = await drugProfileTool.handler(
+      drugProfileTool.input.parse({ drug: 'notadrug' }),
+      ctx,
+    );
 
     expect(result.meta.resolvedVia).toBe('none');
     expect(result.meta.fanOutKey).toBe('notadrug');
@@ -221,7 +233,7 @@ describe('openfda_drug_profile', () => {
   });
 
   it('renders every section header in format(), even when sections are null', () => {
-    const content = drugProfileTool.format({
+    const content = drugProfileTool.format!({
       meta: { drug: 'mystery', resolvedVia: 'none', fanOutKey: 'mystery' },
       identity: {
         brand_names: [],
@@ -238,7 +250,7 @@ describe('openfda_drug_profile', () => {
       degraded: [],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     for (const header of [
       '## Identity',
       '## Label',
@@ -274,7 +286,10 @@ describe('openfda_drug_profile', () => {
       }),
     );
 
-    const result = await drugProfileTool.handler({ drug: 'metformin' }, ctx);
+    const result = await drugProfileTool.handler(
+      drugProfileTool.input.parse({ drug: 'metformin' }),
+      ctx,
+    );
 
     expect(result.label?.warnings).toContain('LACTIC ACIDOSIS');
     expect(result.label?.warnings).not.toContain('OTC warning');
@@ -291,7 +306,10 @@ describe('openfda_drug_profile', () => {
       }),
     );
 
-    const result = await drugProfileTool.handler({ drug: 'Humira' }, ctx);
+    const result = await drugProfileTool.handler(
+      drugProfileTool.input.parse({ drug: 'Humira' }),
+      ctx,
+    );
 
     expect(result.label?.warnings).toContain('Serious infections');
   });
@@ -305,7 +323,10 @@ describe('openfda_drug_profile', () => {
       }),
     );
 
-    const result = await drugProfileTool.handler({ drug: 'ibuprofen' }, ctx);
+    const result = await drugProfileTool.handler(
+      drugProfileTool.input.parse({ drug: 'ibuprofen' }),
+      ctx,
+    );
 
     expect(result.label?.warnings).toContain('Stomach bleeding');
   });
@@ -318,7 +339,10 @@ describe('openfda_drug_profile', () => {
       }),
     );
 
-    const result = await drugProfileTool.handler({ drug: 'placebo' }, ctx);
+    const result = await drugProfileTool.handler(
+      drugProfileTool.input.parse({ drug: 'placebo' }),
+      ctx,
+    );
 
     expect(result.label?.warnings).toBeNull();
     expect(result.label?.indications).toContain('No active');
@@ -331,9 +355,9 @@ describe('openfda_drug_profile', () => {
     it('rejects a drug name with no searchable character, without any upstream request', async () => {
       const failCtx = createMockContext({ errors: drugProfileTool.errors });
 
-      const err = (await drugProfileTool
-        .handler({ drug: '"""' }, failCtx)
-        .catch((e: unknown) => e)) as McpError;
+      const err = (await Promise.resolve(drugProfileTool.handler({ drug: '"""' }, failCtx)).catch(
+        (e: unknown) => e,
+      )) as McpError;
 
       expect(err).toBeInstanceOf(McpError);
       expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
@@ -348,7 +372,10 @@ describe('openfda_drug_profile', () => {
           : { meta: meta(), results: [] },
       );
 
-      const result = await drugProfileTool.handler({ drug: 'metformin' }, ctx);
+      const result = await drugProfileTool.handler(
+        drugProfileTool.input.parse({ drug: 'metformin' }),
+        ctx,
+      );
 
       expect(result.meta.fanOutKey).toBe('metformin');
       const structured = mockQuery.mock.calls.filter(([endpoint]) =>
@@ -385,7 +412,7 @@ describe('openfda_drug_profile', () => {
     });
 
     it('escapes a trailing backslash so the OR boundary is not re-parsed', async () => {
-      await drugProfileTool.handler({ drug: 'aspirin\\' }, ctx);
+      await drugProfileTool.handler(drugProfileTool.input.parse({ drug: 'aspirin\\' }), ctx);
 
       const resolve = sentSearches().find((s) => s.includes('openfda.generic_name'));
       // The escaped form: the phrase closes on its own quote, so ` OR ` stays an operator.
@@ -399,7 +426,10 @@ describe('openfda_drug_profile', () => {
     });
 
     it('escapes embedded quotes instead of dropping them from the term', async () => {
-      await drugProfileTool.handler({ drug: 'Tylenol "Extra Strength"' }, ctx);
+      await drugProfileTool.handler(
+        drugProfileTool.input.parse({ drug: 'Tylenol "Extra Strength"' }),
+        ctx,
+      );
 
       const resolve = sentSearches().find((s) => s.includes('openfda.generic_name'));
       expect(resolve).toBe(
@@ -408,7 +438,7 @@ describe('openfda_drug_profile', () => {
     });
 
     it('leaves every composed query with balanced, escape-aware delimiters', async () => {
-      await drugProfileTool.handler({ drug: 'aspirin\\' }, ctx);
+      await drugProfileTool.handler(drugProfileTool.input.parse({ drug: 'aspirin\\' }), ctx);
 
       const searches = sentSearches();
       expect(searches.length).toBeGreaterThan(1);
@@ -427,7 +457,10 @@ describe('openfda_drug_profile', () => {
           : { meta: meta(), results: [] },
       );
 
-      const result = await drugProfileTool.handler({ drug: 'odd' }, ctx);
+      const result = await drugProfileTool.handler(
+        drugProfileTool.input.parse({ drug: 'odd' }),
+        ctx,
+      );
 
       // fanOutKey is reported unescaped — escaping is a query-encoding concern.
       expect(result.meta.fanOutKey).toBe('odd\\name');
@@ -443,7 +476,7 @@ describe('openfda_drug_profile', () => {
     });
 
     it('keeps a plain term byte-identical to the pre-escape composition', async () => {
-      await drugProfileTool.handler({ drug: 'metformin' }, ctx);
+      await drugProfileTool.handler(drugProfileTool.input.parse({ drug: 'metformin' }), ctx);
 
       expect(sentSearches()).toContain(
         'openfda.generic_name:"metformin" OR openfda.brand_name:"metformin"',
@@ -459,9 +492,9 @@ describe('openfda_drug_profile', () => {
         unauthorized('openFDA API key is missing or invalid.', { reason: 'unauthorized' }),
       );
 
-      const err = (await drugProfileTool
-        .handler({ drug: 'metformin' }, ctx)
-        .catch((e: unknown) => e)) as McpError;
+      const err = (await Promise.resolve(drugProfileTool.handler({ drug: 'metformin' }, ctx)).catch(
+        (e: unknown) => e,
+      )) as McpError;
 
       expect(err).toBeInstanceOf(McpError);
       expect(err.code).toBe(JsonRpcErrorCode.Unauthorized);
@@ -473,9 +506,11 @@ describe('openfda_drug_profile', () => {
         forbidden('Access to this openFDA endpoint is forbidden.', { reason: 'forbidden' }),
       );
 
-      await expect(drugProfileTool.handler({ drug: 'metformin' }, ctx)).rejects.toThrow(McpError);
+      await expect(
+        drugProfileTool.handler(drugProfileTool.input.parse({ drug: 'metformin' }), ctx),
+      ).rejects.toThrow(McpError);
       expect(mockQuery).toHaveBeenCalledTimes(1);
-      expect(mockQuery.mock.calls[0][0]).toBe('drug/label');
+      expect(mockQuery.mock.calls[0]![0]).toBe('drug/label');
     });
 
     it('propagates cancellation rather than returning a half-built profile', async () => {
@@ -485,9 +520,9 @@ describe('openfda_drug_profile', () => {
         }),
       );
 
-      const err = (await drugProfileTool
-        .handler({ drug: 'metformin' }, ctx)
-        .catch((e: unknown) => e)) as McpError;
+      const err = (await Promise.resolve(drugProfileTool.handler({ drug: 'metformin' }, ctx)).catch(
+        (e: unknown) => e,
+      )) as McpError;
 
       expect(err).toBeInstanceOf(McpError);
       expect(err.message).toMatch(/aborted/i);
@@ -503,7 +538,10 @@ describe('openfda_drug_profile', () => {
         return fullUpstream(endpoint, params);
       });
 
-      const result = await drugProfileTool.handler({ drug: 'metformin' }, ctx);
+      const result = await drugProfileTool.handler(
+        drugProfileTool.input.parse({ drug: 'metformin' }),
+        ctx,
+      );
 
       expect(result.degraded).toEqual([
         {
@@ -515,7 +553,7 @@ describe('openfda_drug_profile', () => {
       expect(result.recalls).toEqual([]);
       expect(result.label).not.toBeNull();
 
-      const text = drugProfileTool.format(result)[0].text;
+      const text = textOf(drugProfileTool.format!(result));
       expect(text).toContain('## Degraded');
       expect(text).toContain('recalls');
       expect(text).toContain('upstream_error');
@@ -536,7 +574,10 @@ describe('openfda_drug_profile', () => {
         return fullUpstream(endpoint, params);
       });
 
-      const result = await drugProfileTool.handler({ drug: 'metformin' }, ctx);
+      const result = await drugProfileTool.handler(
+        drugProfileTool.input.parse({ drug: 'metformin' }),
+        ctx,
+      );
 
       expect(result.degraded.map((d) => d.section)).toEqual(['adverse_events']);
     });
@@ -546,7 +587,10 @@ describe('openfda_drug_profile', () => {
         serviceUnavailable('openFDA upstream error: HTTP 503', { reason: 'upstream_error' }),
       );
 
-      const result = await drugProfileTool.handler({ drug: 'metformin' }, ctx);
+      const result = await drugProfileTool.handler(
+        drugProfileTool.input.parse({ drug: 'metformin' }),
+        ctx,
+      );
 
       expect(result.meta.resolvedVia).toBe('none');
       expect(getEnrichment(ctx).sectionsFound).toBe(0);
@@ -562,10 +606,13 @@ describe('openfda_drug_profile', () => {
         fullUpstream(endpoint, params),
       );
 
-      const result = await drugProfileTool.handler({ drug: 'metformin' }, ctx);
+      const result = await drugProfileTool.handler(
+        drugProfileTool.input.parse({ drug: 'metformin' }),
+        ctx,
+      );
 
       expect(result.degraded).toEqual([]);
-      expect(drugProfileTool.format(result)[0].text).not.toContain('## Degraded');
+      expect(textOf(drugProfileTool.format!(result))).not.toContain('## Degraded');
     });
   });
 });

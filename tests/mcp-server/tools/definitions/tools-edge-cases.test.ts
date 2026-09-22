@@ -5,10 +5,9 @@
  * @module tests/mcp-server/tools/definitions/tools-edge-cases
  */
 
-import type { Context } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
   getOpenFdaService: vi.fn(),
@@ -30,18 +29,19 @@ import {
   type SearchDelimiterFault,
 } from '@/mcp-server/tools/schema-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import { textOf } from '../../../helpers/content.js';
 
 const mockQuery = vi.fn();
 
 // ── openfda_count_values edge cases ──────────────────────────────────────────────────
 
 describe('openfda_count_values (edge cases)', () => {
-  let ctx: Context;
+  let ctx: ReturnType<typeof createMockContext<typeof countValuesTool.errors>>;
 
   beforeEach(() => {
     mockQuery.mockReset();
     vi.mocked(getOpenFdaService).mockReturnValue({ query: mockQuery } as never);
-    ctx = createMockContext();
+    ctx = createMockContext({ errors: countValuesTool.errors });
   });
 
   it('passes optional search to service', async () => {
@@ -51,7 +51,11 @@ describe('openfda_count_values (edge cases)', () => {
     });
 
     await countValuesTool.handler(
-      { endpoint: 'drug/event', count: 'field', search: 'patient.sex:"female"' },
+      countValuesTool.input.parse({
+        endpoint: 'drug/event',
+        count: 'field',
+        search: 'patient.sex:"female"',
+      }),
       ctx,
     );
 
@@ -65,7 +69,10 @@ describe('openfda_count_values (edge cases)', () => {
   it('passes limit to service', async () => {
     mockQuery.mockResolvedValue({ meta: { lastUpdated: '' }, results: [] });
 
-    await countValuesTool.handler({ endpoint: 'drug/event', count: 'field', limit: 500 }, ctx);
+    await countValuesTool.handler(
+      countValuesTool.input.parse({ endpoint: 'drug/event', count: 'field', limit: 500 }),
+      ctx,
+    );
 
     expect(mockQuery).toHaveBeenCalledWith(
       'drug/event',
@@ -75,23 +82,23 @@ describe('openfda_count_values (edge cases)', () => {
   });
 
   it('format includes total occurrences in header', () => {
-    const content = countValuesTool.format({
+    const content = countValuesTool.format!({
       meta: { lastUpdated: '2026-01-01' },
       results: [
         { term: 'A', count: 300 },
         { term: 'B', count: 200 },
       ],
     });
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('total occurrences: 500');
   });
 
   it('format includes lastUpdated in header', () => {
-    const content = countValuesTool.format({
+    const content = countValuesTool.format!({
       meta: { lastUpdated: '2026-03-15' },
       results: [{ term: 'X', count: 5 }],
     });
-    expect(content[0].text).toContain('2026-03-15');
+    expect(textOf(content)).toContain('2026-03-15');
   });
 
   it('format renders all rows in the table', () => {
@@ -99,8 +106,8 @@ describe('openfda_count_values (edge cases)', () => {
       term: `TERM_${i}`,
       count: 10 - i,
     }));
-    const content = countValuesTool.format({ meta: { lastUpdated: '' }, results });
-    const text = content[0].text;
+    const content = countValuesTool.format!({ meta: { lastUpdated: '' }, results });
+    const text = textOf(content);
     for (let i = 0; i < 5; i++) {
       expect(text).toContain(`TERM_${i}`);
     }
@@ -111,7 +118,7 @@ describe('openfda_count_values (edge cases)', () => {
 // ── openfda_search_recalls edge cases ─────────────────────────────────────────
 
 describe('openfda_search_recalls (edge cases)', () => {
-  let ctx: Context;
+  let ctx: ReturnType<typeof createMockContext<typeof searchRecallsTool.errors>>;
 
   beforeEach(() => {
     mockQuery.mockReset();
@@ -125,7 +132,7 @@ describe('openfda_search_recalls (edge cases)', () => {
       results: [{ recall_number: 'R-1' }],
     });
 
-    await searchRecallsTool.handler({ category: 'food' }, ctx);
+    await searchRecallsTool.handler(searchRecallsTool.input.parse({ category: 'food' }), ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.effectiveQuery).toBeUndefined();
@@ -137,7 +144,10 @@ describe('openfda_search_recalls (edge cases)', () => {
       results: [],
     });
 
-    await searchRecallsTool.handler({ category: 'drug', skip: 200 }, ctx);
+    await searchRecallsTool.handler(
+      searchRecallsTool.input.parse({ category: 'drug', skip: 200 }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toMatch(/skip=200/);
@@ -149,13 +159,13 @@ describe('openfda_search_recalls (edge cases)', () => {
       results: [],
     });
 
-    await searchRecallsTool.handler({ category: 'food' }, ctx);
+    await searchRecallsTool.handler(searchRecallsTool.input.parse({ category: 'food' }), ctx);
 
-    expect(mockQuery.mock.calls[0][0]).toBe('food/enforcement');
+    expect(mockQuery.mock.calls[0]![0]).toBe('food/enforcement');
   });
 
   it('format includes distribution_pattern when present', () => {
-    const content = searchRecallsTool.format({
+    const content = searchRecallsTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
       results: [
         {
@@ -171,61 +181,61 @@ describe('openfda_search_recalls (edge cases)', () => {
       ],
     });
 
-    expect(content[0].text).toContain('Nationwide');
+    expect(textOf(content)).toContain('Nationwide');
   });
 
   it('format handles missing optional fields gracefully', () => {
-    const content = searchRecallsTool.format({
+    const content = searchRecallsTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [{ recall_number: 'SPARSE-R' }],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('SPARSE-R');
     expect(text).toContain('N/A'); // missing fields default to N/A
   });
 
   it('format separates multiple records with dividers', () => {
-    const content = searchRecallsTool.format({
+    const content = searchRecallsTool.format!({
       meta: { total: 2, skip: 0, limit: 10, lastUpdated: '' },
       results: [{ recall_number: 'R-A' }, { recall_number: 'R-B' }],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('R-A');
     expect(text).toContain('R-B');
     expect(text).toContain('---'); // divider
   });
 
   it('format includes meta header', () => {
-    const content = searchRecallsTool.format({
+    const content = searchRecallsTool.format!({
       meta: { total: 50, skip: 0, limit: 10, lastUpdated: '2026-02-01' },
       results: [{ recall_number: 'R-1' }],
     });
 
-    expect(content[0].text).toContain('50 total results');
-    expect(content[0].text).toContain('2026-02-01');
+    expect(textOf(content)).toContain('50 total results');
+    expect(textOf(content)).toContain('2026-02-01');
   });
 
   it('format returns "No results found." for empty results', () => {
-    const content = searchRecallsTool.format({
+    const content = searchRecallsTool.format!({
       meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
       results: [],
     });
 
-    expect(content[0].text).toBe('No results found.');
+    expect(textOf(content)).toBe('No results found.');
   });
 });
 
 // ── openfda_get_drug_label edge cases ─────────────────────────────────────────
 
 describe('openfda_get_drug_label (edge cases)', () => {
-  let ctx: Context;
+  let ctx: ReturnType<typeof createMockContext<typeof getDrugLabelTool.errors>>;
 
   beforeEach(() => {
     mockQuery.mockReset();
     vi.mocked(getOpenFdaService).mockReturnValue({ query: mockQuery } as never);
-    ctx = createMockContext();
+    ctx = createMockContext({ errors: getDrugLabelTool.errors });
   });
 
   it('passes sort param to service', async () => {
@@ -235,7 +245,10 @@ describe('openfda_get_drug_label (edge cases)', () => {
     });
 
     await getDrugLabelTool.handler(
-      { search: 'openfda.brand_name:"aspirin"', sort: 'effective_time:desc' },
+      getDrugLabelTool.input.parse({
+        search: 'openfda.brand_name:"aspirin"',
+        sort: 'effective_time:desc',
+      }),
       ctx,
     );
 
@@ -252,15 +265,16 @@ describe('openfda_get_drug_label (edge cases)', () => {
       results: [],
     });
 
-    await getDrugLabelTool.handler({ search: 'x', skip: 50 }, ctx);
+    await getDrugLabelTool.handler(getDrugLabelTool.input.parse({ search: 'x', skip: 50 }), ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toMatch(/skip=50/);
   });
 
   it('format handles label without optional openfda fields', () => {
-    const content = getDrugLabelTool.format({
+    const content = getDrugLabelTool.format!({
       meta: { total: 1, skip: 0, limit: 5, lastUpdated: '2026-01-01' },
+      kind: 'full',
       results: [
         {
           openfda: {},
@@ -269,14 +283,15 @@ describe('openfda_get_drug_label (edge cases)', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('Unknown');
     expect(text).toContain('For pain.');
   });
 
   it('format renders route field from openfda block', () => {
-    const content = getDrugLabelTool.format({
+    const content = getDrugLabelTool.format!({
       meta: { total: 1, skip: 0, limit: 5, lastUpdated: '' },
+      kind: 'full',
       results: [
         {
           openfda: {
@@ -287,13 +302,14 @@ describe('openfda_get_drug_label (edge cases)', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('ORAL');
   });
 
   it('format includes effective_time when present', () => {
-    const content = getDrugLabelTool.format({
+    const content = getDrugLabelTool.format!({
       meta: { total: 1, skip: 0, limit: 5, lastUpdated: '' },
+      kind: 'full',
       results: [
         {
           openfda: { brand_name: ['TestDrug'] },
@@ -302,12 +318,13 @@ describe('openfda_get_drug_label (edge cases)', () => {
       ],
     });
 
-    expect(content[0].text).toContain('20260101');
+    expect(textOf(content)).toContain('20260101');
   });
 
   it('format includes set_id and version when present', () => {
-    const content = getDrugLabelTool.format({
+    const content = getDrugLabelTool.format!({
       meta: { total: 1, skip: 0, limit: 5, lastUpdated: '' },
+      kind: 'full',
       results: [
         {
           openfda: { brand_name: ['TestDrug'] },
@@ -317,30 +334,31 @@ describe('openfda_get_drug_label (edge cases)', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('abc-uuid-123');
     expect(text).toContain('v2');
   });
 
   it('format returns "No labels found." for empty results', () => {
-    const content = getDrugLabelTool.format({
+    const content = getDrugLabelTool.format!({
       meta: { total: 0, skip: 0, limit: 5, lastUpdated: '' },
+      kind: 'full',
       results: [],
     });
 
-    expect(content[0].text).toBe('No labels found.');
+    expect(textOf(content)).toBe('No labels found.');
   });
 });
 
 // ── openfda_lookup_ndc edge cases ─────────────────────────────────────────────
 
 describe('openfda_lookup_ndc (edge cases)', () => {
-  let ctx: Context;
+  let ctx: ReturnType<typeof createMockContext<typeof lookupNdcTool.errors>>;
 
   beforeEach(() => {
     mockQuery.mockReset();
     vi.mocked(getOpenFdaService).mockReturnValue({ query: mockQuery } as never);
-    ctx = createMockContext();
+    ctx = createMockContext({ errors: lookupNdcTool.errors });
   });
 
   it('passes all query params to service', async () => {
@@ -350,7 +368,12 @@ describe('openfda_lookup_ndc (edge cases)', () => {
     });
 
     await lookupNdcTool.handler(
-      { search: 'brand_name:"aspirin"', sort: 'brand_name:asc', limit: 5, skip: 0 },
+      lookupNdcTool.input.parse({
+        search: 'brand_name:"aspirin"',
+        sort: 'brand_name:asc',
+        limit: 5,
+        skip: 0,
+      }),
       ctx,
     );
 
@@ -372,14 +395,14 @@ describe('openfda_lookup_ndc (edge cases)', () => {
       results: [],
     });
 
-    await lookupNdcTool.handler({ search: 'x', skip: 50 }, ctx);
+    await lookupNdcTool.handler(lookupNdcTool.input.parse({ search: 'x', skip: 50 }), ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toMatch(/skip=50/);
   });
 
   it('format renders generic_name when brand_name also present', () => {
-    const content = lookupNdcTool.format({
+    const content = lookupNdcTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [
         {
@@ -391,12 +414,12 @@ describe('openfda_lookup_ndc (edge cases)', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('genericx');
   });
 
   it('format renders listing_expiration_date when present', () => {
-    const content = lookupNdcTool.format({
+    const content = lookupNdcTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [
         {
@@ -408,11 +431,11 @@ describe('openfda_lookup_ndc (edge cases)', () => {
       ],
     });
 
-    expect(content[0].text).toContain('20301231');
+    expect(textOf(content)).toContain('20301231');
   });
 
   it('format handles record with no brand_name using generic_name as title', () => {
-    const content = lookupNdcTool.format({
+    const content = lookupNdcTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [
         {
@@ -423,21 +446,21 @@ describe('openfda_lookup_ndc (edge cases)', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('metformin');
   });
 
   it('format returns "No NDC records found." for empty results', () => {
-    const content = lookupNdcTool.format({
+    const content = lookupNdcTool.format!({
       meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
       results: [],
     });
 
-    expect(content[0].text).toBe('No NDC records found.');
+    expect(textOf(content)).toBe('No NDC records found.');
   });
 
   it('format renders route as comma-joined when array', () => {
-    const content = lookupNdcTool.format({
+    const content = lookupNdcTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [
         {
@@ -450,19 +473,19 @@ describe('openfda_lookup_ndc (edge cases)', () => {
       ],
     });
 
-    expect(content[0].text).toContain('ORAL, TOPICAL');
+    expect(textOf(content)).toContain('ORAL, TOPICAL');
   });
 });
 
 // ── openfda_search_drug_approvals edge cases ───────────────────────────────────
 
 describe('openfda_search_drug_approvals (edge cases)', () => {
-  let ctx: Context;
+  let ctx: ReturnType<typeof createMockContext<typeof searchDrugApprovalsTool.errors>>;
 
   beforeEach(() => {
     mockQuery.mockReset();
     vi.mocked(getOpenFdaService).mockReturnValue({ query: mockQuery } as never);
-    ctx = createMockContext();
+    ctx = createMockContext({ errors: searchDrugApprovalsTool.errors });
   });
 
   it('query succeeds without search param', async () => {
@@ -471,7 +494,10 @@ describe('openfda_search_drug_approvals (edge cases)', () => {
       results: [{ application_number: 'NDA001' }],
     });
 
-    const result = await searchDrugApprovalsTool.handler({}, ctx);
+    const result = await searchDrugApprovalsTool.handler(
+      searchDrugApprovalsTool.input.parse({}),
+      ctx,
+    );
 
     expect(result.results).toHaveLength(1);
     expect(mockQuery).toHaveBeenCalledWith(
@@ -487,14 +513,14 @@ describe('openfda_search_drug_approvals (edge cases)', () => {
       results: [],
     });
 
-    await searchDrugApprovalsTool.handler({ skip: 30 }, ctx);
+    await searchDrugApprovalsTool.handler(searchDrugApprovalsTool.input.parse({ skip: 30 }), ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toMatch(/skip=30/);
   });
 
   it('format handles records without products', () => {
-    const content = searchDrugApprovalsTool.format({
+    const content = searchDrugApprovalsTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [
         {
@@ -505,13 +531,13 @@ describe('openfda_search_drug_approvals (edge cases)', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('NDA-NOPRODS');
     expect(text).toContain('TestCo');
   });
 
   it('format handles records with products including ingredients', () => {
-    const content = searchDrugApprovalsTool.format({
+    const content = searchDrugApprovalsTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [
         {
@@ -531,23 +557,23 @@ describe('openfda_search_drug_approvals (edge cases)', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('ATORVASTATIN CALCIUM');
     expect(text).toContain('10 mg');
     expect(text).toContain('Prescription');
   });
 
   it('format returns "No drug approvals found." for empty results', () => {
-    const content = searchDrugApprovalsTool.format({
+    const content = searchDrugApprovalsTool.format!({
       meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
       results: [],
     });
 
-    expect(content[0].text).toBe('No drug approvals found.');
+    expect(textOf(content)).toBe('No drug approvals found.');
   });
 
   it('format shows generic name in title when no brand name', () => {
-    const content = searchDrugApprovalsTool.format({
+    const content = searchDrugApprovalsTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [
         {
@@ -558,7 +584,7 @@ describe('openfda_search_drug_approvals (edge cases)', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('amoxicillin');
   });
 });
@@ -566,12 +592,12 @@ describe('openfda_search_drug_approvals (edge cases)', () => {
 // ── openfda_search_device_clearances edge cases ───────────────────────────────
 
 describe('openfda_search_device_clearances (edge cases)', () => {
-  let ctx: Context;
+  let ctx: ReturnType<typeof createMockContext<typeof searchDeviceClearancesTool.errors>>;
 
   beforeEach(() => {
     mockQuery.mockReset();
     vi.mocked(getOpenFdaService).mockReturnValue({ query: mockQuery } as never);
-    ctx = createMockContext();
+    ctx = createMockContext({ errors: searchDeviceClearancesTool.errors });
   });
 
   it('does not echo search when search is absent', async () => {
@@ -580,7 +606,10 @@ describe('openfda_search_device_clearances (edge cases)', () => {
       results: [{ k_number: 'K123' }],
     });
 
-    await searchDeviceClearancesTool.handler({ pathway: '510k' }, ctx);
+    await searchDeviceClearancesTool.handler(
+      searchDeviceClearancesTool.input.parse({ pathway: '510k' }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.effectiveQuery).toBeUndefined();
@@ -592,14 +621,17 @@ describe('openfda_search_device_clearances (edge cases)', () => {
       results: [],
     });
 
-    await searchDeviceClearancesTool.handler({ pathway: '510k', skip: 100 }, ctx);
+    await searchDeviceClearancesTool.handler(
+      searchDeviceClearancesTool.input.parse({ pathway: '510k', skip: 100 }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toMatch(/skip=100/);
   });
 
   it('format handles 510k record with advisory_committee_description', () => {
-    const content = searchDeviceClearancesTool.format({
+    const content = searchDeviceClearancesTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [
         {
@@ -614,12 +646,12 @@ describe('openfda_search_device_clearances (edge cases)', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('Cardiovascular');
   });
 
   it('format handles 510k record with statement_or_summary', () => {
-    const content = searchDeviceClearancesTool.format({
+    const content = searchDeviceClearancesTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [
         {
@@ -632,13 +664,13 @@ describe('openfda_search_device_clearances (edge cases)', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('This device is intended');
   });
 
   it('format renders long statement_or_summary in full (no truncation)', () => {
     const long = 'x'.repeat(600);
-    const content = searchDeviceClearancesTool.format({
+    const content = searchDeviceClearancesTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [
         {
@@ -651,14 +683,14 @@ describe('openfda_search_device_clearances (edge cases)', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     // Full 600-char summary present — previously capped at 500 with an ellipsis.
     expect(text).toContain(long);
     expect(text).not.toContain('...');
   });
 
   it('format handles PMA record with trade_name and generic_name', () => {
-    const content = searchDeviceClearancesTool.format({
+    const content = searchDeviceClearancesTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [
         {
@@ -673,13 +705,13 @@ describe('openfda_search_device_clearances (edge cases)', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('HeartSaverPro');
     expect(text).toContain('S001');
   });
 
   it('format handles fallback record shape (no k_number or pma_number)', () => {
-    const content = searchDeviceClearancesTool.format({
+    const content = searchDeviceClearancesTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [
         {
@@ -689,29 +721,29 @@ describe('openfda_search_device_clearances (edge cases)', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('some value');
   });
 
   it('format returns "No device clearances found." for empty results', () => {
-    const content = searchDeviceClearancesTool.format({
+    const content = searchDeviceClearancesTool.format!({
       meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
       results: [],
     });
 
-    expect(content[0].text).toBe('No device clearances found.');
+    expect(textOf(content)).toBe('No device clearances found.');
   });
 });
 
 // ── openfda_search_animal_events edge cases ───────────────────────────────────
 
 describe('openfda_search_animal_events (edge cases)', () => {
-  let ctx: Context;
+  let ctx: ReturnType<typeof createMockContext<typeof searchAnimalEventsTool.errors>>;
 
   beforeEach(() => {
     mockQuery.mockReset();
     vi.mocked(getOpenFdaService).mockReturnValue({ query: mockQuery } as never);
-    ctx = createMockContext();
+    ctx = createMockContext({ errors: searchAnimalEventsTool.errors });
   });
 
   it('passes search and sort to service', async () => {
@@ -721,7 +753,10 @@ describe('openfda_search_animal_events (edge cases)', () => {
     });
 
     await searchAnimalEventsTool.handler(
-      { search: 'animal.species:"Cat"', sort: 'original_receive_date:asc' },
+      searchAnimalEventsTool.input.parse({
+        search: 'animal.species:"Cat"',
+        sort: 'original_receive_date:asc',
+      }),
       ctx,
     );
 
@@ -741,7 +776,7 @@ describe('openfda_search_animal_events (edge cases)', () => {
       results: [{ unique_aer_id_number: 'AER-EC-2' }],
     });
 
-    await searchAnimalEventsTool.handler({}, ctx);
+    await searchAnimalEventsTool.handler(searchAnimalEventsTool.input.parse({}), ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.effectiveQuery).toBeUndefined();
@@ -753,14 +788,14 @@ describe('openfda_search_animal_events (edge cases)', () => {
       results: [],
     });
 
-    await searchAnimalEventsTool.handler({ skip: 300 }, ctx);
+    await searchAnimalEventsTool.handler(searchAnimalEventsTool.input.parse({ skip: 300 }), ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toMatch(/skip=300/);
   });
 
   it('format handles drug with active_ingredients array', () => {
-    const content = searchAnimalEventsTool.format({
+    const content = searchAnimalEventsTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [
         {
@@ -776,17 +811,17 @@ describe('openfda_search_animal_events (edge cases)', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('AFOXOLANER');
   });
 
   it('format handles sparse record without animal, drug, reaction, or outcome', () => {
-    const content = searchAnimalEventsTool.format({
+    const content = searchAnimalEventsTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [{ unique_aer_id_number: 'AER-SPARSE' }],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('AER-SPARSE');
     expect(typeof text).toBe('string');
   });
@@ -795,12 +830,12 @@ describe('openfda_search_animal_events (edge cases)', () => {
 // ── openfda_search_tobacco_reports edge cases ─────────────────────────────────
 
 describe('openfda_search_tobacco_reports (edge cases)', () => {
-  let ctx: Context;
+  let ctx: ReturnType<typeof createMockContext<typeof searchTobaccoReportsTool.errors>>;
 
   beforeEach(() => {
     mockQuery.mockReset();
     vi.mocked(getOpenFdaService).mockReturnValue({ query: mockQuery } as never);
-    ctx = createMockContext();
+    ctx = createMockContext({ errors: searchTobaccoReportsTool.errors });
   });
 
   it('passes search and sort to service', async () => {
@@ -810,7 +845,10 @@ describe('openfda_search_tobacco_reports (edge cases)', () => {
     });
 
     await searchTobaccoReportsTool.handler(
-      { search: 'nonuser_affected:"Yes"', sort: 'date_submitted:desc' },
+      searchTobaccoReportsTool.input.parse({
+        search: 'nonuser_affected:"Yes"',
+        sort: 'date_submitted:desc',
+      }),
       ctx,
     );
 
@@ -827,7 +865,7 @@ describe('openfda_search_tobacco_reports (edge cases)', () => {
       results: [{ report_id: 'TOB-EC-2' }],
     });
 
-    await searchTobaccoReportsTool.handler({}, ctx);
+    await searchTobaccoReportsTool.handler(searchTobaccoReportsTool.input.parse({}), ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.effectiveQuery).toBeUndefined();
@@ -839,30 +877,33 @@ describe('openfda_search_tobacco_reports (edge cases)', () => {
       results: [],
     });
 
-    await searchTobaccoReportsTool.handler({ skip: 150 }, ctx);
+    await searchTobaccoReportsTool.handler(
+      searchTobaccoReportsTool.input.parse({ skip: 150 }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toMatch(/skip=150/);
   });
 
   it('format handles sparse record without products or health problems', () => {
-    const content = searchTobaccoReportsTool.format({
+    const content = searchTobaccoReportsTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [{ report_id: 'TOB-SPARSE' }],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('TOB-SPARSE');
     expect(typeof text).toBe('string');
   });
 
   it('format returns "No tobacco problem reports found." for empty results', () => {
-    const content = searchTobaccoReportsTool.format({
+    const content = searchTobaccoReportsTool.format!({
       meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
       results: [],
     });
 
-    expect(content[0].text).toBe('No tobacco problem reports found.');
+    expect(textOf(content)).toBe('No tobacco problem reports found.');
   });
 });
 
@@ -880,7 +921,7 @@ describe('security: tool outputs do not contain API key values', () => {
   });
 
   it('count format output does not contain process env values', () => {
-    const content = countValuesTool.format({
+    const content = countValuesTool.format!({
       meta: { lastUpdated: secretKey }, // worst case: key leaks into meta
       results: [{ term: secretKey, count: 1 }],
     });
@@ -889,7 +930,7 @@ describe('security: tool outputs do not contain API key values', () => {
     // just render it as-is (no transformation). This asserts we test the
     // actual format output structure, not that we suppress legitimate content.
     // The real security property is that handlers never put key values into output.
-    const text = content[0].text;
+    const text = textOf(content);
     // The term is "SUPER_SECRET_API_KEY_XYZ" in this mock — format echoes it.
     // The important thing: format() itself does not inject new secrets.
     expect(text).toBeDefined();
@@ -968,7 +1009,7 @@ describe('search delimiter precheck (#38)', () => {
   for (const [label, toolDef, base] of SEARCH_TOOLS) {
     const call = (search: string) => {
       const ctx = createMockContext({ errors: toolDef.errors });
-      return { ctx, run: toolDef.handler({ ...base, search } as never, ctx) };
+      return { ctx, run: Promise.resolve(toolDef.handler({ ...base, search } as never, ctx)) };
     };
 
     it(`${label} declares the malformed_search contract with a recovery hint`, () => {

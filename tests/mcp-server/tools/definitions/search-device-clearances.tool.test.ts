@@ -1,4 +1,3 @@
-import type { Context } from '@cyanheads/mcp-ts-core';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -8,16 +7,17 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 
 import { searchDeviceClearancesTool } from '@/mcp-server/tools/definitions/search-device-clearances.tool.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import { textOf } from '../../../helpers/content.js';
 
 const mockQuery = vi.fn();
 
 describe('openfda_search_device_clearances', () => {
-  let ctx: Context;
+  let ctx: ReturnType<typeof createMockContext<typeof searchDeviceClearancesTool.errors>>;
 
   beforeEach(() => {
     mockQuery.mockReset();
     vi.mocked(getOpenFdaService).mockReturnValue({ query: mockQuery } as never);
-    ctx = createMockContext();
+    ctx = createMockContext({ errors: searchDeviceClearancesTool.errors });
   });
 
   it('queries device/510k for 510k pathway', async () => {
@@ -27,12 +27,12 @@ describe('openfda_search_device_clearances', () => {
     });
 
     const result = await searchDeviceClearancesTool.handler(
-      { pathway: '510k', search: 'applicant:"medtronic"' },
+      searchDeviceClearancesTool.input.parse({ pathway: '510k', search: 'applicant:"medtronic"' }),
       ctx,
     );
 
-    expect(mockQuery.mock.calls[0][0]).toBe('device/510k');
-    expect(result.results[0].k_number).toBe('K123456');
+    expect(mockQuery.mock.calls[0]![0]).toBe('device/510k');
+    expect(result.results[0]!.k_number).toBe('K123456');
   });
 
   it('queries device/pma for pma pathway', async () => {
@@ -41,9 +41,12 @@ describe('openfda_search_device_clearances', () => {
       results: [],
     });
 
-    await searchDeviceClearancesTool.handler({ pathway: 'pma', search: 'applicant:"test"' }, ctx);
+    await searchDeviceClearancesTool.handler(
+      searchDeviceClearancesTool.input.parse({ pathway: 'pma', search: 'applicant:"test"' }),
+      ctx,
+    );
 
-    expect(mockQuery.mock.calls[0][0]).toBe('device/pma');
+    expect(mockQuery.mock.calls[0]![0]).toBe('device/pma');
   });
 
   it('populates enrichment.totalResults', async () => {
@@ -52,7 +55,10 @@ describe('openfda_search_device_clearances', () => {
       results: [{ k_number: 'K123456' }],
     });
 
-    await searchDeviceClearancesTool.handler({ pathway: '510k' }, ctx);
+    await searchDeviceClearancesTool.handler(
+      searchDeviceClearancesTool.input.parse({ pathway: '510k' }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.totalResults).toBe(7);
@@ -65,7 +71,7 @@ describe('openfda_search_device_clearances', () => {
     });
 
     await searchDeviceClearancesTool.handler(
-      { pathway: '510k', search: 'applicant:"medtronic"' },
+      searchDeviceClearancesTool.input.parse({ pathway: '510k', search: 'applicant:"medtronic"' }),
       ctx,
     );
 
@@ -79,14 +85,17 @@ describe('openfda_search_device_clearances', () => {
       results: [],
     });
 
-    await searchDeviceClearancesTool.handler({ pathway: '510k', search: 'nonexistent' }, ctx);
+    await searchDeviceClearancesTool.handler(
+      searchDeviceClearancesTool.input.parse({ pathway: '510k', search: 'nonexistent' }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toMatch(/no matching device clearances/i);
   });
 
   it('formats 510k records', () => {
-    const content = searchDeviceClearancesTool.format({
+    const content = searchDeviceClearancesTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
       results: [
         {
@@ -100,7 +109,7 @@ describe('openfda_search_device_clearances', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('K123456');
     expect(text).toContain('Cardiac Monitor');
     expect(text).toContain('Medtronic');
@@ -108,7 +117,7 @@ describe('openfda_search_device_clearances', () => {
   });
 
   it('formats PMA records', () => {
-    const content = searchDeviceClearancesTool.format({
+    const content = searchDeviceClearancesTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
       results: [
         {
@@ -121,7 +130,7 @@ describe('openfda_search_device_clearances', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('P123456');
     expect(text).toContain('Boston Scientific');
     expect(text).toContain('APPR');

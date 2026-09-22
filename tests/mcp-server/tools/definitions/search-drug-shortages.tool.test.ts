@@ -3,7 +3,6 @@
  * @module tests/mcp-server/tools/definitions/search-drug-shortages.tool.test
  */
 
-import type { Context } from '@cyanheads/mcp-ts-core';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -13,16 +12,17 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 
 import { searchDrugShortagesTool } from '@/mcp-server/tools/definitions/search-drug-shortages.tool.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import { textOf } from '../../../helpers/content.js';
 
 const mockQuery = vi.fn();
 
 describe('openfda_search_drug_shortages', () => {
-  let ctx: Context;
+  let ctx: ReturnType<typeof createMockContext<typeof searchDrugShortagesTool.errors>>;
 
   beforeEach(() => {
     mockQuery.mockReset();
     vi.mocked(getOpenFdaService).mockReturnValue({ query: mockQuery } as never);
-    ctx = createMockContext();
+    ctx = createMockContext({ errors: searchDrugShortagesTool.errors });
   });
 
   it('queries drug/shortages endpoint', async () => {
@@ -31,10 +31,13 @@ describe('openfda_search_drug_shortages', () => {
       results: [{ generic_name: 'Carboplatin Injection', status: 'Current' }],
     });
 
-    const result = await searchDrugShortagesTool.handler({}, ctx);
+    const result = await searchDrugShortagesTool.handler(
+      searchDrugShortagesTool.input.parse({}),
+      ctx,
+    );
 
-    expect(mockQuery.mock.calls[0][0]).toBe('drug/shortages');
-    expect(result.results[0].generic_name).toBe('Carboplatin Injection');
+    expect(mockQuery.mock.calls[0]![0]).toBe('drug/shortages');
+    expect(result.results[0]!.generic_name).toBe('Carboplatin Injection');
   });
 
   it('passes search, sort, limit, skip to service', async () => {
@@ -44,12 +47,12 @@ describe('openfda_search_drug_shortages', () => {
     });
 
     await searchDrugShortagesTool.handler(
-      {
+      searchDrugShortagesTool.input.parse({
         search: 'status:"Current" AND therapeutic_category:"Oncology"',
         sort: 'update_date:desc',
         limit: 5,
         skip: 0,
-      },
+      }),
       ctx,
     );
 
@@ -71,7 +74,7 @@ describe('openfda_search_drug_shortages', () => {
       results: [{ generic_name: 'Drug A', status: 'Current' }],
     });
 
-    await searchDrugShortagesTool.handler({}, ctx);
+    await searchDrugShortagesTool.handler(searchDrugShortagesTool.input.parse({}), ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.totalResults).toBe(127);
@@ -83,7 +86,10 @@ describe('openfda_search_drug_shortages', () => {
       results: [{ generic_name: 'Drug B', status: 'Resolved' }],
     });
 
-    await searchDrugShortagesTool.handler({ search: 'generic_name:"amoxicillin"' }, ctx);
+    await searchDrugShortagesTool.handler(
+      searchDrugShortagesTool.input.parse({ search: 'generic_name:"amoxicillin"' }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.effectiveQuery).toBe('generic_name:"amoxicillin"');
@@ -95,7 +101,7 @@ describe('openfda_search_drug_shortages', () => {
       results: [{ generic_name: 'Drug C', status: 'Current' }],
     });
 
-    await searchDrugShortagesTool.handler({}, ctx);
+    await searchDrugShortagesTool.handler(searchDrugShortagesTool.input.parse({}), ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.effectiveQuery).toBeUndefined();
@@ -107,7 +113,10 @@ describe('openfda_search_drug_shortages', () => {
       results: [],
     });
 
-    await searchDrugShortagesTool.handler({ search: 'generic_name:"nonexistent"' }, ctx);
+    await searchDrugShortagesTool.handler(
+      searchDrugShortagesTool.input.parse({ search: 'generic_name:"nonexistent"' }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toBeDefined();
@@ -120,7 +129,7 @@ describe('openfda_search_drug_shortages', () => {
       results: [],
     });
 
-    await searchDrugShortagesTool.handler({}, ctx);
+    await searchDrugShortagesTool.handler(searchDrugShortagesTool.input.parse({}), ctx);
 
     const enrichment = getEnrichment(ctx);
     // Field hint from catalog should mention searchable fields
@@ -133,14 +142,14 @@ describe('openfda_search_drug_shortages', () => {
       results: [],
     });
 
-    await searchDrugShortagesTool.handler({ skip: 30 }, ctx);
+    await searchDrugShortagesTool.handler(searchDrugShortagesTool.input.parse({ skip: 30 }), ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toMatch(/skip=30/);
   });
 
   it('format renders shortage record with all key fields', () => {
-    const content = searchDrugShortagesTool.format({
+    const content = searchDrugShortagesTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-05-01' },
       results: [
         {
@@ -164,7 +173,7 @@ describe('openfda_search_drug_shortages', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('Carboplatin Injection');
     expect(text).toContain('Current');
     expect(text).toContain('Limited availability');
@@ -177,39 +186,39 @@ describe('openfda_search_drug_shortages', () => {
   });
 
   it('format handles sparse payload — all optional fields absent', () => {
-    const content = searchDrugShortagesTool.format({
+    const content = searchDrugShortagesTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
       results: [{ generic_name: 'Minimal Drug', status: 'Resolved' }],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('Minimal Drug');
     expect(text).toContain('Resolved');
     expect(typeof text).toBe('string');
   });
 
   it('format returns "No drug shortage records found." for empty results', () => {
-    const content = searchDrugShortagesTool.format({
+    const content = searchDrugShortagesTool.format!({
       meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
       results: [],
     });
 
-    expect(content[0].text).toBe('No drug shortage records found.');
+    expect(textOf(content)).toBe('No drug shortage records found.');
   });
 
   it('format includes meta header with totals', () => {
-    const content = searchDrugShortagesTool.format({
+    const content = searchDrugShortagesTool.format!({
       meta: { total: 305, skip: 0, limit: 10, lastUpdated: '2026-05-31' },
       results: [{ generic_name: 'Drug X', status: 'Current' }],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('305 total results');
     expect(text).toContain('2026-05-31');
   });
 
   it('format renders openfda block with NDC when brand_name absent', () => {
-    const content = searchDrugShortagesTool.format({
+    const content = searchDrugShortagesTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [
         {
@@ -220,19 +229,19 @@ describe('openfda_search_drug_shortages', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('NDC: 1234-5678');
   });
 
   it('renders full availability and contact_info — parity with structuredContent (no truncation)', () => {
     const availability = `Availability note. ${'Supply detail. '.repeat(40)}`;
     const contact = `Contact info. ${'Reach the manufacturer. '.repeat(15)}`;
-    const content = searchDrugShortagesTool.format({
+    const content = searchDrugShortagesTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [{ generic_name: 'Drug Z', status: 'Current', availability, contact_info: contact }],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     // Full values present — availability was capped at 400, contact_info at 200.
     expect(text).toContain(availability);
     expect(text).toContain(contact);

@@ -478,11 +478,10 @@ describe('required free-text inputs reject blank values', () => {
   // The constraint is advertised, not only enforced: a client reading the tool's
   // JSON Schema sees minLength + pattern rather than discovering the rule on rejection.
   it('advertises the non-blank constraint in the JSON Schema', () => {
-    const schema = z.toJSONSchema(getDrugLabelTool.input) as {
-      properties: { search: { minLength?: number; pattern?: string } };
-    };
-    expect(schema.properties.search.minLength).toBe(1);
-    expect(schema.properties.search.pattern).toBeDefined();
+    const search = z.toJSONSchema(getDrugLabelTool.input).properties?.search;
+    if (typeof search !== 'object') throw new Error('search is not advertised as a schema');
+    expect(search.minLength).toBe(1);
+    expect(search.pattern).toBeDefined();
   });
 });
 
@@ -697,12 +696,11 @@ describe('sort accepts openFDA’s grammar and rejects only what openFDA rejects
   // The shape reaches the advertised inputSchema, not only the rejection: a client
   // reading tools/list can self-correct before spending a call.
   it('advertises the sort shape as a JSON Schema pattern', () => {
-    const schema = z.toJSONSchema(searchRecallsTool.input) as {
-      properties: { sort: { pattern?: string; minLength?: number } };
-    };
-    const pattern = schema.properties.sort.pattern;
+    const sort = z.toJSONSchema(searchRecallsTool.input).properties?.sort;
+    if (typeof sort !== 'object') throw new Error('sort is not advertised as a schema');
+    const pattern = sort.pattern;
     expect(pattern).toBeDefined();
-    expect(schema.properties.sort.minLength).toBe(1);
+    expect(sort.minLength).toBe(1);
 
     // The advertised pattern is the enforced one — a client applying it locally
     // reaches the same verdict the server does.

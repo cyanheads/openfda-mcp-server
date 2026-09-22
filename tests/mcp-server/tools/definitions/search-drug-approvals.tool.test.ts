@@ -1,4 +1,3 @@
-import type { Context } from '@cyanheads/mcp-ts-core';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -8,16 +7,17 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 
 import { searchDrugApprovalsTool } from '@/mcp-server/tools/definitions/search-drug-approvals.tool.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import { textOf } from '../../../helpers/content.js';
 
 const mockQuery = vi.fn();
 
 describe('openfda_search_drug_approvals', () => {
-  let ctx: Context;
+  let ctx: ReturnType<typeof createMockContext<typeof searchDrugApprovalsTool.errors>>;
 
   beforeEach(() => {
     mockQuery.mockReset();
     vi.mocked(getOpenFdaService).mockReturnValue({ query: mockQuery } as never);
-    ctx = createMockContext();
+    ctx = createMockContext({ errors: searchDrugApprovalsTool.errors });
   });
 
   it('queries drug/drugsfda endpoint', async () => {
@@ -26,10 +26,13 @@ describe('openfda_search_drug_approvals', () => {
       results: [{ application_number: 'NDA012345', sponsor_name: 'Pfizer' }],
     });
 
-    const result = await searchDrugApprovalsTool.handler({ search: 'sponsor_name:"PFIZER"' }, ctx);
+    const result = await searchDrugApprovalsTool.handler(
+      searchDrugApprovalsTool.input.parse({ search: 'sponsor_name:"PFIZER"' }),
+      ctx,
+    );
 
-    expect(mockQuery.mock.calls[0][0]).toBe('drug/drugsfda');
-    expect(result.results[0].application_number).toBe('NDA012345');
+    expect(mockQuery.mock.calls[0]![0]).toBe('drug/drugsfda');
+    expect(result.results[0]!.application_number).toBe('NDA012345');
   });
 
   it('populates enrichment.totalResults', async () => {
@@ -38,7 +41,10 @@ describe('openfda_search_drug_approvals', () => {
       results: [{ application_number: 'NDA012345' }],
     });
 
-    await searchDrugApprovalsTool.handler({ search: 'sponsor_name:"PFIZER"' }, ctx);
+    await searchDrugApprovalsTool.handler(
+      searchDrugApprovalsTool.input.parse({ search: 'sponsor_name:"PFIZER"' }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.totalResults).toBe(15);
@@ -50,7 +56,10 @@ describe('openfda_search_drug_approvals', () => {
       results: [{ application_number: 'NDA012345' }],
     });
 
-    await searchDrugApprovalsTool.handler({ search: 'sponsor_name:"PFIZER"' }, ctx);
+    await searchDrugApprovalsTool.handler(
+      searchDrugApprovalsTool.input.parse({ search: 'sponsor_name:"PFIZER"' }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.effectiveQuery).toBe('sponsor_name:"PFIZER"');
@@ -62,14 +71,17 @@ describe('openfda_search_drug_approvals', () => {
       results: [],
     });
 
-    await searchDrugApprovalsTool.handler({ search: 'nonexistent' }, ctx);
+    await searchDrugApprovalsTool.handler(
+      searchDrugApprovalsTool.input.parse({ search: 'nonexistent' }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toMatch(/no drug approvals/i);
   });
 
   it('formats submissions list', () => {
-    const content = searchDrugApprovalsTool.format({
+    const content = searchDrugApprovalsTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
       results: [
         {
@@ -89,7 +101,7 @@ describe('openfda_search_drug_approvals', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('Lipitor');
     expect(text).toContain('NDA012345');
     expect(text).toContain('Pfizer');
@@ -103,12 +115,12 @@ describe('openfda_search_drug_approvals', () => {
       submission_status: 'AP',
     }));
 
-    const content = searchDrugApprovalsTool.format({
+    const content = searchDrugApprovalsTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [{ application_number: 'NDA999', sponsor_name: 'Test', submissions }],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     // All 15 submissions render — entries 11–15 were previously capped at slice(0, 10).
     const submissionLines = text.split('\n').filter((l) => l.startsWith('- SUPPL'));
     expect(submissionLines).toHaveLength(15);

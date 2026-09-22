@@ -1,4 +1,3 @@
-import type { Context } from '@cyanheads/mcp-ts-core';
 import { McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,11 +8,12 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 
 import { searchRecallsTool } from '@/mcp-server/tools/definitions/search-recalls.tool.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import { textOf } from '../../../helpers/content.js';
 
 const mockQuery = vi.fn();
 
 describe('openfda_search_recalls', () => {
-  let ctx: Context;
+  let ctx: ReturnType<typeof createMockContext<typeof searchRecallsTool.errors>>;
 
   beforeEach(() => {
     mockQuery.mockReset();
@@ -27,9 +27,12 @@ describe('openfda_search_recalls', () => {
       results: [{ recall_number: 'R-1' }],
     });
 
-    const result = await searchRecallsTool.handler({ category: 'drug' }, ctx);
+    const result = await searchRecallsTool.handler(
+      searchRecallsTool.input.parse({ category: 'drug' }),
+      ctx,
+    );
 
-    expect(mockQuery.mock.calls[0][0]).toBe('drug/enforcement');
+    expect(mockQuery.mock.calls[0]![0]).toBe('drug/enforcement');
     expect(result.results).toHaveLength(1);
   });
 
@@ -39,18 +42,27 @@ describe('openfda_search_recalls', () => {
       results: [],
     });
 
-    await searchRecallsTool.handler({ category: 'device', endpoint: 'recall' }, ctx);
+    await searchRecallsTool.handler(
+      searchRecallsTool.input.parse({ category: 'device', endpoint: 'recall' }),
+      ctx,
+    );
 
-    expect(mockQuery.mock.calls[0][0]).toBe('device/recall');
+    expect(mockQuery.mock.calls[0]![0]).toBe('device/recall');
   });
 
   it('rejects recall endpoint for non-device categories', async () => {
     await expect(
-      searchRecallsTool.handler({ category: 'food', endpoint: 'recall' }, ctx),
+      searchRecallsTool.handler(
+        searchRecallsTool.input.parse({ category: 'food', endpoint: 'recall' }),
+        ctx,
+      ),
     ).rejects.toThrow(McpError);
 
     await expect(
-      searchRecallsTool.handler({ category: 'drug', endpoint: 'recall' }, ctx),
+      searchRecallsTool.handler(
+        searchRecallsTool.input.parse({ category: 'drug', endpoint: 'recall' }),
+        ctx,
+      ),
     ).rejects.toThrow(/only available for devices/i);
   });
 
@@ -60,7 +72,7 @@ describe('openfda_search_recalls', () => {
       results: [{ recall_number: 'R-1' }],
     });
 
-    await searchRecallsTool.handler({ category: 'drug' }, ctx);
+    await searchRecallsTool.handler(searchRecallsTool.input.parse({ category: 'drug' }), ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.totalResults).toBe(23);
@@ -72,7 +84,10 @@ describe('openfda_search_recalls', () => {
       results: [{ recall_number: 'R-1' }],
     });
 
-    await searchRecallsTool.handler({ category: 'drug', search: 'classification:"Class I"' }, ctx);
+    await searchRecallsTool.handler(
+      searchRecallsTool.input.parse({ category: 'drug', search: 'classification:"Class I"' }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.effectiveQuery).toBe('classification:"Class I"');
@@ -84,7 +99,7 @@ describe('openfda_search_recalls', () => {
       results: [],
     });
 
-    await searchRecallsTool.handler({ category: 'drug' }, ctx);
+    await searchRecallsTool.handler(searchRecallsTool.input.parse({ category: 'drug' }), ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toBeDefined();
@@ -113,12 +128,12 @@ describe('openfda_search_recalls', () => {
     const input = searchRecallsTool.input.parse({ category: 'drug', limit: 1 });
     const result = await searchRecallsTool.handler(input, ctx);
 
-    expect(mockQuery.mock.calls[0][1]).toMatchObject({ search: undefined });
+    expect(mockQuery.mock.calls[0]![1]).toMatchObject({ search: undefined });
     expect(result.results).toHaveLength(1);
   });
 
   it('formats recall records', () => {
-    const content = searchRecallsTool.format({
+    const content = searchRecallsTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
       results: [
         {
@@ -133,7 +148,7 @@ describe('openfda_search_recalls', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('R-123');
     expect(text).toContain('Class I');
     expect(text).toContain('Acme Corp');
@@ -157,10 +172,10 @@ describe('openfda_search_recalls', () => {
       ],
     };
 
-    const text = searchRecallsTool.format(structured)[0].text;
+    const text = textOf(searchRecallsTool.format!(structured));
     // content[] carries the identical full field values that structuredContent exposes.
-    expect(text).toContain(structured.results[0].reason_for_recall);
-    expect(text).toContain(structured.results[0].product_description);
+    expect(text).toContain(structured.results[0]!.reason_for_recall);
+    expect(text).toContain(structured.results[0]!.product_description);
     expect(reason.length).toBeGreaterThan(300);
     expect(product.length).toBeGreaterThan(300);
     expect(text).not.toContain('...');

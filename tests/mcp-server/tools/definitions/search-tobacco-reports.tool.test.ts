@@ -3,7 +3,6 @@
  * @module tests/mcp-server/tools/definitions/search-tobacco-reports.tool.test
  */
 
-import type { Context } from '@cyanheads/mcp-ts-core';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -13,16 +12,17 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 
 import { searchTobaccoReportsTool } from '@/mcp-server/tools/definitions/search-tobacco-reports.tool.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import { textOf } from '../../../helpers/content.js';
 
 const mockQuery = vi.fn();
 
 describe('openfda_search_tobacco_reports', () => {
-  let ctx: Context;
+  let ctx: ReturnType<typeof createMockContext<typeof searchTobaccoReportsTool.errors>>;
 
   beforeEach(() => {
     mockQuery.mockReset();
     vi.mocked(getOpenFdaService).mockReturnValue({ query: mockQuery } as never);
-    ctx = createMockContext();
+    ctx = createMockContext({ errors: searchTobaccoReportsTool.errors });
   });
 
   it('queries tobacco/problem endpoint', async () => {
@@ -31,9 +31,12 @@ describe('openfda_search_tobacco_reports', () => {
       results: [{ report_id: 'TOB-1' }],
     });
 
-    const result = await searchTobaccoReportsTool.handler({}, ctx);
+    const result = await searchTobaccoReportsTool.handler(
+      searchTobaccoReportsTool.input.parse({}),
+      ctx,
+    );
 
-    expect(mockQuery.mock.calls[0][0]).toBe('tobacco/problem');
+    expect(mockQuery.mock.calls[0]![0]).toBe('tobacco/problem');
     expect(result.results).toHaveLength(1);
   });
 
@@ -44,12 +47,12 @@ describe('openfda_search_tobacco_reports', () => {
     });
 
     await searchTobaccoReportsTool.handler(
-      {
+      searchTobaccoReportsTool.input.parse({
         search: 'tobacco_products:"Electronic cigarette"',
         sort: 'date_submitted:desc',
         limit: 3,
         skip: 5,
-      },
+      }),
       ctx,
     );
 
@@ -71,7 +74,7 @@ describe('openfda_search_tobacco_reports', () => {
       results: [{ report_id: 'TOB-3' }],
     });
 
-    await searchTobaccoReportsTool.handler({}, ctx);
+    await searchTobaccoReportsTool.handler(searchTobaccoReportsTool.input.parse({}), ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.totalResults).toBe(42);
@@ -83,7 +86,10 @@ describe('openfda_search_tobacco_reports', () => {
       results: [{ report_id: 'TOB-4' }],
     });
 
-    await searchTobaccoReportsTool.handler({ search: 'reported_health_problems:"Seizure"' }, ctx);
+    await searchTobaccoReportsTool.handler(
+      searchTobaccoReportsTool.input.parse({ search: 'reported_health_problems:"Seizure"' }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.effectiveQuery).toBe('reported_health_problems:"Seizure"');
@@ -95,7 +101,7 @@ describe('openfda_search_tobacco_reports', () => {
       results: [{ report_id: 'TOB-5' }],
     });
 
-    await searchTobaccoReportsTool.handler({}, ctx);
+    await searchTobaccoReportsTool.handler(searchTobaccoReportsTool.input.parse({}), ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.effectiveQuery).toBeUndefined();
@@ -107,7 +113,10 @@ describe('openfda_search_tobacco_reports', () => {
       results: [],
     });
 
-    await searchTobaccoReportsTool.handler({ search: 'nonexistent_field:"foo"' }, ctx);
+    await searchTobaccoReportsTool.handler(
+      searchTobaccoReportsTool.input.parse({ search: 'nonexistent_field:"foo"' }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toBeDefined();
@@ -119,14 +128,14 @@ describe('openfda_search_tobacco_reports', () => {
       results: [],
     });
 
-    await searchTobaccoReportsTool.handler({ skip: 50 }, ctx);
+    await searchTobaccoReportsTool.handler(searchTobaccoReportsTool.input.parse({ skip: 50 }), ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toMatch(/skip=50/);
   });
 
   it('formats records with products and health problems', () => {
-    const content = searchTobaccoReportsTool.format({
+    const content = searchTobaccoReportsTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-02-01' },
       results: [
         {
@@ -143,7 +152,7 @@ describe('openfda_search_tobacco_reports', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('TOB-FMT-1');
     expect(text).toContain('20260115');
     expect(text).toContain('Electronic cigarette');
@@ -154,39 +163,39 @@ describe('openfda_search_tobacco_reports', () => {
 
   it('format handles sparse payload — all optional fields absent', () => {
     // Upstream record with only report_id — all other fields omitted
-    const content = searchTobaccoReportsTool.format({
+    const content = searchTobaccoReportsTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
       results: [{ report_id: 'SPARSE-TOB' }],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('SPARSE-TOB');
     // Should not crash on missing optional fields
     expect(typeof text).toBe('string');
   });
 
   it('format returns "No tobacco problem reports found." for empty results', () => {
-    const content = searchTobaccoReportsTool.format({
+    const content = searchTobaccoReportsTool.format!({
       meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
       results: [],
     });
 
-    expect(content[0].text).toBe('No tobacco problem reports found.');
+    expect(textOf(content)).toBe('No tobacco problem reports found.');
   });
 
   it('format includes meta header with totals', () => {
-    const content = searchTobaccoReportsTool.format({
+    const content = searchTobaccoReportsTool.format!({
       meta: { total: 777, skip: 0, limit: 10, lastUpdated: '2026-04-01' },
       results: [{ report_id: 'TOB-HDR' }],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('777 total results');
     expect(text).toContain('2026-04-01');
   });
 
   it('format renders every reported product problem, placeholders included (#24)', () => {
-    const content = searchTobaccoReportsTool.format({
+    const content = searchTobaccoReportsTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [
         {
@@ -197,14 +206,14 @@ describe('openfda_search_tobacco_reports', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     // structuredContent carries the placeholder, so content[] must too.
     expect(text).toContain('No information provided');
     expect(text).toContain('Nausea');
   });
 
   it('format renders a zero problem count rather than dropping it (#24)', () => {
-    const content = searchTobaccoReportsTool.format({
+    const content = searchTobaccoReportsTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [
         {
@@ -216,12 +225,12 @@ describe('openfda_search_tobacco_reports', () => {
       ],
     });
 
-    expect(content[0].text).toContain('0 health problem(s)');
-    expect(content[0].text).toContain('0 product problem(s)');
+    expect(textOf(content)).toContain('0 health problem(s)');
+    expect(textOf(content)).toContain('0 product problem(s)');
   });
 
   it('format renders counts when present', () => {
-    const content = searchTobaccoReportsTool.format({
+    const content = searchTobaccoReportsTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [
         {
@@ -233,7 +242,7 @@ describe('openfda_search_tobacco_reports', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('2 product(s)');
     expect(text).toContain('3 health problem(s)');
     expect(text).toContain('1 product problem(s)');

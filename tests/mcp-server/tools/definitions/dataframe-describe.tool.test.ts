@@ -59,7 +59,9 @@ describe('openfda_dataframe_describe', () => {
     await setCanvasMock(undefined);
     const ctx = createMockContext({ errors: dataframeDescribeTool.errors });
     const input = dataframeDescribeTool.input.parse({ canvas_id: 'cv_abc1234' });
-    const err = (await dataframeDescribeTool.handler(input, ctx).catch((e) => e)) as McpError;
+    const err = (await Promise.resolve(dataframeDescribeTool.handler(input, ctx)).catch(
+      (e) => e,
+    )) as McpError;
     expect(err).toBeInstanceOf(McpError);
     expect(err.code).toBe(JsonRpcErrorCode.ValidationError); // typed, not InternalError (-32603)
     expect(err.data).toMatchObject({ reason: 'canvas_disabled' });

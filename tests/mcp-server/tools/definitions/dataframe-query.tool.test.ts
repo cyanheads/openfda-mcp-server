@@ -77,7 +77,9 @@ describe('openfda_dataframe_query', () => {
     await setCanvasMock(undefined);
     const ctx = createMockContext({ errors: dataframeQueryTool.errors });
     const input = dataframeQueryTool.input.parse({ canvas_id: 'cv_abc1234', query: 'SELECT 1' });
-    const err = (await dataframeQueryTool.handler(input, ctx).catch((e) => e)) as McpError;
+    const err = (await Promise.resolve(dataframeQueryTool.handler(input, ctx)).catch(
+      (e) => e,
+    )) as McpError;
     expect(err).toBeInstanceOf(McpError);
     expect(err.code).toBe(JsonRpcErrorCode.ValidationError); // typed, not InternalError (-32603)
     expect(err.data).toMatchObject({ reason: 'canvas_disabled' });
@@ -175,15 +177,15 @@ describe('openfda_dataframe_query — canvas error mapping (#28)', () => {
       ),
     );
     const ctx = createMockContext({ errors: dataframeQueryTool.errors });
-    const err = (await dataframeQueryTool
-      .handler(
+    const err = (await Promise.resolve(
+      dataframeQueryTool.handler(
         dataframeQueryTool.input.parse({
           canvas_id: 'cv_abc1234',
           query: "INSERT INTO spilled_x VALUES ('x')",
         }),
         ctx,
-      )
-      .catch((e) => e)) as McpError;
+      ),
+    ).catch((e) => e)) as McpError;
 
     expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
     expect(err.data).toMatchObject({
@@ -203,15 +205,15 @@ describe('openfda_dataframe_query — canvas error mapping (#28)', () => {
       }),
     );
     const ctx = createMockContext({ errors: dataframeQueryTool.errors });
-    const err = (await dataframeQueryTool
-      .handler(
+    const err = (await Promise.resolve(
+      dataframeQueryTool.handler(
         dataframeQueryTool.input.parse({
           canvas_id: 'cv_abc1234',
           query: "SELECT * FROM read_csv('/etc/passwd')",
         }),
         ctx,
-      )
-      .catch((e) => e)) as McpError;
+      ),
+    ).catch((e) => e)) as McpError;
 
     expect(err.data).toMatchObject({ reason: 'invalid_query' });
     expect(recoveryHint(err)).toContain('openfda_dataframe_describe');
@@ -225,15 +227,15 @@ describe('openfda_dataframe_query — canvas error mapping (#28)', () => {
       }),
     );
     const ctx = createMockContext({ errors: dataframeQueryTool.errors });
-    const err = (await dataframeQueryTool
-      .handler(
+    const err = (await Promise.resolve(
+      dataframeQueryTool.handler(
         dataframeQueryTool.input.parse({
           canvas_id: 'cv_abc1234',
           query: 'SELECT nope FROM spilled_x',
         }),
         ctx,
-      )
-      .catch((e) => e)) as McpError;
+      ),
+    ).catch((e) => e)) as McpError;
 
     expect(err.data).toMatchObject({ reason: 'invalid_query' });
     expect(err.message).toContain('Referenced column "nope" not found');
@@ -254,15 +256,15 @@ describe('openfda_dataframe_query — canvas error mapping (#28)', () => {
       ),
     );
     const ctx = createMockContext({ errors: dataframeQueryTool.errors });
-    const err = (await dataframeQueryTool
-      .handler(
+    const err = (await Promise.resolve(
+      dataframeQueryTool.handler(
         dataframeQueryTool.input.parse({
           canvas_id: 'cv_abc1234',
           query: 'SELECT CAST(classification AS INTEGER) FROM spilled_x',
         }),
         ctx,
-      )
-      .catch((e) => e)) as McpError;
+      ),
+    ).catch((e) => e)) as McpError;
 
     expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
     expect(err.data).toMatchObject({
@@ -283,15 +285,15 @@ describe('openfda_dataframe_query — canvas error mapping (#28)', () => {
       }),
     );
     const ctx = createMockContext({ errors: dataframeQueryTool.errors });
-    const err = (await dataframeQueryTool
-      .handler(
+    const err = (await Promise.resolve(
+      dataframeQueryTool.handler(
         dataframeQueryTool.input.parse({
           canvas_id: 'cv_abc1234',
           query: 'SELECT * FROM spilled_gone',
         }),
         ctx,
-      )
-      .catch((e) => e)) as McpError;
+      ),
+    ).catch((e) => e)) as McpError;
 
     expect(err.code).toBe(JsonRpcErrorCode.NotFound);
     expect(err.data).toMatchObject({ reason: 'missing_table', tableName: 'spilled_gone' });
@@ -308,9 +310,12 @@ describe('openfda_dataframe_query — canvas error mapping (#28)', () => {
       'acquire',
     );
     const ctx = createMockContext({ errors: dataframeQueryTool.errors });
-    const err = (await dataframeQueryTool
-      .handler(dataframeQueryTool.input.parse({ canvas_id: 'cv_gone001', query: 'SELECT 1' }), ctx)
-      .catch((e) => e)) as McpError;
+    const err = (await Promise.resolve(
+      dataframeQueryTool.handler(
+        dataframeQueryTool.input.parse({ canvas_id: 'cv_gone001', query: 'SELECT 1' }),
+        ctx,
+      ),
+    ).catch((e) => e)) as McpError;
 
     expect(err.code).toBe(JsonRpcErrorCode.NotFound);
     expect(err.data).toMatchObject({ reason: 'canvas_not_found' });

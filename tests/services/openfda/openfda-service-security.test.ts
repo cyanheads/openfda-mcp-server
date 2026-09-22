@@ -184,7 +184,7 @@ describe('OpenFdaService security', () => {
       await service.query('drug/event', { search: injectionPayload }, ctx);
 
       // Payload should be URL-encoded in the request — not evaluated
-      const calledUrl = new URL(mockFetch.mock.calls[0][0] as string);
+      const calledUrl = new URL(mockFetch.mock.calls[0]![0] as string);
       expect(calledUrl.searchParams.get('search')).toBe(injectionPayload);
     });
 
@@ -199,7 +199,7 @@ describe('OpenFdaService security', () => {
 
       await service.query('drug/event', { search: '<script>alert(1)</script>' }, ctx);
 
-      const calledUrl = new URL(mockFetch.mock.calls[0][0] as string);
+      const calledUrl = new URL(mockFetch.mock.calls[0]![0] as string);
       const rawSearch = calledUrl.search;
       expect(rawSearch).not.toContain('<script>');
     });
@@ -216,7 +216,7 @@ describe('OpenFdaService security', () => {
       // Endpoint path traversal attempt
       await service.query('drug/event', {}, ctx);
 
-      const calledUrl = new URL(mockFetch.mock.calls[0][0] as string);
+      const calledUrl = new URL(mockFetch.mock.calls[0]![0] as string);
       expect(calledUrl.pathname).toBe('/drug/event.json');
     });
   });
@@ -289,7 +289,7 @@ describe('OpenFdaService security', () => {
 
       await service.query('drug/event', { count: 'patient.reaction.reactionmeddrapt.exact' }, ctx);
 
-      const calledUrl = new URL(mockFetch.mock.calls[0][0] as string);
+      const calledUrl = new URL(mockFetch.mock.calls[0]![0] as string);
       expect(calledUrl.searchParams.get('count')).toBe('patient.reaction.reactionmeddrapt.exact');
     });
 
@@ -304,7 +304,7 @@ describe('OpenFdaService security', () => {
 
       await service.query('drug/event', { search: 'aspirin' }, ctx);
 
-      const calledUrl = new URL(mockFetch.mock.calls[0][0] as string);
+      const calledUrl = new URL(mockFetch.mock.calls[0]![0] as string);
       expect(calledUrl.searchParams.has('count')).toBe(false);
     });
   });

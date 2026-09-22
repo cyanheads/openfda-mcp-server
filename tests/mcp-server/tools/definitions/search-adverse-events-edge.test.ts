@@ -4,7 +4,6 @@
  * @module tests/mcp-server/tools/definitions/search-adverse-events-edge
  */
 
-import type { Context } from '@cyanheads/mcp-ts-core';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -14,16 +13,17 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 
 import { searchAdverseEventsTool } from '@/mcp-server/tools/definitions/search-adverse-events.tool.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import { textOf } from '../../../helpers/content.js';
 
 const mockQuery = vi.fn();
 
 describe('openfda_search_adverse_events (edge cases)', () => {
-  let ctx: Context;
+  let ctx: ReturnType<typeof createMockContext<typeof searchAdverseEventsTool.errors>>;
 
   beforeEach(() => {
     mockQuery.mockReset();
     vi.mocked(getOpenFdaService).mockReturnValue({ query: mockQuery } as never);
-    ctx = createMockContext();
+    ctx = createMockContext({ errors: searchAdverseEventsTool.errors });
   });
 
   it('maps food category to food/event endpoint', async () => {
@@ -32,9 +32,12 @@ describe('openfda_search_adverse_events (edge cases)', () => {
       results: [],
     });
 
-    await searchAdverseEventsTool.handler({ category: 'food' }, ctx);
+    await searchAdverseEventsTool.handler(
+      searchAdverseEventsTool.input.parse({ category: 'food' }),
+      ctx,
+    );
 
-    expect(mockQuery.mock.calls[0][0]).toBe('food/event');
+    expect(mockQuery.mock.calls[0]![0]).toBe('food/event');
   });
 
   it('does not echo search in enrichment when search is absent', async () => {
@@ -43,7 +46,10 @@ describe('openfda_search_adverse_events (edge cases)', () => {
       results: [{ safetyreportid: '1', patient: {} }],
     });
 
-    await searchAdverseEventsTool.handler({ category: 'drug' }, ctx);
+    await searchAdverseEventsTool.handler(
+      searchAdverseEventsTool.input.parse({ category: 'drug' }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.effectiveQuery).toBeUndefined();
@@ -55,7 +61,10 @@ describe('openfda_search_adverse_events (edge cases)', () => {
       results: [],
     });
 
-    await searchAdverseEventsTool.handler({ category: 'drug', skip: 100 }, ctx);
+    await searchAdverseEventsTool.handler(
+      searchAdverseEventsTool.input.parse({ category: 'drug', skip: 100 }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toMatch(/skip=100/);
@@ -63,7 +72,7 @@ describe('openfda_search_adverse_events (edge cases)', () => {
 
   describe('format() paths', () => {
     it('formats device adverse event records', () => {
-      const content = searchAdverseEventsTool.format({
+      const content = searchAdverseEventsTool.format!({
         meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
         results: [
           {
@@ -85,7 +94,7 @@ describe('openfda_search_adverse_events (edge cases)', () => {
         ],
       });
 
-      const text = content[0].text;
+      const text = textOf(content);
       expect(text).toContain('MDR-001');
       expect(text).toContain('Malfunction');
       expect(text).toContain('CathPro');
@@ -95,7 +104,7 @@ describe('openfda_search_adverse_events (edge cases)', () => {
 
     it('renders full device mdr_text narrative — parity with structuredContent (no truncation)', () => {
       const narrative = `Device event narrative. ${'Detailed procedural step. '.repeat(30)}`;
-      const content = searchAdverseEventsTool.format({
+      const content = searchAdverseEventsTool.format!({
         meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
         results: [
           {
@@ -106,7 +115,7 @@ describe('openfda_search_adverse_events (edge cases)', () => {
         ],
       });
 
-      const text = content[0].text;
+      const text = textOf(content);
       // Full narrative present — previously capped at 500 chars with an ellipsis.
       expect(text).toContain(narrative);
       expect(narrative.length).toBeGreaterThan(500);
@@ -114,7 +123,7 @@ describe('openfda_search_adverse_events (edge cases)', () => {
     });
 
     it('formats food adverse event records', () => {
-      const content = searchAdverseEventsTool.format({
+      const content = searchAdverseEventsTool.format!({
         meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
         results: [
           {
@@ -132,7 +141,7 @@ describe('openfda_search_adverse_events (edge cases)', () => {
         ],
       });
 
-      const text = content[0].text;
+      const text = textOf(content);
       expect(text).toContain('FOOD-123');
       expect(text).toContain('NAUSEA');
       expect(text).toContain('Hospitalization');
@@ -140,7 +149,7 @@ describe('openfda_search_adverse_events (edge cases)', () => {
     });
 
     it('formats fallback record via JSON dump for unknown record shape', () => {
-      const content = searchAdverseEventsTool.format({
+      const content = searchAdverseEventsTool.format!({
         meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
         results: [
           {
@@ -150,12 +159,12 @@ describe('openfda_search_adverse_events (edge cases)', () => {
         ],
       });
 
-      const text = content[0].text;
+      const text = textOf(content);
       expect(text).toContain('some_field');
     });
 
     it('handles drug record with male patient sex', () => {
-      const content = searchAdverseEventsTool.format({
+      const content = searchAdverseEventsTool.format!({
         meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
         results: [
           {
@@ -170,14 +179,14 @@ describe('openfda_search_adverse_events (edge cases)', () => {
         ],
       });
 
-      const text = content[0].text;
+      const text = textOf(content);
       expect(text).toContain('Male');
       expect(text).toContain('Concomitant');
       expect(text).toContain('No'); // serious '2' → No
     });
 
     it('handles drug record with unknown characterization', () => {
-      const content = searchAdverseEventsTool.format({
+      const content = searchAdverseEventsTool.format!({
         meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
         results: [
           {
@@ -189,12 +198,12 @@ describe('openfda_search_adverse_events (edge cases)', () => {
         ],
       });
 
-      const text = content[0].text;
+      const text = textOf(content);
       expect(text).toContain('UNKNOWN_DRUG');
     });
 
     it('handles drug record with indication and route on drug', () => {
-      const content = searchAdverseEventsTool.format({
+      const content = searchAdverseEventsTool.format!({
         meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
         results: [
           {
@@ -213,13 +222,13 @@ describe('openfda_search_adverse_events (edge cases)', () => {
         ],
       });
 
-      const text = content[0].text;
+      const text = textOf(content);
       expect(text).toContain('for DIABETES');
       expect(text).toContain('via ORAL');
     });
 
     it('handles interacting drug characterization', () => {
-      const content = searchAdverseEventsTool.format({
+      const content = searchAdverseEventsTool.format!({
         meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
         results: [
           {
@@ -231,12 +240,12 @@ describe('openfda_search_adverse_events (edge cases)', () => {
         ],
       });
 
-      const text = content[0].text;
+      const text = textOf(content);
       expect(text).toContain('Interacting');
     });
 
     it('handles sparse drug record with no reactions or drugs', () => {
-      const content = searchAdverseEventsTool.format({
+      const content = searchAdverseEventsTool.format!({
         meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
         results: [
           {
@@ -246,12 +255,12 @@ describe('openfda_search_adverse_events (edge cases)', () => {
         ],
       });
 
-      const text = content[0].text;
+      const text = textOf(content);
       expect(text).toContain('SPARSE-1');
     });
 
     it('handles food record with string reactions (not array)', () => {
-      const content = searchAdverseEventsTool.format({
+      const content = searchAdverseEventsTool.format!({
         meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
         results: [
           {
@@ -261,24 +270,24 @@ describe('openfda_search_adverse_events (edge cases)', () => {
         ],
       });
 
-      const text = content[0].text;
+      const text = textOf(content);
       expect(text).toContain('VOMITING');
     });
 
     it('includes meta header in format output', () => {
-      const content = searchAdverseEventsTool.format({
+      const content = searchAdverseEventsTool.format!({
         meta: { total: 100, skip: 10, limit: 10, lastUpdated: '2026-05-01' },
         results: [{ safetyreportid: 'X', patient: {} }],
       });
 
-      const text = content[0].text;
+      const text = textOf(content);
       expect(text).toContain('100 total results');
       expect(text).toContain('skip: 10');
       expect(text).toContain('2026-05-01');
     });
 
     it('handles device record with no mdr_text', () => {
-      const content = searchAdverseEventsTool.format({
+      const content = searchAdverseEventsTool.format!({
         meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
         results: [
           {
@@ -289,13 +298,13 @@ describe('openfda_search_adverse_events (edge cases)', () => {
         ],
       });
 
-      const text = content[0].text;
+      const text = textOf(content);
       expect(text).toContain('Widget');
       expect(text).not.toContain('Narrative');
     });
 
     it('handles device record with mdr_text missing text field', () => {
-      const content = searchAdverseEventsTool.format({
+      const content = searchAdverseEventsTool.format!({
         meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
         results: [
           {
@@ -306,7 +315,7 @@ describe('openfda_search_adverse_events (edge cases)', () => {
         ],
       });
 
-      const text = content[0].text;
+      const text = textOf(content);
       expect(text).toContain('Sensor');
     });
   });

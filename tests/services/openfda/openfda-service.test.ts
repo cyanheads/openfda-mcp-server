@@ -73,7 +73,7 @@ describe('OpenFdaService', () => {
         ctx,
       );
 
-      const url = new URL(mockFetch.mock.calls[0][0]);
+      const url = new URL(mockFetch.mock.calls[0]![0]);
       expect(url.pathname).toBe('/drug/event.json');
       expect(url.searchParams.get('search')).toBe('aspirin');
       expect(url.searchParams.get('sort')).toBe('receivedate:desc');
@@ -92,7 +92,7 @@ describe('OpenFdaService', () => {
 
       await serviceWithKey.query('drug/event', {}, ctx);
 
-      const url = new URL(mockFetch.mock.calls[0][0]);
+      const url = new URL(mockFetch.mock.calls[0]![0]);
       expect(url.searchParams.get('api_key')).toBe('my-key');
     });
 
@@ -103,7 +103,7 @@ describe('OpenFdaService', () => {
 
       await service.query('drug/event', {}, ctx);
 
-      const url = new URL(mockFetch.mock.calls[0][0]);
+      const url = new URL(mockFetch.mock.calls[0]![0]);
       expect(url.searchParams.has('api_key')).toBe(false);
     });
 

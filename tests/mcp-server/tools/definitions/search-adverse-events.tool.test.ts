@@ -1,4 +1,3 @@
-import type { Context } from '@cyanheads/mcp-ts-core';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -8,16 +7,17 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 
 import { searchAdverseEventsTool } from '@/mcp-server/tools/definitions/search-adverse-events.tool.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import { textOf } from '../../../helpers/content.js';
 
 const mockQuery = vi.fn();
 
 describe('openfda_search_adverse_events', () => {
-  let ctx: Context;
+  let ctx: ReturnType<typeof createMockContext<typeof searchAdverseEventsTool.errors>>;
 
   beforeEach(() => {
     mockQuery.mockReset();
     vi.mocked(getOpenFdaService).mockReturnValue({ query: mockQuery } as never);
-    ctx = createMockContext();
+    ctx = createMockContext({ errors: searchAdverseEventsTool.errors });
   });
 
   it('maps category to endpoint and returns results', async () => {
@@ -27,7 +27,10 @@ describe('openfda_search_adverse_events', () => {
     };
     mockQuery.mockResolvedValue(response);
 
-    const result = await searchAdverseEventsTool.handler({ category: 'drug' }, ctx);
+    const result = await searchAdverseEventsTool.handler(
+      searchAdverseEventsTool.input.parse({ category: 'drug' }),
+      ctx,
+    );
 
     expect(mockQuery).toHaveBeenCalledWith(
       'drug/event',
@@ -44,9 +47,12 @@ describe('openfda_search_adverse_events', () => {
       results: [],
     });
 
-    await searchAdverseEventsTool.handler({ category: 'device' }, ctx);
+    await searchAdverseEventsTool.handler(
+      searchAdverseEventsTool.input.parse({ category: 'device' }),
+      ctx,
+    );
 
-    expect(mockQuery.mock.calls[0][0]).toBe('device/event');
+    expect(mockQuery.mock.calls[0]![0]).toBe('device/event');
   });
 
   it('populates enrichment.totalResults', async () => {
@@ -55,7 +61,10 @@ describe('openfda_search_adverse_events', () => {
       results: [{ safetyreportid: '1', patient: {} }],
     });
 
-    await searchAdverseEventsTool.handler({ category: 'drug' }, ctx);
+    await searchAdverseEventsTool.handler(
+      searchAdverseEventsTool.input.parse({ category: 'drug' }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.totalResults).toBe(42);
@@ -68,7 +77,10 @@ describe('openfda_search_adverse_events', () => {
     });
 
     await searchAdverseEventsTool.handler(
-      { category: 'drug', search: 'patient.drug.medicinalproduct:"aspirin"' },
+      searchAdverseEventsTool.input.parse({
+        category: 'drug',
+        search: 'patient.drug.medicinalproduct:"aspirin"',
+      }),
       ctx,
     );
 
@@ -82,14 +94,17 @@ describe('openfda_search_adverse_events', () => {
       results: [],
     });
 
-    await searchAdverseEventsTool.handler({ category: 'drug', search: 'nonexistent' }, ctx);
+    await searchAdverseEventsTool.handler(
+      searchAdverseEventsTool.input.parse({ category: 'drug', search: 'nonexistent' }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toMatch(/no adverse event/i);
   });
 
   it('formats drug adverse event records', () => {
-    const content = searchAdverseEventsTool.format({
+    const content = searchAdverseEventsTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
       results: [
         {
@@ -105,7 +120,7 @@ describe('openfda_search_adverse_events', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('RPT-1');
     expect(text).toContain('NAUSEA');
     expect(text).toContain('ASPIRIN');
@@ -114,17 +129,17 @@ describe('openfda_search_adverse_events', () => {
   });
 
   it('formats empty results', () => {
-    const content = searchAdverseEventsTool.format({
+    const content = searchAdverseEventsTool.format!({
       meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
       results: [],
     });
 
-    expect(content[0].text).toBe('No results found.');
+    expect(textOf(content)).toBe('No results found.');
   });
 
   it('renders a device report through the device arm, not the drug arm (#24)', () => {
     /** device/event records carry their own `patient` array alongside `device`. */
-    const content = searchAdverseEventsTool.format({
+    const content = searchAdverseEventsTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [
         {
@@ -137,7 +152,7 @@ describe('openfda_search_adverse_events', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('### Report DEV-9');
     expect(text).toContain('**Event type:** Malfunction');
     expect(text).toContain('**Device:** INFUSION PUMP by ACME');

@@ -1,4 +1,3 @@
-import type { Context } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError, validationError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -9,16 +8,17 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 
 import { countValuesTool } from '@/mcp-server/tools/definitions/count-values.tool.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import { textOf } from '../../../helpers/content.js';
 
 const mockQuery = vi.fn();
 
 describe('openfda_count_values', () => {
-  let ctx: Context;
+  let ctx: ReturnType<typeof createMockContext<typeof countValuesTool.errors>>;
 
   beforeEach(() => {
     mockQuery.mockReset();
     vi.mocked(getOpenFdaService).mockReturnValue({ query: mockQuery } as never);
-    ctx = createMockContext();
+    ctx = createMockContext({ errors: countValuesTool.errors });
   });
 
   it('passes count param to service', async () => {
@@ -31,7 +31,10 @@ describe('openfda_count_values', () => {
     });
 
     const result = await countValuesTool.handler(
-      { endpoint: 'drug/event', count: 'patient.reaction.reactionmeddrapt.exact' },
+      countValuesTool.input.parse({
+        endpoint: 'drug/event',
+        count: 'patient.reaction.reactionmeddrapt.exact',
+      }),
       ctx,
     );
 
@@ -53,11 +56,11 @@ describe('openfda_count_values', () => {
     });
 
     const result = await countValuesTool.handler(
-      { endpoint: 'drug/event', count: 'receivedate' },
+      countValuesTool.input.parse({ endpoint: 'drug/event', count: 'receivedate' }),
       ctx,
     );
 
-    expect(result.results[0].term).toBe('2026');
+    expect(result.results[0]!.term).toBe('2026');
   });
 
   it('populates enrichment.termCount', async () => {
@@ -70,7 +73,10 @@ describe('openfda_count_values', () => {
     });
 
     await countValuesTool.handler(
-      { endpoint: 'drug/event', count: 'patient.reaction.reactionmeddrapt.exact' },
+      countValuesTool.input.parse({
+        endpoint: 'drug/event',
+        count: 'patient.reaction.reactionmeddrapt.exact',
+      }),
       ctx,
     );
 
@@ -88,7 +94,11 @@ describe('openfda_count_values', () => {
     });
 
     await countValuesTool.handler(
-      { endpoint: 'drug/event', count: 'patient.reaction.reactionmeddrapt.exact', limit: 2 },
+      countValuesTool.input.parse({
+        endpoint: 'drug/event',
+        count: 'patient.reaction.reactionmeddrapt.exact',
+        limit: 2,
+      }),
       ctx,
     );
 
@@ -106,7 +116,11 @@ describe('openfda_count_values', () => {
     });
 
     await countValuesTool.handler(
-      { endpoint: 'drug/event', count: 'patient.reaction.reactionmeddrapt.exact', limit: 100 },
+      countValuesTool.input.parse({
+        endpoint: 'drug/event',
+        count: 'patient.reaction.reactionmeddrapt.exact',
+        limit: 100,
+      }),
       ctx,
     );
 
@@ -121,7 +135,11 @@ describe('openfda_count_values', () => {
     mockQuery.mockResolvedValue({ meta: { lastUpdated: '' }, results: [] });
 
     const result = await countValuesTool.handler(
-      { endpoint: 'drug/ndc', count: 'dosage_form.exact', search: 'brand_name:"zzznotreal"' },
+      countValuesTool.input.parse({
+        endpoint: 'drug/ndc',
+        count: 'dosage_form.exact',
+        search: 'brand_name:"zzznotreal"',
+      }),
       ctx,
     );
 
@@ -133,7 +151,7 @@ describe('openfda_count_values', () => {
   });
 
   it('formats as markdown table', () => {
-    const content = countValuesTool.format({
+    const content = countValuesTool.format!({
       meta: { lastUpdated: '2026-01-01' },
       results: [
         { term: 'NAUSEA', count: 1000 },
@@ -141,7 +159,7 @@ describe('openfda_count_values', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('| # | Term | Count |');
     expect(text).toContain('NAUSEA');
     expect(text).toContain('FATIGUE');
@@ -149,12 +167,12 @@ describe('openfda_count_values', () => {
   });
 
   it('formats empty results without message', () => {
-    const content = countValuesTool.format({
+    const content = countValuesTool.format!({
       meta: { lastUpdated: '' },
       results: [],
     });
 
-    expect(content[0].text).toBe('No count results.');
+    expect(textOf(content)).toBe('No count results.');
   });
 
   // Issue #34 — a non-aggregatable count expression is a fixable query error, so it
@@ -175,9 +193,12 @@ describe('openfda_count_values', () => {
         }),
       );
 
-      const err = (await countValuesTool
-        .handler({ endpoint: 'drug/ndc', count: 'product_ndc.exact', limit: 2 }, ctx)
-        .catch((e: unknown) => e)) as McpError;
+      const err = (await Promise.resolve(
+        countValuesTool.handler(
+          { endpoint: 'drug/ndc', count: 'product_ndc.exact', limit: 2 },
+          ctx,
+        ),
+      ).catch((e: unknown) => e)) as McpError;
 
       expect(err).toBeInstanceOf(McpError);
       expect(err.data).toMatchObject({ reason: 'not_aggregatable' });
@@ -195,9 +216,12 @@ describe('openfda_count_values', () => {
         ),
       );
 
-      const err = (await countValuesTool
-        .handler({ endpoint: 'drug/enforcement', count: 'classification', limit: 5 }, ctx)
-        .catch((e: unknown) => e)) as McpError;
+      const err = (await Promise.resolve(
+        countValuesTool.handler(
+          { endpoint: 'drug/enforcement', count: 'classification', limit: 5 },
+          ctx,
+        ),
+      ).catch((e: unknown) => e)) as McpError;
 
       expect(err).toBeInstanceOf(McpError);
       expect(err.data).toMatchObject({ reason: 'not_aggregatable' });

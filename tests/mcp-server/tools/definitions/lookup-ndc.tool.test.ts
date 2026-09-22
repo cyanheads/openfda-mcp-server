@@ -1,4 +1,3 @@
-import type { Context } from '@cyanheads/mcp-ts-core';
 import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -8,16 +7,17 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 
 import { lookupNdcTool } from '@/mcp-server/tools/definitions/lookup-ndc.tool.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import { textOf } from '../../../helpers/content.js';
 
 const mockQuery = vi.fn();
 
 describe('openfda_lookup_ndc', () => {
-  let ctx: Context;
+  let ctx: ReturnType<typeof createMockContext<typeof lookupNdcTool.errors>>;
 
   beforeEach(() => {
     mockQuery.mockReset();
     vi.mocked(getOpenFdaService).mockReturnValue({ query: mockQuery } as never);
-    ctx = createMockContext();
+    ctx = createMockContext({ errors: lookupNdcTool.errors });
   });
 
   it('queries drug/ndc endpoint', async () => {
@@ -26,10 +26,13 @@ describe('openfda_lookup_ndc', () => {
       results: [{ product_ndc: '0363-0218', brand_name: 'Aspirin' }],
     });
 
-    const result = await lookupNdcTool.handler({ search: 'product_ndc:"0363-0218"' }, ctx);
+    const result = await lookupNdcTool.handler(
+      lookupNdcTool.input.parse({ search: 'product_ndc:"0363-0218"' }),
+      ctx,
+    );
 
-    expect(mockQuery.mock.calls[0][0]).toBe('drug/ndc');
-    expect(result.results[0].brand_name).toBe('Aspirin');
+    expect(mockQuery.mock.calls[0]![0]).toBe('drug/ndc');
+    expect(result.results[0]!.brand_name).toBe('Aspirin');
   });
 
   it('populates enrichment.totalResults and effectiveQuery', async () => {
@@ -38,7 +41,10 @@ describe('openfda_lookup_ndc', () => {
       results: [{ product_ndc: '0363-0218', brand_name: 'Aspirin' }],
     });
 
-    await lookupNdcTool.handler({ search: 'product_ndc:"0363-0218"' }, ctx);
+    await lookupNdcTool.handler(
+      lookupNdcTool.input.parse({ search: 'product_ndc:"0363-0218"' }),
+      ctx,
+    );
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.totalResults).toBe(1);
@@ -51,14 +57,14 @@ describe('openfda_lookup_ndc', () => {
       results: [],
     });
 
-    await lookupNdcTool.handler({ search: 'nonexistent' }, ctx);
+    await lookupNdcTool.handler(lookupNdcTool.input.parse({ search: 'nonexistent' }), ctx);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toMatch(/no NDC records/i);
   });
 
   it('formats NDC records with ingredients and packaging', () => {
-    const content = lookupNdcTool.format({
+    const content = lookupNdcTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
       results: [
         {
@@ -74,7 +80,7 @@ describe('openfda_lookup_ndc', () => {
       ],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     expect(text).toContain('Aspirin');
     expect(text).toContain('0363-0218');
     expect(text).toContain('Walgreen');
@@ -89,12 +95,12 @@ describe('openfda_lookup_ndc', () => {
       description: `Package ${i}`,
     }));
 
-    const content = lookupNdcTool.format({
+    const content = lookupNdcTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '' },
       results: [{ brand_name: 'Test', product_ndc: '0000', labeler_name: 'Lab', packaging }],
     });
 
-    const text = content[0].text;
+    const text = textOf(content);
     // All 8 packaging entries render — entries 6–8 were previously capped at slice(0, 5).
     for (const p of packaging) {
       expect(text).toContain(p.package_ndc);
