@@ -33,6 +33,8 @@ Resolve one drug name to its FDA identity, then fan out in parallel to the bound
 |---|---|---|---|
 | `drug` | string | Yes | Drug name — brand or generic (e.g. `metformin`, `Humira`). Resolved once to canonical FDA identifiers, which then key every sub-query. |
 
+`drug_name` and `name` are accepted as aliases of `drug` (`inputAliases`), rewritten before validation and never advertised — `drug` stays the only parameter in `inputSchema`. An alias sent alongside `drug` is rejected as an unknown key.
+
 **Behavior.** Resolves the name against `drug/label` (falling back to `drug/ndc`), picking the best single-ingredient match — combination products are de-prioritized so a single-drug query doesn't resolve to a combo. Structured endpoints (`drug/enforcement`, `drug/drugsfda`, `drug/shortages`) then query by the canonical `openfda.generic_name`; the free-text adverse-event field (`drug/event` `patient.drug.medicinalproduct`) queries by the supplied term for better recall. Each section is best-effort: a failed or empty sub-query yields `null` (or `[]` for recalls) rather than failing the whole call.
 
 **Returns:** `meta` (echoed `drug`, `resolvedVia`) + `identity` (`brand_names`, `generic_name`, `product_ndc`, `rxcui`, `spl_set_id`) + `label` (`indications`, `warnings`, `dosage`) + `adverse_events` (`total`, `seriousCount`, `topReactions[]`) + `recalls[]` (`classification`, `reason`, `recalling_firm`, `date`) + `approval` (`applicationNumber`, `sponsor`, `marketingStatus`) + `shortage` (`status`, `availability`). Sections are `null` when unavailable.
@@ -214,10 +216,10 @@ Run a read-only SQL `SELECT` against a DataCanvas table staged by a search tool 
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `canvas_id` | string | Yes | Canvas ID from a search tool response (present when the search ran with `stage: true`). |
+| `canvas_id` | string | Yes | Canvas ID from a search tool response (present when the search ran with `stage: true`) — 10 URL-safe characters, declared with the framework's `CanvasIdSchema`. |
 | `query` | string | Yes | SQL `SELECT`. Use the table name from `openfda_dataframe_describe`. Scalar columns are text (`CAST` for numeric math); nested objects/arrays are JSON columns (e.g. `json_extract_string(openfda, '$.brand_name[0]')`). |
 
-**Returns:** `rows[]`, `row_count`, `truncated`, `canvas_id`. Results are capped at the canvas row limit (10,000 by default); `truncated: true` says rows beyond the cap exist and both response paths point at `ORDER BY` + `LIMIT`/`OFFSET` pagination. Only `SELECT` is allowed — DDL/DML/COPY/file-reading functions are rejected by the framework's four-layer SQL gate, and those rejections are mapped onto the tool's own `invalid_query` / `missing_table` contract so recovery text names MCP tools rather than internal canvas APIs.
+**Returns:** `rows[]`, `row_count`, `truncated`, `canvas_id`. Results are capped at the canvas row limit (10,000 by default); `truncated: true` says rows beyond the cap exist and both response paths point at `ORDER BY` + `LIMIT`/`OFFSET` pagination. Only `SELECT` is allowed — DDL/DML/COPY/file-reading functions are rejected by the framework's four-layer SQL gate, and those rejections are mapped onto the tool's own `invalid_query` / `missing_table` contract so recovery text names MCP tools rather than internal canvas APIs. A `SELECT` that prepares and then fails on a staged value (DuckDB's `sql_execution_error`, typically a `CAST` over text that does not convert) maps onto `invalid_query` too, keeping the engine message and pointing at `TRY_CAST`.
 
 ### `openfda_dataframe_describe`
 
@@ -225,7 +227,7 @@ List the tables and column schemas on a DataCanvas. Call before `openfda_datafra
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `canvas_id` | string | Yes | Canvas ID from a search tool response. |
+| `canvas_id` | string | Yes | Canvas ID from a search tool response — 10 URL-safe characters (`CanvasIdSchema`). |
 
 **Returns:** `tables[]` (`name`, `kind`, `row_count`, `columns[]` of `name`/`type`/`nullable`), `canvas_id`.
 
@@ -264,7 +266,7 @@ The budget is enforced differently depending on the payload's shape, because the
 
 Every multi-row search tool — `openfda_search_adverse_events`, `_recalls`, `_drug_approvals`, `_device_clearances`, `_animal_events`, `_drug_shortages`, `_tobacco_reports`, and `openfda_lookup_ndc` — carries:
 
-- `stage` (boolean, default `false`) — stage the matched set for SQL. Passing a `canvas_id` implies it, so successive searches accumulate onto one canvas for cross-table joins.
+- `stage` (boolean, default `false`) — stage the matched set for SQL. Passing a `canvas_id` implies it, so successive searches accumulate onto one canvas for cross-table joins. The `canvas_id` input is declared with `CanvasIdSchema` (10 URL-safe characters, advertised as a `pattern`), so a value that could never be an id fails argument validation instead of reaching the canvas registry.
 - Output fields `canvas_id`, `canvas_table`, `spilled`, `staged_rows`, `truncated` (all absent unless the call staged).
 
 `limit`/`skip` mean the same thing in both modes: a window over the matched set, served from the drain's first page when it covers the window and fetched directly otherwise, and bounded by the same [inline byte budget](#bounded-page-many-rows). A staged call therefore never disagrees with an unstaged one about whether records exist at a given offset or about how many of a window fit inline, and record size never empties the page.

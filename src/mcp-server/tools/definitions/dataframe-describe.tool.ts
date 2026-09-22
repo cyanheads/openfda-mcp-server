@@ -5,20 +5,17 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { CanvasIdSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 
 export const dataframeDescribeTool = tool('openfda_dataframe_describe', {
   description:
-    'List the tables and column schemas on a DataCanvas staged by an openFDA search tool. ' +
-    'Call before openfda_dataframe_query to discover the exact table name, column names, and DuckDB types needed for valid SQL. ' +
-    'row_count is the full staged result set, not the inline preview count. ' +
-    'Columns typed JSON hold nested openFDA objects/arrays — query them with DuckDB json functions.',
+    'List the tables and column schemas on a DataCanvas staged by an openFDA search tool. Call before openfda_dataframe_query to discover the exact table name, column names, and DuckDB types needed for valid SQL. row_count is the full staged result set, not the inline preview count. Columns typed JSON hold nested openFDA objects/arrays — query them with DuckDB json functions.',
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
-    canvas_id: nonBlankString().describe(
-      'Canvas ID from an openFDA search tool response (present when the search ran with stage=true).',
+    canvas_id: CanvasIdSchema.describe(
+      'Canvas ID from the canvas_id field of an openFDA search tool response (openfda_search_* or openfda_lookup_ndc), present when the search ran with stage=true.',
     ),
   }),
   output: z.object({
@@ -73,6 +70,7 @@ export const dataframeDescribeTool = tool('openfda_dataframe_describe', {
       when: 'The canvas_id does not correspond to an active canvas session.',
       recovery:
         'Re-run the openFDA search tool to stage a fresh canvas, then use the new canvas_id.',
+      thrownBy: 'service',
     },
   ],
 

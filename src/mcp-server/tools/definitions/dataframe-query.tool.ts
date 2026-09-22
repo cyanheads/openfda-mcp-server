@@ -5,7 +5,12 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import type { QueryResult } from '@cyanheads/mcp-ts-core/canvas';
+import {
+  CanvasIdSchema,
+  DUCKDB_ERROR_REASONS,
+  type QueryResult,
+  SQL_GATE_REASONS,
+} from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { formatCell } from '@/mcp-server/tools/format-utils.js';
 import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
@@ -20,16 +25,28 @@ import { getCanvas } from '@/services/canvas/canvas-accessor.js';
  * function), which is the one part of the upstream text worth keeping.
  */
 const SQL_REJECTION_DETAIL: Record<string, string> = {
-  non_select_statement: 'only a single read-only SELECT statement is accepted',
-  multi_statement: 'only a single read-only SELECT statement is accepted',
-  plan_operator_not_allowed:
+  [SQL_GATE_REASONS.nonSelectStatement]: 'only a single read-only SELECT statement is accepted',
+  [SQL_GATE_REASONS.multiStatement]: 'only a single read-only SELECT statement is accepted',
+  [SQL_GATE_REASONS.planOperatorNotAllowed]:
     'the query plan uses an operation the read-only gate blocks (writes, file reads, or utility statements)',
-  denied_function: 'the query calls a table function that reads outside the canvas',
-  denied_function_in_plan: 'the query plan calls a table function that reads outside the canvas',
-  system_catalog_access: 'system catalog tables are not queryable through this tool',
-  sql_parse_error: 'the statement could not be parsed as SQL',
-  sql_read_only: 'the statement is not read-only',
+  [SQL_GATE_REASONS.deniedFunction]:
+    'the query calls a table function that reads outside the canvas',
+  [SQL_GATE_REASONS.deniedFunctionInPlan]:
+    'the query plan calls a table function that reads outside the canvas',
+  [SQL_GATE_REASONS.systemCatalogAccess]:
+    'system catalog tables are not queryable through this tool',
+  [DUCKDB_ERROR_REASONS.sqlParseError]: 'the statement could not be parsed as SQL',
+  [DUCKDB_ERROR_REASONS.sqlReadOnly]: 'the statement is not read-only',
 };
+
+/**
+ * Recovery for a SELECT that prepared and then failed on a staged value. Staged
+ * scalars are VARCHAR, so the common case is a CAST meeting a value that does
+ * not convert — the invalid_query contract hint (check names, fix the SQL) does
+ * not name that fix.
+ */
+const SQL_EXECUTION_HINT =
+  'Staged scalars are text: wrap the conversion in TRY_CAST, or filter out the rows the message names before converting them.';
 
 /** Structured payload the canvas layer attaches to its `McpError`s. */
 function canvasErrorData(err: unknown): {
@@ -42,22 +59,23 @@ function canvasErrorData(err: unknown): {
     : {};
 }
 
+/** The DuckDB engine message behind a canvas execution failure, without the canvas prefix. */
+function engineMessage(err: unknown): string {
+  const cause = err instanceof Error ? err.cause : undefined;
+  if (cause instanceof Error) return cause.message;
+  return err instanceof Error ? err.message : String(err);
+}
+
 export const dataframeQueryTool = tool('openfda_dataframe_query', {
   description:
-    'Run a read-only SQL SELECT against a DataCanvas table staged by an openFDA search tool (call one with stage=true; its response carries canvas_id + canvas_table). ' +
-    'Enables GROUP BY, COUNT/SUM/AVG, time-series, and joins across the staged result set without re-paging the API. ' +
-    'Call openfda_dataframe_describe first to get the exact table and column names. ' +
-    'Results are capped at the canvas row limit — when truncated is true, page the rest with ORDER BY plus LIMIT/OFFSET. ' +
-    "Scalar fields are stored as text (CAST for numeric math); nested objects/arrays are JSON columns — read them with DuckDB json functions, e.g. json_extract_string(openfda, '$.brand_name[0]'). " +
-    'Only SELECT is allowed — DDL, DML, COPY, and file-reading functions are blocked.',
+    "Run a read-only SQL SELECT against a DataCanvas table staged by an openFDA search tool (call one with stage=true; its response carries canvas_id + canvas_table). Enables GROUP BY, COUNT/SUM/AVG, time-series, and joins across the staged result set without re-paging the API. Call openfda_dataframe_describe first to get the exact table and column names. Results are capped at the canvas row limit — when truncated is true, page the rest with ORDER BY plus LIMIT/OFFSET. Scalar fields are stored as text (CAST for numeric math); nested objects/arrays are JSON columns — read them with DuckDB json functions, e.g. json_extract_string(openfda, '$.brand_name[0]'). Only SELECT is allowed — DDL, DML, COPY, and file-reading functions are blocked.",
   annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
   input: z.object({
-    canvas_id: nonBlankString().describe(
-      'Canvas ID from an openFDA search tool response (the canvas_id field, present when the search ran with stage=true).',
+    canvas_id: CanvasIdSchema.describe(
+      'Canvas ID from the canvas_id field of an openFDA search tool response (openfda_search_* or openfda_lookup_ndc), present when the search ran with stage=true.',
     ),
     query: nonBlankString().describe(
-      'SQL SELECT against the staged table. Use the table name from openfda_dataframe_describe. ' +
-        'Example: "SELECT classification, COUNT(*) AS n FROM spilled_ab12cd34 GROUP BY classification ORDER BY n DESC".',
+      'SQL SELECT against the staged table. Use the table name from openfda_dataframe_describe. Example: "SELECT classification, COUNT(*) AS n FROM spilled_ab12cd34 GROUP BY classification ORDER BY n DESC".',
     ),
   }),
   output: z.object({
@@ -105,7 +123,7 @@ export const dataframeQueryTool = tool('openfda_dataframe_query', {
     {
       reason: 'invalid_query',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'The SQL is not a valid SELECT, references an unknown column, or uses a blocked operation.',
+      when: 'The SQL is not a valid SELECT, references an unknown column, uses a blocked operation, or fails on a staged value (a CAST that does not convert).',
       recovery:
         'Call openfda_dataframe_describe to verify table and column names, then correct the SQL. Only a single read-only SELECT is permitted.',
     },
@@ -147,7 +165,7 @@ export const dataframeQueryTool = tool('openfda_dataframe_query', {
           { ...ctx.recoveryFor('missing_table'), ...(tableName ? { tableName } : {}) },
         );
       }
-      if (reason === 'invalid_sql') {
+      if (reason === SQL_GATE_REASONS.invalidSql) {
         throw ctx.fail(
           'invalid_query',
           `SQL rejected: ${binderMessage ?? 'the query failed to prepare'}.`,
@@ -156,6 +174,12 @@ export const dataframeQueryTool = tool('openfda_dataframe_query', {
             canvas_reason: reason,
           },
         );
+      }
+      if (reason === DUCKDB_ERROR_REASONS.sqlExecutionError) {
+        throw ctx.fail('invalid_query', `SQL failed on the staged data: ${engineMessage(err)}`, {
+          recovery: { hint: SQL_EXECUTION_HINT },
+          canvas_reason: reason,
+        });
       }
       if (reason && reason in SQL_REJECTION_DETAIL) {
         throw ctx.fail('invalid_query', `SQL rejected: ${SQL_REJECTION_DETAIL[reason]}.`, {

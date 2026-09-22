@@ -152,14 +152,14 @@ describe('openfda_search_recalls — canvas enabled', () => {
 
   it('stages when a canvas_id is passed back, without stage=true', async () => {
     await setSvcMock(makeSvc(40));
-    const { canvas } = makeCanvas('cv_prior');
+    const { canvas } = makeCanvas('cv_prior00');
     await setCanvasMock(canvas);
 
     const ctx = createMockContext({ errors: searchRecallsTool.errors });
-    const input = searchRecallsTool.input.parse({ category: 'drug', canvas_id: 'cv_prior' });
+    const input = searchRecallsTool.input.parse({ category: 'drug', canvas_id: 'cv_prior00' });
     const result = await searchRecallsTool.handler(input, ctx);
 
-    expect(canvas.acquire).toHaveBeenCalledWith('cv_prior', expect.anything());
+    expect(canvas.acquire).toHaveBeenCalledWith('cv_prior00', expect.anything());
     expect(result.spilled).toBe(true);
     expect(result.staged_rows).toBe(40);
   });

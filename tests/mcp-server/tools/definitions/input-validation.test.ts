@@ -460,16 +460,8 @@ describe('required free-text inputs reject blank values', () => {
     ],
     ['openfda_drug_profile.drug', (v) => drugProfileTool.input.parse({ drug: v })],
     [
-      'openfda_dataframe_query.canvas_id',
-      (v) => dataframeQueryTool.input.parse({ canvas_id: v, query: 'SELECT 1' }),
-    ],
-    [
       'openfda_dataframe_query.query',
-      (v) => dataframeQueryTool.input.parse({ canvas_id: 'cv-1', query: v }),
-    ],
-    [
-      'openfda_dataframe_describe.canvas_id',
-      (v) => dataframeDescribeTool.input.parse({ canvas_id: v }),
+      (v) => dataframeQueryTool.input.parse({ canvas_id: 'cv_abc1234', query: v }),
     ],
   ];
 
@@ -498,7 +490,7 @@ describe('required free-text inputs reject blank values', () => {
 
 /**
  * Omitting an optional free-text input is a legitimate mode — an unfiltered
- * browse, an unsorted result set, a fresh canvas. Supplying a blank one is not:
+ * browse, an unsorted result set. Supplying a blank one is not:
  * the URL builder drops a falsy parameter and openFDA reads a whitespace-only
  * one as match-all, so a caller who believes it filtered gets the endpoint's
  * whole corpus back with no error and no notice. `.optional()` on
@@ -519,49 +511,24 @@ describe('optional free-text inputs reject blank values', () => {
       ['search'],
     ],
     ['openfda_get_drug_label', getDrugLabelTool.input, { search: 'aspirin' }, ['sort']],
-    ['openfda_lookup_ndc', lookupNdcTool.input, { search: 'aspirin' }, ['sort', 'canvas_id']],
+    ['openfda_lookup_ndc', lookupNdcTool.input, { search: 'aspirin' }, ['sort']],
     [
       'openfda_search_adverse_events',
       searchAdverseEventsTool.input,
       { category: 'drug' },
-      ['search', 'sort', 'canvas_id'],
+      ['search', 'sort'],
     ],
-    [
-      'openfda_search_animal_events',
-      searchAnimalEventsTool.input,
-      {},
-      ['search', 'sort', 'canvas_id'],
-    ],
+    ['openfda_search_animal_events', searchAnimalEventsTool.input, {}, ['search', 'sort']],
     [
       'openfda_search_device_clearances',
       searchDeviceClearancesTool.input,
       { pathway: '510k' },
-      ['search', 'sort', 'canvas_id'],
+      ['search', 'sort'],
     ],
-    [
-      'openfda_search_drug_approvals',
-      searchDrugApprovalsTool.input,
-      {},
-      ['search', 'sort', 'canvas_id'],
-    ],
-    [
-      'openfda_search_drug_shortages',
-      searchDrugShortagesTool.input,
-      {},
-      ['search', 'sort', 'canvas_id'],
-    ],
-    [
-      'openfda_search_recalls',
-      searchRecallsTool.input,
-      { category: 'drug' },
-      ['search', 'sort', 'canvas_id'],
-    ],
-    [
-      'openfda_search_tobacco_reports',
-      searchTobaccoReportsTool.input,
-      {},
-      ['search', 'sort', 'canvas_id'],
-    ],
+    ['openfda_search_drug_approvals', searchDrugApprovalsTool.input, {}, ['search', 'sort']],
+    ['openfda_search_drug_shortages', searchDrugShortagesTool.input, {}, ['search', 'sort']],
+    ['openfda_search_recalls', searchRecallsTool.input, { category: 'drug' }, ['search', 'sort']],
+    ['openfda_search_tobacco_reports', searchTobaccoReportsTool.input, {}, ['search', 'sort']],
   ];
 
   for (const [label, schema, base, fields] of cases) {
@@ -590,11 +557,70 @@ describe('optional free-text inputs reject blank values', () => {
       properties: Record<string, { minLength?: number; pattern?: string }>;
       required?: string[];
     };
-    for (const field of ['search', 'sort', 'canvas_id']) {
+    for (const field of ['search', 'sort']) {
       expect(schema.properties[field]?.minLength).toBe(1);
       expect(schema.properties[field]?.pattern).toBeDefined();
       expect(schema.required ?? []).not.toContain(field);
     }
+  });
+});
+
+// ── canvas_id shape ───────────────────────────────────────────────────────────
+
+/**
+ * Every `canvas_id` input is declared with the framework's `CanvasIdSchema`, the
+ * shape the canvas registry mints (10 URL-safe characters). A value that could
+ * never be an id — blank, the wrong length, a stray character — is rejected at
+ * argument validation with the pattern advertised in `inputSchema`, instead of
+ * reaching the registry and failing there as an expired canvas.
+ */
+describe('canvas_id inputs take the minted canvas-id shape', () => {
+  const VALID_ID = 'cv_abc1234';
+  const NOT_AN_ID = ['', '   ', 'cv_abc123', 'cv_abc12345', 'cv abc123', 'cv_abc123!'];
+
+  /** Tool label, its input schema, a minimal valid base input, and whether canvas_id is required. */
+  const cases: Array<[string, { parse: (value: unknown) => unknown }, object, boolean]> = [
+    ['openfda_dataframe_query', dataframeQueryTool.input, { query: 'SELECT 1' }, true],
+    ['openfda_dataframe_describe', dataframeDescribeTool.input, {}, true],
+    ['openfda_lookup_ndc', lookupNdcTool.input, { search: 'aspirin' }, false],
+    ['openfda_search_adverse_events', searchAdverseEventsTool.input, { category: 'drug' }, false],
+    ['openfda_search_animal_events', searchAnimalEventsTool.input, {}, false],
+    [
+      'openfda_search_device_clearances',
+      searchDeviceClearancesTool.input,
+      { pathway: '510k' },
+      false,
+    ],
+    ['openfda_search_drug_approvals', searchDrugApprovalsTool.input, {}, false],
+    ['openfda_search_drug_shortages', searchDrugShortagesTool.input, {}, false],
+    ['openfda_search_recalls', searchRecallsTool.input, { category: 'drug' }, false],
+    ['openfda_search_tobacco_reports', searchTobaccoReportsTool.input, {}, false],
+  ];
+
+  for (const [label, schema, base, required] of cases) {
+    it.each(NOT_AN_ID)(`${label}.canvas_id rejects %j`, (value) => {
+      expect(() => schema.parse({ ...base, canvas_id: value })).toThrow();
+    });
+
+    it(`${label}.canvas_id accepts a minted-shape id`, () => {
+      expect(schema.parse({ ...base, canvas_id: VALID_ID })).toMatchObject({
+        canvas_id: VALID_ID,
+      });
+    });
+
+    it(`${label}.canvas_id is ${required ? 'required' : 'optional'}`, () => {
+      if (required) expect(() => schema.parse(base)).toThrow();
+      else expect((schema.parse(base) as { canvas_id?: string }).canvas_id).toBeUndefined();
+    });
+  }
+
+  it('advertises the id pattern without making an optional canvas_id required', () => {
+    const schema = z.toJSONSchema(searchRecallsTool.input) as {
+      properties: Record<string, { pattern?: string }>;
+      required?: string[];
+    };
+    expect(schema.properties.canvas_id?.pattern).toBe('^[A-Za-z0-9_-]{10}$');
+    expect(schema.required ?? []).not.toContain('canvas_id');
   });
 });
 

@@ -29,7 +29,7 @@ async function setCanvasMock(impl: unknown) {
 describe('openfda_dataframe_describe', () => {
   beforeEach(async () => {
     const mockInstance = {
-      canvasId: 'cv_abc123',
+      canvasId: 'cv_abc1234',
       describe: vi.fn().mockResolvedValue([
         {
           name: 'spilled_x',
@@ -47,9 +47,9 @@ describe('openfda_dataframe_describe', () => {
 
   it('lists staged tables with column schemas', async () => {
     const ctx = createMockContext({ errors: dataframeDescribeTool.errors });
-    const input = dataframeDescribeTool.input.parse({ canvas_id: 'cv_abc123' });
+    const input = dataframeDescribeTool.input.parse({ canvas_id: 'cv_abc1234' });
     const result = await dataframeDescribeTool.handler(input, ctx);
-    expect(result.canvas_id).toBe('cv_abc123');
+    expect(result.canvas_id).toBe('cv_abc1234');
     expect(result.tables).toHaveLength(1);
     expect(result.tables[0]).toMatchObject({ name: 'spilled_x', kind: 'table', row_count: 2500 });
     expect(result.tables[0]?.columns[1]).toMatchObject({ name: 'openfda', type: 'JSON' });
@@ -58,7 +58,7 @@ describe('openfda_dataframe_describe', () => {
   it('throws a typed canvas_disabled error (not -32603) when canvas is not enabled', async () => {
     await setCanvasMock(undefined);
     const ctx = createMockContext({ errors: dataframeDescribeTool.errors });
-    const input = dataframeDescribeTool.input.parse({ canvas_id: 'cv_abc123' });
+    const input = dataframeDescribeTool.input.parse({ canvas_id: 'cv_abc1234' });
     const err = (await dataframeDescribeTool.handler(input, ctx).catch((e) => e)) as McpError;
     expect(err).toBeInstanceOf(McpError);
     expect(err.code).toBe(JsonRpcErrorCode.ValidationError); // typed, not InternalError (-32603)
@@ -78,7 +78,7 @@ describe('openfda_dataframe_describe', () => {
           columns: [{ name: 'recall_number', type: 'VARCHAR', nullable: true }],
         },
       ],
-      canvas_id: 'cv_abc123',
+      canvas_id: 'cv_abc1234',
     });
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('spilled_x');

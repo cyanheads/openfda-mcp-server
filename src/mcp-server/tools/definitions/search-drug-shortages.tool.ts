@@ -7,7 +7,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import type { ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
+import { CanvasIdSchema, type ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
@@ -90,11 +90,9 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       .describe(`Maximum number of records to return (1-1000, default 10). ${PAGE_BUDGET_NOTE}`),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     stage: stageInput,
-    canvas_id: nonBlankString()
-      .optional()
-      .describe(
-        'DataCanvas session id from a prior call. Passing one stages this search onto that canvas (same effect as stage=true) so result sets accumulate for cross-table joins. Omit to stage onto a fresh canvas.',
-      ),
+    canvas_id: CanvasIdSchema.optional().describe(
+      'Canvas ID returned by a prior stage=true call to this tool or another openFDA search tool (openfda_search_* or openfda_lookup_ndc). Passing one stages this search onto that canvas (same effect as stage=true) so result sets accumulate for cross-table joins. Omit to stage onto a fresh canvas.',
+    ),
   }),
 
   output: z.object({
@@ -138,6 +136,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       retryable: true,
       recovery:
         'Wait briefly and retry, or configure OPENFDA_API_KEY to raise the daily limit to 120K requests.',
+      thrownBy: 'service',
     },
     {
       reason: 'upstream_error',
@@ -145,6 +144,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       when: 'The openFDA API returned a 5xx server error.',
       retryable: true,
       recovery: 'Retry after a short wait; if the error persists check api.fda.gov status.',
+      thrownBy: 'service',
     },
     malformedSearchError,
     {
@@ -153,6 +153,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       when: 'The search query was rejected by openFDA (malformed field name, invalid syntax).',
       recovery:
         'Verify field names using the openFDA field reference and correct boolean operators (AND/OR, quoted phrases). Call openfda_describe_fields({ endpoint: "drug/shortages" }) for valid field paths.',
+      thrownBy: 'service',
     },
     {
       reason: 'pagination_limit_reached',
@@ -160,6 +161,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       when: 'skip exceeds the 25000 record pagination ceiling.',
       recovery:
         'Narrow the search query with additional filters or date ranges instead of increasing skip.',
+      thrownBy: 'service',
     },
   ],
 

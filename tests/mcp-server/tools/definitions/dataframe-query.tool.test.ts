@@ -35,7 +35,7 @@ async function setCanvasMock(impl: unknown) {
 
 /** Canvas whose query() rejects with the given framework error. */
 async function setFailingCanvas(err: unknown, failOn: 'query' | 'acquire' = 'query') {
-  const instance = { canvasId: 'cv_abc123', query: vi.fn().mockRejectedValue(err) };
+  const instance = { canvasId: 'cv_abc1234', query: vi.fn().mockRejectedValue(err) };
   await setCanvasMock({
     acquire:
       failOn === 'acquire' ? vi.fn().mockRejectedValue(err) : vi.fn().mockResolvedValue(instance),
@@ -48,7 +48,7 @@ const recoveryHint = (err: McpError) =>
 describe('openfda_dataframe_query', () => {
   beforeEach(async () => {
     const mockInstance = {
-      canvasId: 'cv_abc123',
+      canvasId: 'cv_abc1234',
       query: vi.fn().mockResolvedValue({
         rows: [
           { classification: 'Class I', n: 42 },
@@ -63,11 +63,11 @@ describe('openfda_dataframe_query', () => {
   it('runs SQL against a staged canvas table', async () => {
     const ctx = createMockContext({ errors: dataframeQueryTool.errors });
     const input = dataframeQueryTool.input.parse({
-      canvas_id: 'cv_abc123',
+      canvas_id: 'cv_abc1234',
       query: 'SELECT classification, COUNT(*) AS n FROM spilled_x GROUP BY classification',
     });
     const result = await dataframeQueryTool.handler(input, ctx);
-    expect(result.canvas_id).toBe('cv_abc123');
+    expect(result.canvas_id).toBe('cv_abc1234');
     expect(result.row_count).toBe(2);
     expect(result.truncated).toBe(false);
     expect(result.rows[0]).toMatchObject({ classification: 'Class I' });
@@ -76,7 +76,7 @@ describe('openfda_dataframe_query', () => {
   it('throws a typed canvas_disabled error (not -32603) when canvas is not enabled', async () => {
     await setCanvasMock(undefined);
     const ctx = createMockContext({ errors: dataframeQueryTool.errors });
-    const input = dataframeQueryTool.input.parse({ canvas_id: 'cv_abc123', query: 'SELECT 1' });
+    const input = dataframeQueryTool.input.parse({ canvas_id: 'cv_abc1234', query: 'SELECT 1' });
     const err = (await dataframeQueryTool.handler(input, ctx).catch((e) => e)) as McpError;
     expect(err).toBeInstanceOf(McpError);
     expect(err.code).toBe(JsonRpcErrorCode.ValidationError); // typed, not InternalError (-32603)
@@ -89,10 +89,10 @@ describe('openfda_dataframe_query', () => {
       rows: [{ classification: 'Class I', n: 42 }],
       row_count: 1,
       truncated: false,
-      canvas_id: 'cv_abc123',
+      canvas_id: 'cv_abc1234',
     });
     const text = (blocks[0] as { text: string }).text;
-    expect(text).toContain('cv_abc123');
+    expect(text).toContain('cv_abc1234');
     expect(text).toContain('classification');
     expect(text).toContain('Class I');
   });
@@ -102,7 +102,7 @@ describe('openfda_dataframe_query', () => {
       rows: [],
       row_count: 0,
       truncated: false,
-      canvas_id: 'cv_abc123',
+      canvas_id: 'cv_abc1234',
     });
     const text = (blocks[0] as { text: string }).text;
     expect(text).toContain('0 rows');
@@ -114,7 +114,7 @@ describe('openfda_dataframe_query — row cap disclosure (#29)', () => {
   /** Canvas holding 10,050 rows behind a 10,000-row query cap, honoring LIMIT/OFFSET. */
   function makeCappedCanvas(rowLimit = 10_000, total = 10_050) {
     const instance = {
-      canvasId: 'cv_capped',
+      canvasId: 'cv_capped1',
       query: vi.fn(async (sql: string) => {
         const offset = Number(/OFFSET (\d+)/i.exec(sql)?.[1] ?? 0);
         const explicit = Number(/LIMIT (\d+)/i.exec(sql)?.[1] ?? rowLimit);
@@ -132,7 +132,7 @@ describe('openfda_dataframe_query — row cap disclosure (#29)', () => {
     const ctx = createMockContext({ errors: dataframeQueryTool.errors });
     const result = await dataframeQueryTool.handler(
       dataframeQueryTool.input.parse({
-        canvas_id: 'cv_capped',
+        canvas_id: 'cv_capped1',
         query: 'SELECT id FROM spilled_x',
       }),
       ctx,
@@ -151,7 +151,7 @@ describe('openfda_dataframe_query — row cap disclosure (#29)', () => {
     const ctx = createMockContext({ errors: dataframeQueryTool.errors });
     const page = await dataframeQueryTool.handler(
       dataframeQueryTool.input.parse({
-        canvas_id: 'cv_capped',
+        canvas_id: 'cv_capped1',
         query: 'SELECT id FROM spilled_x ORDER BY 1 LIMIT 5 OFFSET 10000',
       }),
       ctx,
@@ -178,7 +178,7 @@ describe('openfda_dataframe_query — canvas error mapping (#28)', () => {
     const err = (await dataframeQueryTool
       .handler(
         dataframeQueryTool.input.parse({
-          canvas_id: 'cv_abc123',
+          canvas_id: 'cv_abc1234',
           query: "INSERT INTO spilled_x VALUES ('x')",
         }),
         ctx,
@@ -206,7 +206,7 @@ describe('openfda_dataframe_query — canvas error mapping (#28)', () => {
     const err = (await dataframeQueryTool
       .handler(
         dataframeQueryTool.input.parse({
-          canvas_id: 'cv_abc123',
+          canvas_id: 'cv_abc1234',
           query: "SELECT * FROM read_csv('/etc/passwd')",
         }),
         ctx,
@@ -228,7 +228,7 @@ describe('openfda_dataframe_query — canvas error mapping (#28)', () => {
     const err = (await dataframeQueryTool
       .handler(
         dataframeQueryTool.input.parse({
-          canvas_id: 'cv_abc123',
+          canvas_id: 'cv_abc1234',
           query: 'SELECT nope FROM spilled_x',
         }),
         ctx,
@@ -237,6 +237,41 @@ describe('openfda_dataframe_query — canvas error mapping (#28)', () => {
 
     expect(err.data).toMatchObject({ reason: 'invalid_query' });
     expect(err.message).toContain('Referenced column "nope" not found');
+  });
+
+  it('maps an execution-time data error to invalid_query with the engine message and a TRY_CAST hint', async () => {
+    const engine = new Error(
+      "Conversion Error: Could not convert string 'Class I' to INT32 when casting from source column classification",
+    );
+    await setFailingCanvas(
+      validationError(
+        `Canvas query failed: ${engine.message}`,
+        {
+          reason: 'sql_execution_error',
+          recovery: { hint: 'Wrap the cast in TRY_CAST, or filter out the rows first.' },
+        },
+        { cause: engine },
+      ),
+    );
+    const ctx = createMockContext({ errors: dataframeQueryTool.errors });
+    const err = (await dataframeQueryTool
+      .handler(
+        dataframeQueryTool.input.parse({
+          canvas_id: 'cv_abc1234',
+          query: 'SELECT CAST(classification AS INTEGER) FROM spilled_x',
+        }),
+        ctx,
+      )
+      .catch((e) => e)) as McpError;
+
+    expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
+    expect(err.data).toMatchObject({
+      reason: 'invalid_query',
+      canvas_reason: 'sql_execution_error',
+    });
+    expect(err.message).toContain("Could not convert string 'Class I' to INT32");
+    expect(err.message).not.toContain('Canvas query failed');
+    expect(recoveryHint(err)).toContain('TRY_CAST');
   });
 
   it('maps a missing table to the declared missing_table reason', async () => {
@@ -251,7 +286,7 @@ describe('openfda_dataframe_query — canvas error mapping (#28)', () => {
     const err = (await dataframeQueryTool
       .handler(
         dataframeQueryTool.input.parse({
-          canvas_id: 'cv_abc123',
+          canvas_id: 'cv_abc1234',
           query: 'SELECT * FROM spilled_gone',
         }),
         ctx,
@@ -274,7 +309,7 @@ describe('openfda_dataframe_query — canvas error mapping (#28)', () => {
     );
     const ctx = createMockContext({ errors: dataframeQueryTool.errors });
     const err = (await dataframeQueryTool
-      .handler(dataframeQueryTool.input.parse({ canvas_id: 'cv_gone', query: 'SELECT 1' }), ctx)
+      .handler(dataframeQueryTool.input.parse({ canvas_id: 'cv_gone001', query: 'SELECT 1' }), ctx)
       .catch((e) => e)) as McpError;
 
     expect(err.code).toBe(JsonRpcErrorCode.NotFound);
@@ -287,7 +322,7 @@ describe('openfda_dataframe_query — canvas error mapping (#28)', () => {
     const ctx = createMockContext({ errors: dataframeQueryTool.errors });
     await expect(
       dataframeQueryTool.handler(
-        dataframeQueryTool.input.parse({ canvas_id: 'cv_abc123', query: 'SELECT 1' }),
+        dataframeQueryTool.input.parse({ canvas_id: 'cv_abc1234', query: 'SELECT 1' }),
         ctx,
       ),
     ).rejects.toThrow('socket hang up');
