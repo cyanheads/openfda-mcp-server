@@ -7,10 +7,11 @@
  * (`page-budget.ts`), so a staged call and an unstaged one never disagree about
  * what a window holds — and, alongside it, registers a bounded drain of
  * the matched set as a canvas table the agent inspects with
- * openfda_dataframe_describe and queries with openfda_dataframe_query. The drain is capped by a serialized-byte budget as
- * well as openFDA's 25,000-row `skip` ceiling, so a staged call on a
- * large-record endpoint cannot run for minutes; `stagedRows` vs `total`
- * discloses how much of the match actually reached the canvas.
+ * openfda_dataframe_describe and queries with openfda_dataframe_query. The
+ * drain is capped by a serialized-byte budget as well as openFDA's 25,000-row
+ * `skip` ceiling, so a staged call on a large-record endpoint cannot run for
+ * minutes; `stagedRows` vs `total` discloses how much of the match actually
+ * reached the canvas.
  * @module services/openfda/canvas-spill
  */
 
