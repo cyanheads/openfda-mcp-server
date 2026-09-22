@@ -84,7 +84,8 @@ describe('openfda_count_values', () => {
     expect(enrichment.termCount).toBe(2);
   });
 
-  it('discloses truncation when the term list is capped at the limit', async () => {
+  // #44 — exactly `limit` terms is an exhaustive list, not a capped one.
+  it('omits truncation when exactly limit terms come back', async () => {
     mockQuery.mockResolvedValue({
       meta: { lastUpdated: '2026-01-01' },
       results: [
@@ -102,6 +103,36 @@ describe('openfda_count_values', () => {
       ctx,
     );
 
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.truncated).toBeUndefined();
+    expect(enrichment.notice).toBeUndefined();
+  });
+
+  it('discloses truncation when the look-ahead term past the limit comes back', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { lastUpdated: '2026-01-01' },
+      results: [
+        { term: 'NAUSEA', count: 100 },
+        { term: 'FATIGUE', count: 50 },
+        { term: 'HEADACHE', count: 20 },
+      ],
+    });
+
+    const result = await countValuesTool.handler(
+      countValuesTool.input.parse({
+        endpoint: 'drug/event',
+        count: 'patient.reaction.reactionmeddrapt.exact',
+        limit: 2,
+      }),
+      ctx,
+    );
+
+    expect(mockQuery).toHaveBeenCalledWith(
+      'drug/event',
+      expect.objectContaining({ limit: 3 }),
+      ctx,
+    );
+    expect(result.results).toHaveLength(2);
     const enrichment = getEnrichment(ctx);
     expect(enrichment.truncated).toBe(true);
     expect(enrichment.shown).toBe(2);
@@ -148,6 +179,32 @@ describe('openfda_count_values', () => {
     expect(enrichment.notice).toMatch(/nothing matched/i);
     expect(enrichment.notice).toContain('brand_name:"zzznotreal"');
     expect(enrichment.termCount).toBe(0);
+  });
+
+  // #57 — the service marks an empty tally whose matched records carry no value
+  // for the field; that is not "nothing matched", and the notice says which.
+  it('says the matched records carry no value when the service flags nothingToCount', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { lastUpdated: '2026-09-18', nothingToCount: true },
+      results: [],
+    });
+
+    const result = await countValuesTool.handler(
+      countValuesTool.input.parse({
+        endpoint: 'drug/enforcement',
+        count: 'openfda.generic_name.exact',
+        search: '_missing_:openfda.generic_name',
+      }),
+      ctx,
+    );
+
+    expect(result.results).toEqual([]);
+    const enrichment = getEnrichment(ctx);
+    expect(enrichment.termCount).toBe(0);
+    expect(enrichment.notice).toContain('openfda.generic_name.exact');
+    expect(enrichment.notice).toMatch(/carry no value/i);
+    expect(enrichment.notice).toContain('_missing_:openfda.generic_name');
+    expect(enrichment.notice).not.toMatch(/nothing matched/i);
   });
 
   it('formats as markdown table', () => {
@@ -237,6 +294,16 @@ describe('openfda_count_values', () => {
 
       expect(recovery).toMatch(/add \.exact/i);
       expect(recovery).toMatch(/drop \.exact/i);
+    });
+
+    // #49 — the catalog is the first stop; the suffix toggle is only for fields
+    // outside it.
+    it('points the declared recovery at the catalog count expression first', () => {
+      const recovery = countValuesTool.errors?.find((e) => e.reason === 'not_aggregatable')
+        ?.recovery as string;
+
+      expect(recovery).toMatch(/openfda_describe_fields/);
+      expect(recovery).toMatch(/countAs/);
     });
   });
 });

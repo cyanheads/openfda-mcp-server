@@ -38,6 +38,9 @@ const ENDPOINTS = [
   'other/substance',
 ] as const;
 
+/** openFDA rejects a count `limit` above this with HTTP 400. */
+const OPENFDA_MAX_COUNT_TERMS = 1000;
+
 export const countValuesTool = tool('openfda_count_values', {
   description:
     'Aggregate and tally unique values for any field across any openFDA endpoint. Returns ranked term-count pairs sorted by count descending. Pair with openfda_search_adverse_events, openfda_search_drug_approvals, openfda_search_device_clearances, openfda_search_recalls, openfda_get_drug_label, or openfda_lookup_ndc when sample records help interpret the aggregates.',
@@ -48,7 +51,7 @@ export const countValuesTool = tool('openfda_count_values', {
       .enum(ENDPOINTS)
       .describe('Full openFDA endpoint path (e.g. "drug/event", "device/classification")'),
     count: nonBlankString().describe(
-      'Field to count. Append .exact for whole-phrase counting of free-text fields (e.g. "patient.reaction.reactionmeddrapt.exact"). Identifier fields openFDA already indexes as keywords (product_ndc, application_number, pma_number) must be counted bare — .exact on those is rejected as not countable.',
+      'Field to count. openfda_describe_fields gives the verified expression per field as countAs (null = not countable in any form). Otherwise: append .exact for whole-phrase counting of free-text fields (e.g. "patient.reaction.reactionmeddrapt.exact"); count identifier fields openFDA already indexes as keywords (product_ndc, application_number, pma_number) bare — .exact on those is rejected as not countable.',
     ),
     search: nonBlankString()
       .optional()
@@ -58,9 +61,11 @@ export const countValuesTool = tool('openfda_count_values', {
     limit: z
       .number()
       .min(1)
-      .max(1000)
+      .max(OPENFDA_MAX_COUNT_TERMS)
       .default(100)
-      .describe('Number of top terms to return (default 100, max 1000)'),
+      .describe(
+        `Number of top terms to return (default 100, max ${OPENFDA_MAX_COUNT_TERMS} — openFDA's own count maximum). truncated reports whether more distinct terms exist beyond it, except at the maximum itself, where openFDA offers no way to tell.`,
+      ),
   }),
 
   output: z.object({
@@ -86,7 +91,9 @@ export const countValuesTool = tool('openfda_count_values', {
     truncated: z
       .boolean()
       .optional()
-      .describe('True when the term list was capped at the limit — more distinct terms may exist.'),
+      .describe(
+        'True when at least one more distinct term exists beyond the limit. Absent when the list is complete, and at the 1000-term maximum, where openFDA cannot show whether more exist (notice says so).',
+      ),
     shown: z.number().optional().describe('Number of terms returned in this response.'),
     cap: z.number().optional().describe('The limit applied to the term list.'),
     truncationCeiling: z
@@ -97,7 +104,7 @@ export const countValuesTool = tool('openfda_count_values', {
       .string()
       .optional()
       .describe(
-        'Guidance when no terms matched — how to verify the field name or adjust the count expression. Absent when terms are returned.',
+        'Why the tally is empty — the search matched no records, or the matched records carry no value for the field — and how to widen it; when truncated, how to reach the omitted terms; at the 1000-term maximum, that openFDA cannot show whether more distinct values exist. Absent when a complete list is returned.',
       ),
   },
 
@@ -131,9 +138,9 @@ export const countValuesTool = tool('openfda_count_values', {
     {
       reason: 'not_aggregatable',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'openFDA cannot aggregate the count expression as written — an analyzed text field, or .exact on a field already indexed as a keyword.',
+      when: 'openFDA cannot aggregate the count expression as written — an analyzed text field, .exact on a field already indexed as a keyword, or a field with no countable form.',
       recovery:
-        'Add .exact to tally whole values of an analyzed text field, or drop .exact from an identifier field openFDA already indexes as a keyword.',
+        'Use the countAs expression openfda_describe_fields lists for the field, or a different field when it is null. For a field outside that list, add .exact to tally whole values of an analyzed text field, or drop .exact from an identifier field openFDA already indexes as a keyword.',
       thrownBy: 'service',
     },
   ],
@@ -141,13 +148,18 @@ export const countValuesTool = tool('openfda_count_values', {
   async handler(input, ctx) {
     assertSearchDelimitersBalanced(input.search, ctx);
 
+    /*
+     * openFDA count responses carry no distinct-term total, so one term past the
+     * limit is the only completeness signal: it arrives only when more exist. At
+     * the count maximum there is no room for it, and completeness is unknowable.
+     */
     const svc = getOpenFdaService();
     const response = await svc.query(
       input.endpoint,
       {
         search: input.search,
         count: input.count,
-        limit: input.limit,
+        limit: Math.min(input.limit + 1, OPENFDA_MAX_COUNT_TERMS),
       },
       ctx,
     );
@@ -158,24 +170,33 @@ export const countValuesTool = tool('openfda_count_values', {
       terms: response.results.length,
     });
 
-    const results = response.results.map((r) => ({
+    const moreExist = response.results.length > input.limit;
+    const results = response.results.slice(0, input.limit).map((r) => ({
       term: String(r.term),
       count: r.count as number,
     }));
 
     ctx.enrich({ termCount: results.length });
-    if (results.length === 0) {
+    if (response.meta.nothingToCount) {
+      ctx.enrich.notice(
+        `${input.count} is countable on ${input.endpoint}, but the records matching search: ${input.search} carry no value for it, so the tally is empty. Count across a broader search, or count a different field (openfda_describe_fields lists the endpoint's countable fields).`,
+      );
+    } else if (results.length === 0) {
       ctx.enrich.notice(
         `${input.count} is countable on ${input.endpoint}, but nothing matched${input.search ? ` search: ${input.search}` : ''}. Broaden or drop the search filter; call openfda_describe_fields for the endpoint field list.`,
       );
-    } else if (results.length >= input.limit) {
+    } else if (moreExist) {
       const lowestCount = results.at(-1)?.count;
       ctx.enrich.truncated({
         shown: results.length,
         cap: input.limit,
         ...(lowestCount !== undefined ? { ceiling: lowestCount } : {}),
-        guidance: `Showing the top ${input.limit} terms by count; more distinct values may exist. Raise limit (max 1000) or narrow with search.`,
+        guidance: `Showing the top ${input.limit} terms by count; more distinct values exist. Raise limit (max ${OPENFDA_MAX_COUNT_TERMS}) or narrow with search.`,
       });
+    } else if (results.length === OPENFDA_MAX_COUNT_TERMS) {
+      ctx.enrich.notice(
+        `The term list reached openFDA's ${OPENFDA_MAX_COUNT_TERMS}-term maximum for a count, so openFDA cannot show whether more distinct values exist. Narrow with search to rank a smaller population.`,
+      );
     }
 
     return { meta: { lastUpdated: response.meta.lastUpdated }, results };
