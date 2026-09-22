@@ -191,7 +191,7 @@ src/
         index.ts                        # Barrel
   mcp-server/
     tools/
-      field-catalog.ts                  # Searchable field paths per endpoint
+      field-catalog.ts                  # Searchable field paths per endpoint + live-verified count form per field
       format-utils.ts                   # Shared format() helpers
       schema-utils.ts                   # Shared input schemas + handler guards (skip ceiling, search delimiters)
     tools/definitions/
