@@ -103,6 +103,7 @@ FDA data on drugs, food, devices, and recalls from the openFDA public API. Searc
 
 - `category` (`drug`/`food`/`device`) plus `endpoint` — `enforcement` covers all categories, `recall` is device-only and rejects a non-device category as a typed `recall_endpoint_non_device` error
 - Filter by `classification` (Class I/II/III), `recalling_firm`, `reason_for_recall`, `status`
+- Device recall records carry their own identity and status (`product_res_number`, `recall_status`) and no hazard classification; the text output renders each record with its endpoint's fields
 - `limit` up to 1000, bounded by the shared ~24 KB page-byte budget — a device record runs several KB against roughly one for drug/food
 - Optional `stage: true` (or `canvas_id`) for DataCanvas SQL via `openfda_dataframe_query`
 
@@ -134,6 +135,7 @@ FDA data on drugs, food, devices, and recalls from the openFDA public API. Searc
 - A page over the ~24 KB inline budget returns `kind: "outline"` — section names and their serialized size, largest first — instead of label text; re-call with `sections: [...]` for the ones needed
 - Outline sizes are summed across the whole page, so cost scales with `limit`; a `sections` selection is always returned whole even when it overflows the budget, with its size disclosed
 - `sections` narrows each record to the requested keys plus identity metadata (`openfda`, `set_id`, `id`, `effective_time`, `version`)
+- `*_table` sections render as Markdown tables in the text output (caption, spans, footnotes, and footer rows preserved); structured results keep the raw SPL table markup
 - `skip` capped at openFDA's 25000-record pagination ceiling
 
 ---

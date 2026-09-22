@@ -19,6 +19,7 @@ import { searchDrugApprovalsTool } from '@/mcp-server/tools/definitions/search-d
 import { searchDrugShortagesTool } from '@/mcp-server/tools/definitions/search-drug-shortages.tool.js';
 import { searchRecallsTool } from '@/mcp-server/tools/definitions/search-recalls.tool.js';
 import { searchTobaccoReportsTool } from '@/mcp-server/tools/definitions/search-tobacco-reports.tool.js';
+import { FOOTNOTE_REF, LIST_IN_CELL, WARFARIN_DOSING } from '../../../fixtures/spl-tables.js';
 
 /** Every scalar leaf under `value`, keyed by its dotted path. */
 function leaves(value: unknown, path: string, out: Array<{ path: string; value: string }>): void {
@@ -43,6 +44,35 @@ function leaves(value: unknown, path: string, out: Array<{ path: string; value: 
 function rendered(text: string, value: string): boolean {
   return text.includes(value) || text.includes(JSON.stringify(value).slice(1, -1));
 }
+
+/**
+ * A `*_table` leaf is SPL markup that `content[]` renders as a Markdown table,
+ * so the check moves from the string to its text: every run between tags,
+ * entity-decoded and whitespace-collapsed, must appear in the rendered text
+ * once its Markdown escapes are undone (#45).
+ */
+function tableTextRendered(text: string, markup: string): string[] {
+  const displayed = text.replace(/\\([\\`*_[\]<>|~&])/g, '$1').replace(/\s+/g, ' ');
+  return markup
+    .split(/<[^>]+>/)
+    .map((run) =>
+      run
+        .replace(/&#x([0-9a-f]+);/gi, (_, h: string) =>
+          String.fromCodePoint(Number.parseInt(h, 16)),
+        )
+        .replace(/&#(\d+);/g, (_, d: string) => String.fromCodePoint(Number.parseInt(d, 10)))
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .replace(/&amp;/g, '&')
+        .replace(/\s+/g, ' ')
+        .trim(),
+    )
+    .filter((run) => run && !displayed.includes(run));
+}
+
+const isTableLeaf = (path: string) => /^\[\d+\]\.[a-z_]+_table\[/.test(path);
 
 const META = { total: 1, skip: 0, limit: 10, lastUpdated: '2026-07-01' };
 
@@ -317,6 +347,34 @@ const CASES: Array<{ name: string; format: (r: never) => { text: string }[]; res
     },
   },
   {
+    name: 'openfda_search_recalls (device/recall)',
+    format: searchRecallsTool.format as never,
+    /** device/recall names identity and status differently from enforcement (#46). */
+    result: {
+      meta: META,
+      results: [
+        {
+          cfres_id: 'CFRES-MARKER',
+          product_res_number: 'Z-0032-2025',
+          recall_status: 'STATUS-MARKER',
+          res_event_number: 'RESEVENT-MARKER',
+          recalling_firm: 'FIRM-MARKER',
+          product_description: 'PRODUCT-MARKER',
+          reason_for_recall: 'REASON-MARKER',
+          distribution_pattern: 'DISTRIBUTION-MARKER',
+          root_cause_description: 'ROOTCAUSE-MARKER',
+          event_date_initiated: '2024-08-30',
+          k_numbers: ['K-MARKER'],
+          openfda: {
+            device_name: 'DEVICENAME-MARKER',
+            device_class: 'DEVICECLASS-MARKER',
+            registration_number: ['REG-ONE-MARKER', 'REG-TWO-MARKER'],
+          },
+        },
+      ],
+    },
+  },
+  {
     name: 'openfda_search_tobacco_reports',
     format: searchTobaccoReportsTool.format as never,
     result: {
@@ -401,6 +459,10 @@ const CASES: Array<{ name: string; format: (r: never) => { text: string }[]; res
           },
           boxed_warning: [`BOXED-MARKER ${'x'.repeat(1500)}`],
           spl_product_data_elements: ['SPLDATA-MARKER'],
+          // Prose that looks like markup stays verbatim; only *_table keys render.
+          inactive_ingredient: ['Inactive Ingredients <paragraph>WATER-MARKER <E050800>'],
+          dosage_and_administration_table: [WARFARIN_DOSING],
+          drug_interactions_table: [FOOTNOTE_REF, LIST_IN_CELL],
         },
       ],
     },
@@ -433,8 +495,25 @@ describe.each(CASES.map((c) => [c.name, c] as const))(
       const payload = testCase.result as { results?: unknown; rows?: unknown };
       leaves(payload.results ?? payload.rows, '', found);
 
-      const missing = found.filter((leaf) => !rendered(text, leaf.value));
-      expect(missing.map((m) => `${m.path}=${m.value}`)).toEqual([]);
+      const missing = found.flatMap((leaf) =>
+        isTableLeaf(leaf.path)
+          ? tableTextRendered(text, leaf.value).map((run) => `${leaf.path} text=${run}`)
+          : rendered(text, leaf.value)
+            ? []
+            : [`${leaf.path}=${leaf.value}`],
+      );
+      expect(missing).toEqual([]);
     });
   },
 );
+
+describe('openfda_get_drug_label — *_table leaves render as tables, not markup (#45)', () => {
+  it('carries no SPL tag or character reference from a table leaf into content[]', () => {
+    const labelCase = CASES.find((c) => c.name === 'openfda_get_drug_label');
+    const text = (labelCase?.format(labelCase.result as never) ?? []).map((b) => b.text).join('\n');
+    expect(text).toContain('| VKORC1 | CYP2C9 |');
+    expect(text).not.toMatch(/<table|<\/td>|styleCode|&#x2020;|&#xB0;/);
+    // The prose leaf keeps its literal markup-like text.
+    expect(text).toContain('Inactive Ingredients <paragraph>WATER-MARKER <E050800>');
+  });
+});
