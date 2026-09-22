@@ -1,7 +1,7 @@
 # Agent Protocol
 
 **Server:** openfda-mcp-server
-**Version:** 0.7.8
+**Version:** 0.7.9
 **Framework:** [@cyanheads/mcp-ts-core](https://www.npmjs.com/package/@cyanheads/mcp-ts-core) `^0.13.6`
 **Engines:** Bun ≥1.4.0, Node ≥24.0.0
 **MCP SDK:** `@modelcontextprotocol/server` ^2.0.0 (via the framework)

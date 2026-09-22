@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.9](changelog/0.7.x/0.7.9.md) — 2026-09-22
+
+openfda_get_drug_label renders *_table sections as Markdown tables; openfda_search_recalls renders and stages device/recall by its own field shape
+
 ## [0.7.8](changelog/0.7.x/0.7.8.md) — 2026-09-22
 
 openfda_describe_fields records each field's verified count form; count_values and pagination stop misreporting aggregability, truncation, and past-the-end totals
