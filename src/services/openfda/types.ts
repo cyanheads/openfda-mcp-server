@@ -7,8 +7,20 @@
 export interface OpenFdaMeta {
   lastUpdated: string;
   limit: number;
+  /**
+   * Set on an empty count tally for a countable expression whose search matched
+   * only records that carry no value for the field (openFDA's `Nothing to
+   * count`), as opposed to a search that matched nothing.
+   */
+  nothingToCount?: true;
   skip: number;
   total: number;
+  /**
+   * Set on an empty page at `skip > 0` whose total could not be recovered:
+   * openFDA answers a page past the end and a search that matched nothing with
+   * the same 404, so `total: 0` there does not rule out records at a lower skip.
+   */
+  totalUnverified?: true;
 }
 
 /** Normalized openFDA API response. */

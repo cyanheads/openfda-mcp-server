@@ -12,12 +12,23 @@ import {
   unauthorized,
   validationError,
 } from '@cyanheads/mcp-ts-core/errors';
-import { fetchWithTimeout, withRetry } from '@cyanheads/mcp-ts-core/utils';
+import { fetchWithTimeout, type RetryOptions, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig, type ServerConfig } from '@/config/server-config.js';
+import { type CountVerdict, countVerdict } from '@/mcp-server/tools/field-catalog.js';
 import { getMirror, planMirrorLookup, runMirrorLookup } from './mirror/index.js';
-import type { OpenFdaQueryParams, OpenFdaResponse } from './types.js';
+import type { OpenFdaMeta, OpenFdaQueryParams, OpenFdaResponse } from './types.js';
 
 const REQUEST_TIMEOUT_MS = 15_000;
+
+/**
+ * Retry budget for a side request issued from inside the primary request's retry
+ * callback — the past-end total recovery and the `Nothing to count` confirm. One
+ * attempt: the recovery is best-effort, so a retry only parks a backoff sleep
+ * (≥750 ms at the 1 s base) on a call that would otherwise return at once; a
+ * failed confirm propagates into the primary loop, which already retries the
+ * whole exchange, so retrying it in place would multiply that budget.
+ */
+const SIDE_REQUEST_RETRY = { maxRetries: 0 } as const satisfies RetryOptions;
 
 /**
  * openFDA surfaces deterministic, user-fixable query failures as HTTP 5xx whose body
@@ -53,8 +64,11 @@ const OPENFDA_QUERY_ERROR_5XX =
  * openFDA answers a count query with two distinguishable 404s: `No matches found!`
  * (the field aggregates fine, the filter matched nothing) and `Nothing to count`
  * (the field expression is not aggregatable as written — commonly `.exact` on a
- * field openFDA already indexes as keyword-only). Only the first is an empty tally;
- * the second is a fixable query error and must not be collapsed into one.
+ * field openFDA already indexes as keyword-only). Only the first is an empty tally
+ * by default; the second is a fixable query error and must not be collapsed into
+ * one — except that openFDA also answers `Nothing to count` for a countable field
+ * when the search matched only records carrying no value for it, which
+ * `resolveNothingToCount` separates out.
  */
 const OPENFDA_NOTHING_TO_COUNT = /nothing to count/i;
 
@@ -68,6 +82,9 @@ const OPENFDA_NOTHING_TO_COUNT = /nothing to count/i;
  * server-side index setting no MCP caller can reach, so it is dropped.
  */
 const OPENFDA_NOT_AGGREGATABLE_5XX = /illegal_argument_exception/i;
+
+/** Countable expressions a no-countable-form `not_aggregatable` lists before truncating. */
+const MAX_ALTERNATIVES = 8;
 
 /**
  * The slice of {@link ServerConfig} the client reads. Mirror settings are
@@ -168,13 +185,14 @@ export class OpenFdaService {
    * classification happens inside the `withRetry` callback so a reclassified
    * non-retryable error (`query_error`) stops the retry loop while a genuine
    * `upstream_error` / `rate_limited` is retried. Returns an empty result set for
-   * 404 (valid query, zero matches) — except a `Nothing to count` 404, which is a
-   * fixable count expression, not an empty tally.
+   * 404 (valid query, zero matches) — except on a count expression that does not
+   * count, which is a fixable count expression, not an empty tally. `retry` overrides the retry budget; only side requests pass it.
    */
   private async queryLive<T>(
     endpoint: string,
     params: OpenFdaQueryParams,
     ctx: Context,
+    retry?: Pick<RetryOptions, 'maxRetries'>,
   ): Promise<OpenFdaResponse<T>> {
     return await withRetry(
       async () => {
@@ -198,7 +216,7 @@ export class OpenFdaService {
           const data = (await response.json()) as Record<string, unknown>;
           return this.normalizeResponse<T>(data, endpoint);
         } catch (error) {
-          return this.classifyError<T>(error, endpoint, params, ctx);
+          return await this.classifyError<T>(error, endpoint, params, ctx);
         }
       },
       {
@@ -206,6 +224,7 @@ export class OpenFdaService {
         context: ctx,
         baseDelayMs: 1_000,
         signal: ctx.signal,
+        ...retry,
       },
     );
   }
@@ -250,12 +269,12 @@ export class OpenFdaService {
    * already correctly classified. The reclassified reasons match the calling
    * tools' `errors[]` contracts so `ctx.recoveryFor` carries the recovery hint.
    */
-  private classifyError<T>(
+  private async classifyError<T>(
     error: unknown,
     endpoint: string,
     params: OpenFdaQueryParams,
     ctx: Context,
-  ): OpenFdaResponse<T> {
+  ): Promise<OpenFdaResponse<T>> {
     if (!(error instanceof McpError)) throw error;
 
     const data = error.data as { status?: number; body?: string } | undefined;
@@ -269,20 +288,23 @@ export class OpenFdaService {
 
     // 404 → valid query, zero matches. Return an empty result set (not an error).
     if (status === 404) {
-      // Only a count query can produce this marker; keyed on `params.count` so the
-      // error can always name the expression it is telling the caller to fix.
-      if (params.count && OPENFDA_NOTHING_TO_COUNT.test(body)) {
-        throw this.notAggregatableError(endpoint, params.count, ctx);
+      if (params.count) {
+        // openFDA answers a search that matched nothing before it reads the count
+        // expression, so an expression the catalog records as failing can reach
+        // either 404 — and it fails as written whatever the search matches.
+        const verdict = countVerdict(endpoint, params.count);
+        if (verdict.kind === 'none' || verdict.kind === 'wrong_form') {
+          throw this.notAggregatableError(endpoint, params.count, ctx);
+        }
+        // Only a count query can produce this marker; keyed on `params.count` so
+        // the error can always name the expression it is telling the caller to fix.
+        if (OPENFDA_NOTHING_TO_COUNT.test(body)) {
+          return await this.resolveNothingToCount<T>(endpoint, params, params.count, verdict, ctx);
+        }
+      } else if ((params.skip ?? 0) > 0) {
+        return await this.resolvePastEnd<T>(endpoint, params, ctx);
       }
-      return {
-        meta: {
-          total: 0,
-          skip: params.skip ?? 0,
-          limit: params.limit ?? 0,
-          lastUpdated: this.lastUpdatedByEndpoint.get(endpoint) ?? 'unknown',
-        },
-        results: [],
-      };
+      return this.emptyResult<T>(endpoint, params);
     }
 
     if (status === 429) {
@@ -355,26 +377,117 @@ export class OpenFdaService {
   }
 
   /**
+   * The empty result for a count or search that tallied nothing. `meta` overlays
+   * what a resolver learned about it — a recovered total or a disclosure flag.
+   */
+  private emptyResult<T>(
+    endpoint: string,
+    params: OpenFdaQueryParams,
+    meta?: Pick<Partial<OpenFdaMeta>, 'nothingToCount' | 'total' | 'totalUnverified'>,
+  ): OpenFdaResponse<T> {
+    return {
+      meta: {
+        total: 0,
+        skip: params.skip ?? 0,
+        limit: params.limit ?? 0,
+        lastUpdated: this.lastUpdatedByEndpoint.get(endpoint) ?? 'unknown',
+        ...meta,
+      },
+      results: [],
+    };
+  }
+
+  /**
+   * Resolve a `Nothing to count` 404. openFDA answers it for an expression it
+   * cannot aggregate, and also — data-level, not mapping-level — for a countable
+   * expression whose search matched only records that carry no value for the
+   * field. The second case is an empty tally, not an error.
+   *
+   * The caller has already failed every expression the catalog records as
+   * failing. Only a search can make a countable expression come up empty, so an
+   * unscoped `Nothing to count` is always `not_aggregatable`. Under a search, a
+   * recorded countable expression is settled; one outside the catalog is
+   * re-asked unscoped with `limit=1` — a tally proves it countable, and a second
+   * `Nothing to count` raises `not_aggregatable` from that request's own
+   * classification. The extra request runs only on this failure path, on a
+   * single attempt — a transient failure of it is retried by the primary loop.
+   */
+  private async resolveNothingToCount<T>(
+    endpoint: string,
+    params: OpenFdaQueryParams,
+    count: string,
+    verdict: Extract<CountVerdict, { kind: 'countable' | 'uncataloged' }>,
+    ctx: Context,
+  ): Promise<OpenFdaResponse<T>> {
+    if (!params.search) throw this.notAggregatableError(endpoint, count, ctx);
+    if (verdict.kind === 'uncataloged') {
+      await this.queryLive(endpoint, { count, limit: 1 }, ctx, SIDE_REQUEST_RETRY);
+    }
+    return this.emptyResult<T>(endpoint, params, { nothingToCount: true });
+  }
+
+  /**
+   * Resolve a `No matches found!` 404 on a page at `skip > 0`. openFDA answers a
+   * page past the end of a matched set exactly as it answers a search that
+   * matched nothing, so one `skip=0&limit=0` request for the same search — no
+   * sort, which cannot change a total — settles it: a match returns its total
+   * with no records, a genuine miss 404s again. The extra request runs only on
+   * this path.
+   *
+   * Best-effort, on a single attempt: the empty page is a valid answer without
+   * the total, so a failed recovery returns it at once, marked `totalUnverified`,
+   * rather than retrying or failing the call.
+   */
+  private async resolvePastEnd<T>(
+    endpoint: string,
+    params: OpenFdaQueryParams,
+    ctx: Context,
+  ): Promise<OpenFdaResponse<T>> {
+    try {
+      const { total } = (
+        await this.queryLive(
+          endpoint,
+          { search: params.search, limit: 0, skip: 0 },
+          ctx,
+          SIDE_REQUEST_RETRY,
+        )
+      ).meta;
+      return this.emptyResult<T>(endpoint, params, { total });
+    } catch (error) {
+      if (ctx.signal?.aborted) throw error;
+      ctx.log.warning('openFDA total recovery for an empty page failed; total left unverified', {
+        endpoint,
+        skip: params.skip,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return this.emptyResult<T>(endpoint, params, { totalUnverified: true });
+    }
+  }
+
+  /**
    * Build the `not_aggregatable` error for a count expression openFDA will not
    * aggregate, always naming the expression and the correction that applies.
    *
-   * The two upstream shapes need corrections in opposite directions, so `cause`
-   * selects which:
+   * A field in the catalog carries its verified count form, so the correction is
+   * definitive: the recorded expression when the caller used the other form, or
+   * a statement that the field has no countable form, listing the endpoint's
+   * countable expressions. Neither suggests a form the catalog records as failing.
+   *
+   * An expression outside the catalog — or a recorded form that itself failed,
+   * meaning openFDA remapped the index — gets the hedged correction, whose
+   * direction `cause` selects:
    *
    * - `not_countable` (a `Nothing to count` 404) — the dominant case is `.exact`
    *   on a field openFDA already indexes as keyword-only, so **drop** the suffix.
    * - `analyzed_text` (a 5xx `illegal_argument_exception` on a count) — the field
    *   is analyzed text, so **add** `.exact` to reach its keyword subfield.
    *
-   * Neither correction is guaranteed to land, because some analyzed fields have no
-   * keyword subfield at all: on `drug/enforcement`, `reason_for_recall` answers the
-   * 5xx and `reason_for_recall.exact` answers the 404, so each direction's fix is
-   * the other's failure. Both messages therefore name the field catalog as the next
-   * step, and neither asserts what the index holds as though it were established.
-   *
-   * Either way, an expression that already carries the suffix the correction
-   * would apply falls back to naming `openfda_describe_fields`. Non-retryable:
-   * the same expression fails identically every time.
+   * Neither is guaranteed to land, because some analyzed fields have no keyword
+   * subfield at all (`reason_for_recall` on `drug/enforcement` fails both ways),
+   * so both name the field catalog as the next step, and an expression that
+   * already carries the suffix the correction would apply falls back to naming
+   * `openfda_describe_fields`. Non-retryable: the same expression fails
+   * identically every time.
    */
   private notAggregatableError(
     endpoint: string,
@@ -383,6 +496,34 @@ export class OpenFdaService {
     cause: 'not_countable' | 'analyzed_text' = 'not_countable',
   ): McpError {
     const hasExact = expression.endsWith('.exact');
+    const verdict = countVerdict(endpoint, expression);
+    const data = { reason: 'not_aggregatable', endpoint, count: expression };
+
+    if (verdict.kind === 'wrong_form') {
+      const diagnosis = hasExact
+        ? '.exact is unsupported on a field openFDA indexes as a keyword'
+        : 'it is an analyzed text field';
+      return validationError(
+        `openFDA cannot aggregate "${expression}" on ${endpoint}: ${diagnosis}. Count "${verdict.use}" instead.`,
+        { ...data, recovery: { hint: `Retry with count "${verdict.use}".` } },
+      );
+    }
+
+    if (verdict.kind === 'none') {
+      const field = hasExact ? expression.slice(0, -'.exact'.length) : expression;
+      const shown = verdict.alternatives.slice(0, MAX_ALTERNATIVES);
+      const more = verdict.alternatives.length - shown.length;
+      return validationError(
+        `openFDA cannot aggregate "${expression}" on ${endpoint}: "${field}" has no countable form — openFDA indexes it as analyzed text with no keyword subfield, so neither the bare field nor .exact aggregates. Countable on ${endpoint}: ${shown.join(', ')}${more > 0 ? `, and ${more} more` : ''}.`,
+        {
+          ...data,
+          recovery: {
+            hint: `Count a different field; openfda_describe_fields for ${endpoint} lists each field's countAs expression.`,
+          },
+        },
+      );
+    }
+
     const describeFields = `Count a keyword field instead; call openfda_describe_fields for ${endpoint} to see the available field paths.`;
     const { diagnosis, correction } =
       cause === 'analyzed_text'
@@ -400,12 +541,7 @@ export class OpenFdaService {
           };
     return validationError(
       `openFDA cannot aggregate "${expression}" on ${endpoint}: ${diagnosis}. ${correction}`,
-      {
-        reason: 'not_aggregatable',
-        endpoint,
-        count: expression,
-        ...ctx.recoveryFor('not_aggregatable'),
-      },
+      { ...data, ...ctx.recoveryFor('not_aggregatable') },
     );
   }
 

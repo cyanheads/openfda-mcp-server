@@ -162,12 +162,109 @@ describe('OpenFdaService', () => {
       mockFetch.mockResolvedValueOnce(
         mockResponse(404, { error: { code: 'NOT_FOUND', message: 'No matches found!' } }),
       );
+      // The total-recovery request for the past-end page (#47) — also a miss.
+      mockFetch.mockResolvedValueOnce(
+        mockResponse(404, { error: { code: 'NOT_FOUND', message: 'No matches found!' } }),
+      );
 
       await service.query('drug/event', { limit: 1 }, ctx);
       const second = await service.query('drug/event', { skip: 25000, limit: 1 }, ctx);
 
       expect(second.meta.lastUpdated).toBe('2026-04-28');
       expect(second.meta.skip).toBe(25000);
+    });
+
+    /*
+     * #47 — openFDA answers a page past the end of a matched set with the same
+     * `No matches found!` 404 as a query that matched nothing. At skip > 0 the
+     * service asks for the total once (`skip=0&limit=0`, no sort), best-effort.
+     */
+    describe('past-end total recovery', () => {
+      const NO_MATCHES = () =>
+        mockResponse(404, { error: { code: 'NOT_FOUND', message: 'No matches found!' } });
+      const SEARCH = 'openfda.generic_name:"metformin"';
+      const calledUrl = (index: number) => new URL(mockFetch.mock.calls[index]![0]);
+
+      it('recovers the real total for a page past the end of the matched set', async () => {
+        mockFetch.mockResolvedValueOnce(NO_MATCHES());
+        mockFetch.mockResolvedValueOnce(
+          mockResponse(200, {
+            meta: { results: { skip: 0, limit: 0, total: 39 }, last_updated: '2026-09-17' },
+            results: [],
+          }),
+        );
+
+        const result = await service.query(
+          'drug/enforcement',
+          { search: SEARCH, sort: 'report_date:desc', limit: 1, skip: 39 },
+          ctx,
+        );
+
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+        const recovery = calledUrl(1);
+        expect(recovery.pathname).toBe('/drug/enforcement.json');
+        expect(recovery.searchParams.get('search')).toBe(SEARCH);
+        expect(recovery.searchParams.get('skip')).toBe('0');
+        expect(recovery.searchParams.get('limit')).toBe('0');
+        expect(recovery.searchParams.has('sort')).toBe(false);
+        expect(result).toEqual({
+          meta: { total: 39, skip: 39, limit: 1, lastUpdated: '2026-09-17' },
+          results: [],
+        });
+      });
+
+      it('settles a genuine zero-match at skip > 0 with exactly one extra request', async () => {
+        mockFetch.mockResolvedValue(NO_MATCHES());
+
+        const result = await service.query(
+          'drug/enforcement',
+          { search: 'openfda.generic_name:"zzznotadrugzzz"', limit: 1, skip: 5 },
+          ctx,
+        );
+
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+        expect(result.meta).toEqual({ total: 0, skip: 5, limit: 1, lastUpdated: 'unknown' });
+      });
+
+      it('returns the empty page marked unverified when the recovery request fails', async () => {
+        mockFetch.mockResolvedValueOnce(NO_MATCHES());
+        mockFetch.mockResolvedValueOnce(
+          mockResponse(503, '<html><body>503 Service Temporarily Unavailable</body></html>'),
+        );
+
+        const result = await service.query(
+          'drug/enforcement',
+          { search: SEARCH, limit: 1, skip: 39 },
+          ctx,
+        );
+
+        expect(mockFetch).toHaveBeenCalledTimes(2);
+        expect(result).toEqual({
+          meta: { total: 0, skip: 39, limit: 1, lastUpdated: 'unknown', totalUnverified: true },
+          results: [],
+        });
+      });
+
+      it('makes no extra request for a 404 at skip=0', async () => {
+        mockFetch.mockResolvedValue(NO_MATCHES());
+
+        await service.query('drug/enforcement', { search: SEARCH, limit: 1, skip: 0 }, ctx);
+
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+      });
+
+      it('makes no extra request for a count query that matched nothing', async () => {
+        mockFetch.mockResolvedValue(NO_MATCHES());
+
+        const result = await service.query(
+          'drug/event',
+          { search: SEARCH, count: 'serious', limit: 3 },
+          ctx,
+        );
+
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+        expect(result.meta.total).toBe(0);
+      });
     });
 
     // #22 — openFDA answers a valid zero-match query with 404. Without the opt-out
@@ -345,21 +442,23 @@ describe('OpenFdaService', () => {
     // syntax error: the field name is already right. It reaches the caller as
     // not_aggregatable naming <field>.exact, and the surviving upstream advice
     // (fielddata=true, a server-side index setting) is dropped.
+    // An expression outside the field catalog has no verified form, so the
+    // correction stays hedged (#49 makes cataloged fields definitive).
     it('routes a count-on-analyzed-text 500 to not_aggregatable naming the .exact subfield', async () => {
       mockFetch.mockResolvedValue(mockResponse(500, AGGREGATION_500));
 
       const err = (await service
-        .query('device/classification', { count: 'device_class' }, ctx)
+        .query('device/classification', { count: 'review_panel' }, ctx)
         .catch((e: unknown) => e)) as McpError;
 
       expect(err.data).toMatchObject({
         reason: 'not_aggregatable',
         endpoint: 'device/classification',
-        count: 'device_class',
+        count: 'review_panel',
       });
       expect(err.code).toBe(-32007); // ValidationError — outside withRetry's transient set
       expect(TRANSIENT_CODES.has(err.code)).toBe(false);
-      expect(err.message).toContain('"device_class.exact"'); // the add-suffix correction
+      expect(err.message).toContain('"review_panel.exact"'); // the add-suffix correction
       expect(err.message).toMatch(/analyzed text field/i);
       expect(err.message).not.toMatch(/fielddata/i); // unreachable server-side advice dropped
       // Not every analyzed field has a keyword subfield: `reason_for_recall.exact`
@@ -388,7 +487,7 @@ describe('OpenFdaService', () => {
       mockFetch.mockResolvedValue(mockResponse(500, AGGREGATION_500));
 
       const err = (await service
-        .query('drug/enforcement', { count: 'classification.exact' }, ctx)
+        .query('drug/enforcement', { count: 'openfda.brand_name.exact' }, ctx)
         .catch((e: unknown) => e)) as McpError;
 
       expect(err.data).toMatchObject({ reason: 'not_aggregatable' });
@@ -513,11 +612,12 @@ describe('OpenFdaService', () => {
     const notFound404 = (message: string) =>
       JSON.stringify({ error: { code: 'NOT_FOUND', message } });
 
+    // Uncataloged expression, unscoped: the hedged drop-suffix correction (#34/#40).
     it('raises a non-retryable not_aggregatable error for a "Nothing to count" 404', async () => {
       mockFetch.mockResolvedValue(mockResponse(404, notFound404('Nothing to count.')));
 
       const err = (await service
-        .query('drug/ndc', { count: 'product_ndc.exact', limit: 2 }, ctx)
+        .query('drug/ndc', { count: 'packaging.package_ndc.exact', limit: 2 }, ctx)
         .catch((e: unknown) => e)) as McpError;
 
       expect(err).toBeInstanceOf(McpError);
@@ -525,10 +625,10 @@ describe('OpenFdaService', () => {
       expect(err.data).toMatchObject({
         reason: 'not_aggregatable',
         endpoint: 'drug/ndc',
-        count: 'product_ndc.exact',
+        count: 'packaging.package_ndc.exact',
       });
-      expect(err.message).toContain('product_ndc.exact');
-      expect(err.message).toContain('"product_ndc"'); // the bare-field correction
+      expect(err.message).toContain('packaging.package_ndc.exact');
+      expect(err.message).toContain('"packaging.package_ndc"'); // the bare-field correction
       // The drop-suffix correction is the dominant case, not a certainty: on
       // drug/enforcement, `reason_for_recall` answers the 5xx and
       // `reason_for_recall.exact` answers this 404, so each direction's fix is the
@@ -558,6 +658,268 @@ describe('OpenFdaService', () => {
 
       expect(result.results).toEqual([]);
       expect(result.meta.total).toBe(0);
+      expect(result.meta.nothingToCount).toBeUndefined();
+    });
+  });
+
+  // #49 — for a cataloged field the correction is the live-verified expression, so
+  // the two hedged hints can no longer bounce a caller between two failing forms.
+  describe('not_aggregatable from the field catalog (#49)', () => {
+    const NOTHING_TO_COUNT_404 = JSON.stringify({
+      error: { code: 'NOT_FOUND', message: 'Nothing to count' },
+    });
+    const AGGREGATION_500 = JSON.stringify({
+      error: {
+        code: 'SERVER_ERROR',
+        message: 'Check your request and try again',
+        details:
+          '[illegal_argument_exception] Text fields are not optimised for operations that require per-document field data like aggregations and sorting, so these operations are disabled by default. Please use a keyword field instead. Alternatively, set fielddata=true on [device_class] in order to load field data by uninverting the inverted index. Note that this can use significant memory.',
+      },
+    });
+    const failure = (endpoint: string, count: string, search?: string) =>
+      service
+        .query(endpoint, { count, limit: 10, ...(search ? { search } : {}) }, ctx)
+        .catch((e: unknown) => e) as Promise<McpError>;
+
+    it.each([
+      ['bare (5xx)', 'device_class', AGGREGATION_500, 500],
+      ['.exact (404)', 'device_class.exact', NOTHING_TO_COUNT_404, 404],
+    ])('says a field with no countable form has none — %s', async (_label, count, body, status) => {
+      mockFetch.mockResolvedValue(mockResponse(status, body));
+
+      const err = await failure('device/classification', count, 'product_code:"DXN"');
+
+      expect(err).toBeInstanceOf(McpError);
+      expect(err.code).toBe(-32007);
+      expect(err.data).toMatchObject({
+        reason: 'not_aggregatable',
+        endpoint: 'device/classification',
+        count,
+      });
+      expect(err.message).toMatch(/"device_class" has no countable form/);
+      // Neither suffix direction is offered — both are recorded as failing. (The
+      // message echoes the caller's own expression once; nothing else names a form.)
+      expect(err.message.replace(`"${count}"`, '')).not.toContain('"device_class.exact"');
+      expect(err.message).not.toMatch(/retry with/i);
+      expect(err.message).not.toMatch(/fielddata/i);
+      expect(err.message).toContain('medical_specialty_description.exact');
+      const hint = (err.data as { recovery?: { hint?: string } }).recovery?.hint ?? '';
+      expect(hint).not.toMatch(/add \.exact|drop \.exact/i);
+      expect(hint).toMatch(/openfda_describe_fields/);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('names the recorded .exact form for a bare analyzed field', async () => {
+      mockFetch.mockResolvedValue(mockResponse(500, AGGREGATION_500));
+
+      const err = await failure('drug/enforcement', 'classification');
+
+      expect(err.data).toMatchObject({ reason: 'not_aggregatable', count: 'classification' });
+      expect(err.message).toContain('Count "classification.exact" instead');
+      expect(err.message).not.toMatch(/if that reports nothing to count/i);
+      expect(err.message).not.toMatch(/fielddata/i);
+      const hint = (err.data as { recovery?: { hint?: string } }).recovery?.hint ?? '';
+      expect(hint).toContain('classification.exact');
+    });
+
+    it('names the recorded bare form for .exact on a keyword field', async () => {
+      mockFetch.mockResolvedValue(mockResponse(404, NOTHING_TO_COUNT_404));
+
+      const err = await failure('drug/ndc', 'product_ndc.exact');
+
+      expect(err.data).toMatchObject({ reason: 'not_aggregatable', count: 'product_ndc.exact' });
+      expect(err.message).toContain('Count "product_ndc" instead');
+      expect(err.message).not.toMatch(/if the bare field fails too/i);
+    });
+
+    // The catalog records `classification.exact` as countable, so a 5xx on it means
+    // openFDA's mapping moved — the hedged message is the honest fallback.
+    it('falls back to the hedged message when a recorded form itself fails', async () => {
+      mockFetch.mockResolvedValue(mockResponse(500, AGGREGATION_500));
+
+      const err = await failure('drug/enforcement', 'classification.exact');
+
+      expect(err.data).toMatchObject({ reason: 'not_aggregatable' });
+      expect(err.message).toMatch(/openfda_describe_fields/);
+      expect(err.message).not.toContain('.exact.exact');
+    });
+  });
+
+  // #57 — `Nothing to count` is data-level: a countable expression answers it when
+  // the search matched only records that carry no value for the field.
+  describe('"Nothing to count" on a countable expression (#57)', () => {
+    const NOTHING_TO_COUNT_404 = JSON.stringify({
+      error: { code: 'NOT_FOUND', message: 'Nothing to count' },
+    });
+    const TALLY_200 = {
+      meta: { results: {}, last_updated: '2026-09-18' },
+      results: [{ term: 'LEVOTHYROXINE SODIUM', count: 431 }],
+    };
+
+    it('returns an empty tally for a cataloged countable expression, without a second request', async () => {
+      mockFetch.mockResolvedValue(mockResponse(404, NOTHING_TO_COUNT_404));
+
+      const result = await service.query(
+        'drug/enforcement',
+        { count: 'classification.exact', search: '_missing_:classification', limit: 5 },
+        ctx,
+      );
+
+      expect(result.results).toEqual([]);
+      expect(result.meta.total).toBe(0);
+      expect(result.meta.nothingToCount).toBe(true);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns an empty tally for either form of a field that counts both ways', async () => {
+      mockFetch.mockResolvedValue(mockResponse(404, NOTHING_TO_COUNT_404));
+
+      const result = await service.query(
+        'device/udi',
+        { count: 'product_codes.code', search: '_missing_:product_codes.code', limit: 5 },
+        ctx,
+      );
+
+      expect(result.meta.nothingToCount).toBe(true);
+    });
+
+    it('confirms an uncataloged expression unscoped, then returns an empty tally', async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockResponse(404, NOTHING_TO_COUNT_404))
+        .mockResolvedValueOnce(mockResponse(200, TALLY_200));
+
+      const result = await service.query(
+        'drug/enforcement',
+        {
+          count: 'openfda.generic_name.exact',
+          search: '_missing_:openfda.generic_name',
+          limit: 5,
+        },
+        ctx,
+      );
+
+      expect(result.results).toEqual([]);
+      expect(result.meta.nothingToCount).toBe(true);
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      const confirm = new URL(mockFetch.mock.calls[1]![0]);
+      expect(confirm.searchParams.get('count')).toBe('openfda.generic_name.exact');
+      expect(confirm.searchParams.has('search')).toBe(false);
+      expect(confirm.searchParams.get('limit')).toBe('1');
+    });
+
+    it('keeps the hedged not_aggregatable when the unscoped confirm has nothing to count too', async () => {
+      mockFetch.mockResolvedValue(mockResponse(404, NOTHING_TO_COUNT_404));
+
+      const err = (await service
+        .query('drug/enforcement', { count: 'city.exact', search: 'state:"IL"', limit: 5 }, ctx)
+        .catch((e: unknown) => e)) as McpError;
+
+      expect(err.code).toBe(-32007);
+      expect(err.data).toMatchObject({
+        reason: 'not_aggregatable',
+        endpoint: 'drug/enforcement',
+        count: 'city.exact',
+      });
+      expect(err.message).toContain('"city"'); // #40's drop-suffix correction
+      expect(err.message).not.toContain('.exact.exact');
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not confirm an uncataloged expression when the count was already unscoped', async () => {
+      mockFetch.mockResolvedValue(mockResponse(404, NOTHING_TO_COUNT_404));
+
+      const err = (await service
+        .query('drug/enforcement', { count: 'city.exact' }, ctx)
+        .catch((e: unknown) => e)) as McpError;
+
+      expect(err.data).toMatchObject({ reason: 'not_aggregatable' });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    // Unscoped there is no search to blame: a recorded-countable expression that
+    // has nothing to count means openFDA remapped the index, which must surface.
+    it('fails a cataloged countable expression that has nothing to count unscoped', async () => {
+      mockFetch.mockResolvedValue(mockResponse(404, NOTHING_TO_COUNT_404));
+
+      const err = (await service
+        .query('drug/enforcement', { count: 'classification.exact', limit: 5 }, ctx)
+        .catch((e: unknown) => e)) as McpError;
+
+      expect(err.data).toMatchObject({ reason: 'not_aggregatable' });
+      expect(err.message).toMatch(/openfda_describe_fields/);
+      expect(err.message).not.toContain('.exact.exact');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('still fails a cataloged field with no countable form under a search', async () => {
+      mockFetch.mockResolvedValue(mockResponse(404, NOTHING_TO_COUNT_404));
+
+      const err = (await service
+        .query(
+          'drug/enforcement',
+          { count: 'reason_for_recall.exact', search: 'state:"IL"', limit: 5 },
+          ctx,
+        )
+        .catch((e: unknown) => e)) as McpError;
+
+      expect(err.data).toMatchObject({ reason: 'not_aggregatable' });
+      expect(err.message).toMatch(/has no countable form/);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // openFDA answers a search that matched nothing with `No matches found!` before
+  // it looks at the count expression, so an expression the catalog records as
+  // failing reaches that 404 too. An empty tally there would read as "countable,
+  // nothing matched" and send the caller to broaden a search that can never count.
+  describe('"No matches found!" on an expression the catalog records as failing', () => {
+    const NO_MATCHES_404 = JSON.stringify({
+      error: { code: 'NOT_FOUND', message: 'No matches found!' },
+    });
+
+    it('raises not_aggregatable for a field with no countable form', async () => {
+      mockFetch.mockResolvedValue(mockResponse(404, NO_MATCHES_404));
+
+      const err = (await service
+        .query(
+          'device/classification',
+          { count: 'device_class.exact', search: 'product_code:"ZZZQQ"', limit: 3 },
+          ctx,
+        )
+        .catch((e: unknown) => e)) as McpError;
+
+      expect(err).toBeInstanceOf(McpError);
+      expect(err.data).toMatchObject({ reason: 'not_aggregatable', count: 'device_class.exact' });
+      expect(err.message).toMatch(/"device_class" has no countable form/);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('raises not_aggregatable naming the recorded form for the other suffix', async () => {
+      mockFetch.mockResolvedValue(mockResponse(404, NO_MATCHES_404));
+
+      const err = (await service
+        .query(
+          'drug/ndc',
+          { count: 'product_ndc.exact', search: 'brand_name:"zzznotadrugzzz"', limit: 3 },
+          ctx,
+        )
+        .catch((e: unknown) => e)) as McpError;
+
+      expect(err.data).toMatchObject({ reason: 'not_aggregatable', count: 'product_ndc.exact' });
+      expect(err.message).toContain('Count "product_ndc" instead');
+    });
+
+    it('keeps the empty tally for a recorded countable expression', async () => {
+      mockFetch.mockResolvedValue(mockResponse(404, NO_MATCHES_404));
+
+      const result = await service.query(
+        'drug/ndc',
+        { count: 'product_ndc', search: 'brand_name:"zzznotadrugzzz"', limit: 3 },
+        ctx,
+      );
+
+      expect(result.results).toEqual([]);
+      expect(result.meta.nothingToCount).toBeUndefined();
     });
   });
 });

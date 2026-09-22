@@ -229,8 +229,10 @@ export async function spillSearch(opts: {
   const total = probe.meta.total;
   const lastUpdated = probe.meta.lastUpdated;
 
+  // A window at or past the probed total is known empty — fetching it would only
+  // draw openFDA's past-end 404 and the service's total recovery behind it.
   const probeCoversWindow =
-    skip + limit <= probe.results.length || probe.results.length < PROBE_ROWS;
+    skip + limit <= probe.results.length || probe.results.length < PROBE_ROWS || skip >= total;
   const requested = probeCoversWindow
     ? probe.results.slice(skip, skip + limit)
     : (await svc.query<Record<string, unknown>>(endpoint, { search, sort, limit, skip }, ctx))
