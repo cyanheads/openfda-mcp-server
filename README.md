@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.7.7-blue.svg?style=flat-square)](./CHANGELOG.md) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.0.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.7.8-blue.svg?style=flat-square)](./CHANGELOG.md) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.0.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -111,8 +111,10 @@ FDA data on drugs, food, devices, and recalls from the openFDA public API. Searc
 ### `openfda_count_values` <sub>tool</sub>
 
 - Works across all 20 openFDA endpoints (drug, food, device, animal/veterinary, tobacco, other) — the same set `openfda_describe_fields` covers
-- `count` takes a dotted field path; append `.exact` for whole-phrase counting on analyzed text fields — identifier fields already indexed as keywords (`product_ndc`, `application_number`, `pma_number`) reject `.exact` as `not_aggregatable`
+- `count` takes a dotted field path — `openfda_describe_fields` lists the verified expression for each field (`countAs`); outside the catalog, append `.exact` on analyzed text fields and count keyword identifiers (`product_ndc`, `application_number`, `pma_number`) bare
+- A field that can't be aggregated fails as `not_aggregatable`, naming the expression that does count or saying the field has none; a search whose matched records lack the field returns an empty tally with a notice
 - Optional `search` scopes the aggregation; returns up to 1000 top terms ranked by count descending
+- `truncated` is set only when more distinct terms exist past `limit` (the tool reads one term ahead); at openFDA's 1000-term count maximum no look-ahead is possible, so a full list carries a notice that more may exist instead
 - Pairs with the search/label/recall tools when sample records help interpret an aggregate
 - Runs against the live API even when the local bulk mirror is enabled — a partial mirror can't produce complete aggregates
 
@@ -121,7 +123,7 @@ FDA data on drugs, food, devices, and recalls from the openFDA public API. Searc
 ### `openfda_describe_fields` <sub>tool</sub>
 
 - Covers all 20 cataloged openFDA endpoints — the same set `openfda_count_values` accepts
-- Returns field paths grouped by category, each with type and a one-line description, plus `queryTips` covering quoting, AND/OR, `.exact`, and date-range syntax
+- Returns field paths grouped by category, each with type, a one-line description, and `countAs` — the live-verified `openfda_count_values` expression (bare or `.exact`), or `null` when the field can't be aggregated — plus `queryTips` covering quoting, AND/OR, `.exact`, and date-range syntax
 - Call before constructing a `search` query — field paths differ per endpoint and aren't derivable from a tool's own schema
 
 ---
@@ -196,7 +198,7 @@ Agent-friendly output:
 - Byte-budget disclosure — oversized pages are bounded by a shared ~24 KB serialized budget and disclosed via `page_omitted`/`page_bytes` on both `content[]` and `structuredContent`, never silently truncated and never emptied to zero records
 - Typed failure contracts — `errors[]` declarations key `ctx.fail` by reason (`rate_limited`, `query_error`, `pagination_limit_reached`, `canvas_disabled`, ...) so callers can branch on `error.data.reason` instead of parsing messages
 - Best-effort degradation — `openfda_drug_profile` returns `null` per section on a miss rather than failing the whole call, and names which sections failed upstream (vs. genuinely absent) in `degraded[]`
-- Empty-result guidance — a no-match search returns a notice pointing at `openfda_describe_fields` and broader query terms rather than a bare empty array
+- Empty-result guidance — a no-match search returns a notice pointing at `openfda_describe_fields` and broader query terms rather than a bare empty array; a page requested past the end of its results reports the real match count and says the offset overshot
 
 ## Getting started
 
