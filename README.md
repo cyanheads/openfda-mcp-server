@@ -59,6 +59,7 @@ FDA data on drugs, food, devices, and recalls from the openFDA public API. Searc
 - A single-drug query resolves only to a single-ingredient product, never a combination
 - `degraded[]` names any section whose sub-query failed upstream (rate limit, 5xx, query error) — a section listed there is unknown, not confirmed absent
 - Auth, configuration, and cancellation failures abort the whole call rather than degrading silently
+- Accepts `drug_name` or `name` in place of `drug`
 
 ---
 
@@ -308,6 +309,7 @@ All configuration is validated at startup via Zod schemas in `src/config/server-
 |:---|:---|:---|
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http` | `stdio` |
 | `MCP_HTTP_PORT` | HTTP server port | `3010` |
+| `MCP_SESSION_MODE` | HTTP session handling: `stateless`, `stateful`, or `auto`. No tool asks the caller for input mid-call, so no session store is needed. | `stateless` |
 | `MCP_AUTH_MODE` | Authentication: `none`, `jwt`, or `oauth` | `none` |
 | `MCP_LOG_LEVEL` | Log level (`debug`, `info`, `warning`, `error`, etc.) | `info` |
 | `LOGS_DIR` | Directory for log files (Node.js only). | `<project-root>/logs` |
