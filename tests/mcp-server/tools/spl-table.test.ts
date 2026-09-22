@@ -180,6 +180,22 @@ describe('renderSplTable', () => {
       ]);
     });
 
+    it('lets a colspan cover slots an earlier rowspan occupies without losing either value', () => {
+      /**
+       * Overlapping spans are an authoring error; like the HTML table model, the later
+       * cell still covers its full width and the earlier origin keeps its text.
+       */
+      const out = renderSplTable(
+        '<table><tr><td>a</td><td rowspan="3">B</td><td>c</td></tr><tr><td colspan="3" rowspan="2">D</td></tr><tr><td>e</td></tr></table>',
+      );
+      expect(tableLines(out)).toEqual([
+        '| a | B | c |  |',
+        '| --- | --- | --- | --- |',
+        '| D |  |  |  |',
+        '|  |  |  | e |',
+      ]);
+    });
+
     it('clamps a rowspan that runs past the last row and pads ragged rows', () => {
       const out = renderSplTable(
         '<table><tr><td>h1</td><td>h2</td><td>h3</td></tr><tr><td rowspan="9">tall</td></tr></table>',
