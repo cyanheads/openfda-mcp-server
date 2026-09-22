@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.7](changelog/0.7.x/0.7.7.md) — 2026-09-22
+
+Staging search tools declare canvas_not_found and canvas_capacity_exhausted, staged responses point to openfda_dataframe_describe before openfda_dataframe_query, and tests/ is now typechecked
+
 ## [0.7.6](changelog/0.7.x/0.7.6.md) — 2026-09-21
 
 openfda_drug_profile takes drug_name/name aliases, canvas_id inputs validate against the minted id shape, and mcp-ts-core bumps to 0.13.6

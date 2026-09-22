@@ -1,6 +1,6 @@
 # openfda-mcp-server - Directory Structure
 
-Generated on: 2026-09-22 05:03:12
+Generated on: 2026-09-22 18:51:39
 
 ```text
 openfda-mcp-server/
@@ -184,9 +184,12 @@ openfda-mcp-server/
 ├── tests/
 │   ├── config/
 │   │   └── server-config.test.ts
+│   ├── helpers/
+│   │   └── content.ts
 │   ├── mcp-server/
 │   │   └── tools/
 │   │       ├── definitions/
+│   │       │   ├── canvas-acquire-failures.test.ts
 │   │       │   ├── canvas-staging-parity.test.ts
 │   │       │   ├── count-values.tool.test.ts
 │   │       │   ├── dataframe-describe.tool.test.ts
