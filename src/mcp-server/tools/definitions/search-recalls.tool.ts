@@ -50,12 +50,12 @@ import {
 } from '@/services/openfda/page-budget.js';
 
 /**
- * Canvas table projection for enforcement/recall records. Scalars are VARCHAR
- * (CAST in SQL for math); the openfda block is a JSON column. All nullable — the
- * field set differs between the enforcement and device recall endpoints, and
- * records are sparse.
+ * Canvas table projection for enforcement records (every category). Scalars are
+ * VARCHAR (CAST in SQL for math); the openfda block is a JSON column. All
+ * nullable — records are sparse. The canvas ignores fields outside the schema,
+ * so each endpoint shape stages against its own column set.
  */
-const RECALLS_CANVAS_SCHEMA: ColumnSchema[] = [
+const ENFORCEMENT_CANVAS_SCHEMA: ColumnSchema[] = [
   { name: 'recall_number', type: 'VARCHAR', nullable: true },
   { name: 'event_id', type: 'VARCHAR', nullable: true },
   { name: 'status', type: 'VARCHAR', nullable: true },
@@ -74,6 +74,46 @@ const RECALLS_CANVAS_SCHEMA: ColumnSchema[] = [
   { name: 'city', type: 'VARCHAR', nullable: true },
   { name: 'product_code', type: 'VARCHAR', nullable: true },
   { name: 'res_event_number', type: 'VARCHAR', nullable: true },
+  { name: 'openfda', type: 'JSON', nullable: true },
+];
+
+/**
+ * Canvas table projection for device/recall records — every top-level field the
+ * endpoint returns, verified against live records. Identity and status live in
+ * `product_res_number` and `recall_status`; the endpoint carries no recall
+ * hazard classification, so the enforcement-only columns would only ever be
+ * NULL here. `k_numbers`/`pma_numbers` and the openfda block are JSON columns.
+ */
+const DEVICE_RECALL_CANVAS_SCHEMA: ColumnSchema[] = [
+  ...[
+    'cfres_id',
+    'product_res_number',
+    'res_event_number',
+    'recall_status',
+    'event_date_initiated',
+    'event_date_posted',
+    'event_date_created',
+    'event_date_terminated',
+    'recalling_firm',
+    'firm_fei_number',
+    'address_1',
+    'address_2',
+    'city',
+    'state',
+    'postal_code',
+    'country',
+    'additional_info_contact',
+    'product_code',
+    'product_description',
+    'product_quantity',
+    'code_info',
+    'reason_for_recall',
+    'root_cause_description',
+    'action',
+    'distribution_pattern',
+  ].map((name): ColumnSchema => ({ name, type: 'VARCHAR', nullable: true })),
+  { name: 'k_numbers', type: 'JSON', nullable: true },
+  { name: 'pma_numbers', type: 'JSON', nullable: true },
   { name: 'openfda', type: 'JSON', nullable: true },
 ];
 
@@ -129,7 +169,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
     results: z
       .array(z.record(z.string(), z.any()))
       .describe(
-        'Enforcement or recall records — recall_number, classification, recalling_firm, product_description, reason_for_recall, status, voluntary_mandated, distribution_pattern, report_date. Field set varies between enforcement and recall endpoints.',
+        'Enforcement or recall records. Enforcement records (every category) carry recall_number, classification, status, voluntary_mandated, recalling_firm, product_description, reason_for_recall, distribution_pattern, report_date. Device recall records name identity product_res_number and status recall_status, add res_event_number and root_cause_description, share the firm, product, reason, and distribution fields, and carry no recall hazard classification.',
       ),
     ...pageBudgetOutputShape,
     ...canvasOutputShape,
@@ -234,7 +274,8 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
         search: input.search,
         sort: input.sort,
         canvasId: input.canvas_id,
-        schema: RECALLS_CANVAS_SCHEMA,
+        schema:
+          endpointValue === 'recall' ? DEVICE_RECALL_CANVAS_SCHEMA : ENFORCEMENT_CANVAS_SCHEMA,
         limit: input.limit,
         skip: input.skip,
         ctx,
@@ -314,29 +355,52 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       ];
     }
 
-    const rendered = new Set([
-      'recall_number',
-      'classification',
+    /**
+     * Keys each branch's curated lines emit verbatim whenever present. The two
+     * endpoint shapes share firm, product, reason, and distribution, but name
+     * identity and status differently — and device/recall carries no recall
+     * hazard classification (`openfda.device_class` is the product's regulatory
+     * class), so its branch prints none.
+     */
+    const sharedRendered = [
       'recalling_firm',
       'product_description',
       'reason_for_recall',
+      'distribution_pattern',
+    ];
+    const renderedEnforcement = new Set([
+      ...sharedRendered,
+      'recall_number',
+      'classification',
       'status',
       'voluntary_mandated',
-      'distribution_pattern',
+    ]);
+    const renderedDeviceRecall = new Set([
+      ...sharedRendered,
+      'product_res_number',
+      'recall_status',
     ]);
 
     const records = result.results.map((r) => {
-      const lines = [
-        `**Recall #${r.recall_number ?? 'N/A'}** — ${r.classification ?? 'Unclassified'}`,
+      // device/recall — detected structurally, since format() never sees the endpoint input.
+      const deviceRecall = r.product_res_number != null;
+      const lines = deviceRecall
+        ? [`**Recall #${r.product_res_number}**`]
+        : [`**Recall #${r.recall_number ?? 'N/A'}** — ${r.classification ?? 'Unclassified'}`];
+      lines.push(
         `Firm: ${r.recalling_firm ?? 'N/A'}`,
         `Product: ${(r.product_description as string | undefined) || 'N/A'}`,
         `Reason: ${(r.reason_for_recall as string | undefined) || 'N/A'}`,
-        `Status: ${r.status ?? 'N/A'} | ${r.voluntary_mandated ?? 'N/A'}`,
-      ];
+        deviceRecall
+          ? `Status: ${r.recall_status ?? 'N/A'}`
+          : `Status: ${r.status ?? 'N/A'} | ${r.voluntary_mandated ?? 'N/A'}`,
+      );
       if (r.distribution_pattern) {
         lines.push(`Distribution: ${r.distribution_pattern}`);
       }
-      lines.push(...formatRemainingFields(r, rendered));
+      lines.push(
+        ...formatRemainingFields(r, deviceRecall ? renderedDeviceRecall : renderedEnforcement),
+      );
       return lines.join('\n');
     });
 
