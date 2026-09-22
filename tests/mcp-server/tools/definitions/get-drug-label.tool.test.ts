@@ -15,6 +15,7 @@ import { getDrugLabelTool } from '@/mcp-server/tools/definitions/get-drug-label.
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import {
   FOOTNOTE_INLINE,
+  FOOTNOTE_REF,
   ROWSPAN_GRID,
   SUBSCRIPT_FORMULA,
   WARFARIN_DOSING,
@@ -710,6 +711,47 @@ describe('openfda_get_drug_label', () => {
         );
         expect(text).not.toContain('Empty table');
         expect(text).toContain('Kept.');
+      });
+
+      it('numbers footnotes in one sequence across tables, sections, and records (#61)', () => {
+        const text = textOf(
+          getDrugLabelTool.format!({
+            meta: { total: 2, skip: 0, limit: 2, lastUpdated: '' },
+            kind: 'full',
+            results: [
+              label({
+                adverse_reactions_table: [FOOTNOTE_INLINE, FOOTNOTE_REF],
+                clinical_studies_table: [FOOTNOTE_INLINE],
+              }),
+              label({ set_id: 'set-2', adverse_reactions_table: [FOOTNOTE_REF] }),
+            ],
+          }),
+        );
+
+        const labels = [...text.matchAll(/^\[\^(\d+)\]:/gm)].map((m) => Number(m[1]));
+        expect(labels).toEqual([1, 2, 3, 4]);
+        // Each marker still points at its own table's definition.
+        expect(text).toContain('| Infection[^1] | 9.4 | 10.3 |');
+        expect(text).toContain('[^1]: Body system not specified');
+        expect(text).toContain('| Until expiration date | 56 days[^2] |');
+        expect(text).toContain('[^2]: To prevent degradation');
+        expect(text).toContain('| Infection[^3] | 9.4 | 10.3 |');
+        expect(text).toContain('[^3]: Body system not specified');
+        expect(text).toContain('| Until expiration date | 56 days[^4] |');
+        expect(text).toContain('[^4]: To prevent degradation');
+      });
+
+      it('restarts the footnote sequence on each format() call', () => {
+        const render = () =>
+          textOf(
+            getDrugLabelTool.format!({
+              meta: { total: 1, skip: 0, limit: 1, lastUpdated: '' },
+              kind: 'full',
+              results: [label({ adverse_reactions_table: [FOOTNOTE_INLINE] })],
+            }),
+          );
+        expect(render()).toContain('| Infection[^1] |');
+        expect(render()).toContain('| Infection[^1] |');
       });
     });
 

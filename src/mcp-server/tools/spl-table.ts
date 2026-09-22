@@ -139,18 +139,40 @@ function parseSpl(raw: string): SplNode[] | undefined {
   return stack.length === 1 ? root.children : undefined;
 }
 
-/** Footnote numbering for one table — markers follow first appearance, by footnote or reference. */
+/**
+ * The footnote numbers already handed out in one text output. Share one across
+ * every `renderSplTable` call that lands in the same document so its `[^n]`
+ * labels stay unique — a Markdown renderer keeps only the first definition of a label.
+ */
+export interface FootnoteSequence {
+  last: number;
+}
+
+/** A sequence that starts numbering at 1. */
+export function createFootnoteSequence(): FootnoteSequence {
+  return { last: 0 };
+}
+
+/**
+ * Footnote numbering for one table — markers follow first appearance, by footnote
+ * or reference. Numbers come from the shared sequence; footnote IDs are scoped to
+ * the table, since SPL reuses IDs like `f1` across tables.
+ */
 class FootnoteRegistry {
   readonly #numbers = new Map<string, number>();
   readonly #notes = new Map<number, string>();
-  #count = 0;
+  readonly #sequence: FootnoteSequence;
+
+  constructor(sequence: FootnoteSequence) {
+    this.#sequence = sequence;
+  }
 
   /** The marker number for an ID, assigning the next one on first sight. Anonymous footnotes always get a fresh number. */
   number(id: string | undefined): number {
-    if (id === undefined) return ++this.#count;
+    if (id === undefined) return ++this.#sequence.last;
     let n = this.#numbers.get(id);
     if (n === undefined) {
-      n = ++this.#count;
+      n = ++this.#sequence.last;
       this.#numbers.set(id, n);
     }
     return n;
@@ -310,8 +332,8 @@ function pipeRow(cells: string[]): string {
 }
 
 /** One `<table>` as caption, pipe table, footer lines, and footnote definitions — blank-line separated. */
-function renderTable(table: SplElement): string {
-  const notes = new FootnoteRegistry();
+function renderTable(table: SplElement, sequence: FootnoteSequence): string {
+  const notes = new FootnoteRegistry(sequence);
   const captions: SplElement[] = [];
   const headRows: SplElement[] = [];
   const bodyRows: SplElement[] = [];
@@ -373,13 +395,18 @@ function plainText(raw: string): string {
  * Render one SPL `*_table` string as Markdown: each `<table>` becomes its
  * caption, a GFM pipe table, any `<tfoot>` rows, and `[^n]:` definitions for
  * the footnotes its cells mark. Text outside a table renders as its own block.
+ * Pass one `sequence` to every call whose output shares a document; without it,
+ * footnotes number from 1.
  */
-export function renderSplTable(raw: string): string {
+export function renderSplTable(
+  raw: string,
+  sequence: FootnoteSequence = createFootnoteSequence(),
+): string {
   const nodes = parseSpl(raw);
   if (!nodes) return plainText(raw);
 
   const blocks: string[] = [];
-  const looseNotes = new FootnoteRegistry();
+  const looseNotes = new FootnoteRegistry(sequence);
   let loose = '';
   const flushLoose = () => {
     const text = finalizeInline(loose, '\n\n');
@@ -390,7 +417,7 @@ export function renderSplTable(raw: string): string {
   for (const node of nodes) {
     if (node.kind === 'element' && node.name === 'table') {
       flushLoose();
-      const table = renderTable(node);
+      const table = renderTable(node, sequence);
       if (table) blocks.push(table);
     } else {
       loose += renderInline(node, looseNotes);

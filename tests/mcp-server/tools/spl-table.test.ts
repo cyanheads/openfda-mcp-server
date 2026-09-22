@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { renderSplTable } from '@/mcp-server/tools/spl-table.js';
+import { createFootnoteSequence, renderSplTable } from '@/mcp-server/tools/spl-table.js';
 import * as fixtures from '../../fixtures/spl-tables.js';
 
 /** Undo the renderer's Markdown escapes, recovering the displayed text. */
@@ -366,6 +366,62 @@ describe('renderSplTable', () => {
     it('keeps a marker for a reference whose footnote never appears, without inventing a definition', () => {
       const out = renderSplTable('<table><tr><td>a<footnoteRef IDREF="gone"/></td></tr></table>');
       expect(out).toBe('| a[^1] |\n| --- |');
+    });
+  });
+
+  describe('footnote sequence shared across renders (#61)', () => {
+    /** The `[^n]:` definition labels of a rendering, in order. */
+    const definitionLabels = (markdown: string) =>
+      [...markdown.matchAll(/^\[\^(\d+)\]:/gm)].map((m) => Number(m[1]));
+
+    it('continues numbering across tables rendered with one sequence', () => {
+      const sequence = createFootnoteSequence();
+      const first = renderSplTable(fixtures.FOOTNOTE_INLINE, sequence);
+      const second = renderSplTable(fixtures.MULTI_HEADER_ROW, sequence);
+      const third = renderSplTable(fixtures.FOOTNOTE_INLINE, sequence);
+
+      expect(first).toContain('| Infection[^1] | 9.4 | 10.3 |');
+      expect(second).not.toContain('[^');
+      expect(third).toContain('| Infection[^2] | 9.4 | 10.3 |');
+      expect(third).toContain('\n\n[^2]: Body system not specified');
+      expect(definitionLabels(`${first}\n\n${second}\n\n${third}`)).toEqual([1, 2]);
+    });
+
+    it('scopes footnote IDs to their own table, so a reused ID gets a fresh number', () => {
+      const sequence = createFootnoteSequence();
+      const first = renderSplTable(fixtures.FOOTNOTE_REF, sequence);
+      const second = renderSplTable(fixtures.FOOTNOTE_REF, sequence);
+
+      expect(
+        tableLines(first)
+          .slice(2)
+          .map((row) => cells(row)[2]),
+      ).toEqual(['56 days[^1]', '56 days[^1]']);
+      expect(
+        tableLines(second)
+          .slice(2)
+          .map((row) => cells(row)[2]),
+      ).toEqual(['56 days[^2]', '56 days[^2]']);
+      expect(cells(tableLines(second)[0] ?? '')[2]).toContain('In-use (opened)[^2]');
+      expect(definitionLabels(second)).toEqual([2]);
+    });
+
+    it('numbers loose footnotes outside a table from the same sequence', () => {
+      const sequence = createFootnoteSequence();
+      renderSplTable(fixtures.FOOTNOTE_INLINE, sequence);
+      const out = renderSplTable(
+        'lead<footnote>loose note</footnote><table><tr><td>x<footnote>cell note</footnote></td></tr></table>',
+        sequence,
+      );
+      expect(out).toContain('lead[^2]');
+      expect(out).toContain('| x[^3] |');
+      expect(definitionLabels(out).sort()).toEqual([2, 3]);
+    });
+
+    it('renders a table without a sequence exactly as with a fresh one', () => {
+      expect(renderSplTable(fixtures.FOOTNOTE_REF)).toBe(
+        renderSplTable(fixtures.FOOTNOTE_REF, createFootnoteSequence()),
+      );
     });
   });
 

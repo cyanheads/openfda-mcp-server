@@ -32,7 +32,11 @@ import {
   sortExpression,
   totalUnverifiedField,
 } from '@/mcp-server/tools/schema-utils.js';
-import { renderSplTable } from '@/mcp-server/tools/spl-table.js';
+import {
+  createFootnoteSequence,
+  type FootnoteSequence,
+  renderSplTable,
+} from '@/mcp-server/tools/spl-table.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 const ENDPOINT = 'drug/label';
@@ -48,11 +52,15 @@ const LABEL_METADATA_KEYS = ['openfda', 'set_id', 'id', 'effective_time', 'versi
  * A `*_table` section's text for `content[]` — each SPL table string rendered as
  * Markdown, blank-line separated. Undefined when the value is not the string or
  * string array openFDA ships, so the generic section rendering takes it.
+ * Footnotes number from `sequence`, shared across the whole text output.
  */
-function renderTableSection(value: unknown): string | undefined {
-  if (typeof value === 'string') return renderSplTable(value);
+function renderTableSection(value: unknown, sequence: FootnoteSequence): string | undefined {
+  if (typeof value === 'string') return renderSplTable(value, sequence);
   if (Array.isArray(value) && value.every((item) => typeof item === 'string')) {
-    return value.map(renderSplTable).filter(Boolean).join('\n\n');
+    return value
+      .map((item) => renderSplTable(item, sequence))
+      .filter(Boolean)
+      .join('\n\n');
   }
   return;
 }
@@ -406,6 +414,8 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
      * loop below is what carries them into `content[]`.
      */
     const metaKeys = new Set(['openfda', 'set_id', 'effective_time']);
+    // One footnote sequence for the whole text, so no `[^n]` label repeats (#61).
+    const footnotes = createFootnoteSequence();
 
     for (const r of records) {
       const openfda = (r.openfda ?? {}) as Record<string, unknown>;
@@ -433,7 +443,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       // prose sections pass through verbatim.
       for (const [key, value] of Object.entries(r)) {
         if (metaKeys.has(key) || value == null) continue;
-        const table = key.endsWith('_table') ? renderTableSection(value) : undefined;
+        const table = key.endsWith('_table') ? renderTableSection(value, footnotes) : undefined;
         if (table !== undefined) {
           if (table) lines.push(`\n**${humanizeField(key)}:**\n\n${table}`);
           continue;
