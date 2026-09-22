@@ -25,6 +25,7 @@ import {
   SEARCH_BALANCE_NOTE,
   SKIP_DESCRIPTION,
   sortExpression,
+  totalUnverifiedField,
 } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
@@ -104,6 +105,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
         skip: z.number().describe('Pagination offset'),
         limit: z.number().describe(META_LIMIT_DESCRIPTION),
         lastUpdated: z.string().describe('Dataset last updated date'),
+        totalUnverified: totalUnverifiedField,
       })
       .describe('Response metadata'),
     results: z
@@ -173,11 +175,12 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
     assertSkipWithinCeiling(input.skip, ctx);
     assertSearchDelimitersBalanced(input.search, ctx);
 
-    const emptyNotice = (skip: number, total: number) =>
+    const emptyNotice = (skip: number, total: number, totalUnverified?: boolean) =>
       emptyResultMessage(
         skip,
         total,
         `No drug shortage records matched${input.search ? ` search: ${input.search}` : ''}. Try broader filters or check field names. ${formatFieldHint('drug/shortages')}`,
+        totalUnverified,
       );
 
     const canvas = getCanvas();
@@ -240,7 +243,9 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
     ctx.enrich({ totalResults: response.meta.total });
     if (input.search) ctx.enrich.echo(input.search);
     const notices = [
-      page.results.length === 0 ? emptyNotice(response.meta.skip, response.meta.total) : undefined,
+      page.results.length === 0
+        ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
+        : undefined,
       pageBudgetNotice(page),
     ].filter(Boolean);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
@@ -253,7 +258,11 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       return [
         {
           type: 'text' as const,
-          text: noMatchNote('No drug shortage records found.', result.meta.skip),
+          text: noMatchNote(
+            'No drug shortage records found.',
+            result.meta.skip,
+            result.meta.totalUnverified,
+          ),
         },
       ];
     }

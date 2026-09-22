@@ -25,6 +25,7 @@ import {
   SEARCH_BALANCE_NOTE,
   SKIP_DESCRIPTION,
   sortExpression,
+  totalUnverifiedField,
 } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
@@ -131,6 +132,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
         skip: z.number().describe('Pagination offset'),
         limit: z.number().describe(META_LIMIT_DESCRIPTION),
         lastUpdated: z.string().describe('Dataset last updated date'),
+        totalUnverified: totalUnverifiedField,
       })
       .describe('Response metadata'),
     results: z
@@ -201,11 +203,12 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
     assertSearchDelimitersBalanced(input.search, ctx);
 
     const endpoint = `${input.category}/event`;
-    const emptyNotice = (skip: number, total: number) =>
+    const emptyNotice = (skip: number, total: number, totalUnverified?: boolean) =>
       emptyResultMessage(
         skip,
         total,
         `No adverse event reports matched${input.search ? ` search: ${input.search}` : ''} in ${endpoint}. Try broadening filters or checking field names (use openfda.brand_name for product searches). ${formatFieldHint(endpoint)}`,
+        totalUnverified,
       );
 
     const canvas = getCanvas();
@@ -268,7 +271,9 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
     ctx.enrich({ totalResults: response.meta.total });
     if (input.search) ctx.enrich.echo(input.search);
     const notices = [
-      page.results.length === 0 ? emptyNotice(response.meta.skip, response.meta.total) : undefined,
+      page.results.length === 0
+        ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
+        : undefined,
       pageBudgetNotice(page),
     ].filter(Boolean);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
@@ -278,7 +283,12 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
 
   format: (result) => {
     if (result.results.length === 0 && result.meta.total === 0) {
-      return [{ type: 'text' as const, text: noMatchNote('No results found.', result.meta.skip) }];
+      return [
+        {
+          type: 'text' as const,
+          text: noMatchNote('No results found.', result.meta.skip, result.meta.totalUnverified),
+        },
+      ];
     }
 
     const lines: string[] = [

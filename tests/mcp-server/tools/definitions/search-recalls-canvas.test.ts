@@ -190,6 +190,33 @@ describe('openfda_search_recalls — canvas enabled', () => {
     expect(staged.meta.skip).toBe(300);
   });
 
+  // #47 — the probe already carries the total, so a window at or past it is known
+  // empty: no page request, and so no past-end total recovery behind it either.
+  it.each([150, 400])(
+    'spends no request on an inline window at skip=%i, at or past the probed total',
+    async (skip) => {
+      const svc = makeSvc(150);
+      await setSvcMock(svc);
+      const { canvas } = makeCanvas();
+      await setCanvasMock(canvas);
+      const ctx = createMockContext({ errors: searchRecallsTool.errors });
+
+      const result = await searchRecallsTool.handler(
+        searchRecallsTool.input.parse({ category: 'drug', limit: 10, skip, stage: true }),
+        ctx,
+      );
+
+      const skips = svc.query.mock.calls.map(([, params]) => params.skip);
+      expect(skips).not.toContain(skip);
+      expect(result.results).toEqual([]);
+      expect(result.meta.total).toBe(150);
+      expect(getEnrichment(ctx).notice).toContain('150 matched');
+      const text = textOf(searchRecallsTool.format!(result));
+      expect(text).toContain('150 matched');
+      expect(text).not.toMatch(/either nothing matched/i);
+    },
+  );
+
   it('still resolves the endpoint and enforces the recall/device guard', async () => {
     await setSvcMock(makeSvc(5));
     const { canvas } = makeCanvas();
@@ -263,9 +290,9 @@ describe('openfda_search_recalls — format', () => {
     expect(textOf(blocks)).toBe('No results found.');
   });
 
-  it('qualifies the no-match wording when the request carried an offset', () => {
+  it('qualifies the no-match wording when the total behind an offset is unverified', () => {
     const blocks = searchRecallsTool.format!({
-      meta: { total: 0, skip: 2000, limit: 0, lastUpdated: '2026-06-01' },
+      meta: { total: 0, skip: 2000, limit: 0, lastUpdated: '2026-06-01', totalUnverified: true },
       results: [],
     });
     expect(textOf(blocks)).toContain('at skip=2000');

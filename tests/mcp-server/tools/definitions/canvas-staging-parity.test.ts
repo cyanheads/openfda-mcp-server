@@ -197,13 +197,24 @@ describe.each(STAGING_TOOLS.map(([tool, input]) => [tool.name, tool, input] as c
       expect(text).not.toContain('OFFSET 700000');
     });
 
-    it('qualifies its no-match wording when the request carried an offset', () => {
+    it('qualifies its no-match wording when the total behind an offset is unverified', () => {
       const text = formatText(tool, {
-        meta: { total: 0, skip: 500, limit: 0, lastUpdated: '2026-06-01' },
+        meta: { total: 0, skip: 500, limit: 0, lastUpdated: '2026-06-01', totalUnverified: true },
         results: [],
       });
       expect(text).toContain('at skip=500');
       expect(text).toContain('Retry with skip=0');
+    });
+
+    // #47 — a zero total at an offset is confirmed (recovered, or from the staged
+    // probe) unless flagged, so the flat no-match wording stands.
+    it('keeps its flat no-match wording at an offset when the zero total is confirmed', () => {
+      const text = formatText(tool, {
+        meta: { total: 0, skip: 500, limit: 0, lastUpdated: '2026-06-01' },
+        results: [],
+      });
+      expect(text).toMatch(/^No .*\.$/);
+      expect(text).not.toContain('Retry with skip=0');
     });
 
     it('keeps its own no-match wording when nothing matched', () => {

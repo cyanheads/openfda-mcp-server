@@ -136,9 +136,9 @@ describe('openfda_search_drug_shortages', () => {
     expect(enrichment.notice).toContain('generic_name');
   });
 
-  it('sets pagination-context notice when empty at skip > 0', async () => {
+  it('sets pagination-context notice when empty at skip > 0 with an unverified total', async () => {
     mockQuery.mockResolvedValue({
-      meta: { total: 0, skip: 30, limit: 10, lastUpdated: '' },
+      meta: { total: 0, skip: 30, limit: 10, lastUpdated: '', totalUnverified: true },
       results: [],
     });
 

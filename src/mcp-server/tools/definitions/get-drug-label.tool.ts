@@ -16,7 +16,12 @@ import {
   selectSections,
 } from '@cyanheads/mcp-ts-core/utils';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
-import { emptyResultMessage, humanizeField } from '@/mcp-server/tools/format-utils.js';
+import {
+  emptyPageNote,
+  emptyResultMessage,
+  humanizeField,
+  noMatchNote,
+} from '@/mcp-server/tools/format-utils.js';
 import {
   assertSearchDelimitersBalanced,
   assertSkipWithinCeiling,
@@ -25,6 +30,7 @@ import {
   SEARCH_BALANCE_NOTE,
   SKIP_DESCRIPTION,
   sortExpression,
+  totalUnverifiedField,
 } from '@/mcp-server/tools/schema-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
@@ -179,6 +185,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
         skip: z.number().describe('Number of results skipped.'),
         limit: z.number().describe('Maximum results returned per request.'),
         lastUpdated: z.string().describe('Date the dataset was last updated.'),
+        totalUnverified: totalUnverifiedField,
       })
       .describe('Pagination and freshness metadata.'),
     kind: z
@@ -294,6 +301,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
         response.meta.skip,
         response.meta.total,
         `No labels matched${input.search ? ` search: ${input.search}` : ''}. Try broader terms or check field names (e.g. openfda.brand_name, openfda.generic_name, openfda.manufacturer_name). ${fieldHint}`,
+        response.meta.totalUnverified,
       );
     } else if (response.meta.skip + response.results.length < response.meta.total) {
       pageNotice = `${response.meta.total} labels matched; this page returned ${response.results.length}. Page with skip (e.g. skip=${response.meta.skip + response.results.length}) or narrow the search.`;
@@ -362,13 +370,20 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
    */
   format: (result) => {
     const records = result.results ?? [];
-    if (records.length === 0 && !result.outline) {
-      return [{ type: 'text' as const, text: 'No labels found.' }];
+    const emptyPage = records.length === 0 && !result.outline;
+    if (emptyPage && result.meta.total === 0) {
+      return [
+        {
+          type: 'text' as const,
+          text: noMatchNote('No labels found.', result.meta.skip, result.meta.totalUnverified),
+        },
+      ];
     }
 
     const lines: string[] = [
       `**${result.meta.total} total label results** (returned: ${records.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}, kind: ${result.kind}) | Data updated: ${result.meta.lastUpdated}\n`,
     ];
+    if (emptyPage) lines.push(emptyPageNote(result.meta.total, result.meta.skip));
 
     /**
      * Keys the header block emits verbatim and unconditionally — skipped during

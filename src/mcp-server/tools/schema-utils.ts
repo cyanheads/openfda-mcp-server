@@ -3,7 +3,8 @@
  * handler guards that reject locally-detectable bad input before an upstream
  * request is spent: the openFDA pagination ceiling, and the `search` delimiter
  * balance check. Also holds the `sort` grammar, which is regex-expressible and
- * therefore rides the advertised JSON Schema `pattern`.
+ * therefore rides the advertised JSON Schema `pattern`, and the paginated tools'
+ * shared `meta.totalUnverified` output field.
  * @module mcp-server/tools/schema-utils
  */
 
@@ -283,3 +284,16 @@ export function assertSearchDelimitersBalanced(
     ...ctx.recoveryFor('malformed_search'),
   });
 }
+
+/**
+ * Shared `meta.totalUnverified` output field for the paginated search tools.
+ * The service sets it when an empty page at `skip > 0` could not have its total
+ * recovered (see `OpenFdaMeta.totalUnverified`); `format()` reads it to keep the
+ * no-match-or-past-the-end wording on `content[]`.
+ */
+export const totalUnverifiedField = z
+  .boolean()
+  .optional()
+  .describe(
+    'Present (true) only on an empty page at skip > 0 whose total could not be confirmed: openFDA answers a page past the end and a search that matched nothing alike, and the follow-up request for the total failed. total then reads 0 without ruling out records at a lower skip — re-call with skip=0 to tell.',
+  );

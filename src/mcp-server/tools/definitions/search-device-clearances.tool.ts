@@ -25,6 +25,7 @@ import {
   SEARCH_BALANCE_NOTE,
   SKIP_DESCRIPTION,
   sortExpression,
+  totalUnverifiedField,
 } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
@@ -115,6 +116,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
         skip: z.number().describe('Pagination offset'),
         limit: z.number().describe(META_LIMIT_DESCRIPTION),
         lastUpdated: z.string().describe('Dataset last updated date'),
+        totalUnverified: totalUnverifiedField,
       })
       .describe('Response metadata'),
     results: z
@@ -185,11 +187,12 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
     assertSearchDelimitersBalanced(input.search, ctx);
 
     const endpoint = `device/${input.pathway}`;
-    const emptyNotice = (skip: number, total: number) =>
+    const emptyNotice = (skip: number, total: number, totalUnverified?: boolean) =>
       emptyResultMessage(
         skip,
         total,
         `No matching device clearances found. Try broadening the search — use applicant, product_code, advisory_committee_description, or openfda.device_name fields. ${formatFieldHint(endpoint)}`,
+        totalUnverified,
       );
 
     const canvas = getCanvas();
@@ -252,7 +255,9 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
     ctx.enrich({ totalResults: response.meta.total });
     if (input.search) ctx.enrich.echo(input.search);
     const notices = [
-      page.results.length === 0 ? emptyNotice(response.meta.skip, response.meta.total) : undefined,
+      page.results.length === 0
+        ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
+        : undefined,
       pageBudgetNotice(page),
     ].filter(Boolean);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
@@ -265,7 +270,11 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       return [
         {
           type: 'text' as const,
-          text: noMatchNote('No device clearances found.', result.meta.skip),
+          text: noMatchNote(
+            'No device clearances found.',
+            result.meta.skip,
+            result.meta.totalUnverified,
+          ),
         },
       ];
     }

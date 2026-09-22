@@ -122,9 +122,9 @@ describe('openfda_search_animal_events', () => {
     expect(enrichment.notice).toBeDefined();
   });
 
-  it('sets pagination-context notice when empty at skip > 0', async () => {
+  it('sets pagination-context notice when empty at skip > 0 with an unverified total', async () => {
     mockQuery.mockResolvedValue({
-      meta: { total: 0, skip: 100, limit: 10, lastUpdated: '' },
+      meta: { total: 0, skip: 100, limit: 10, lastUpdated: '', totalUnverified: true },
       results: [],
     });
 

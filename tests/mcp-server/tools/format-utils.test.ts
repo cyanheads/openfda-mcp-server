@@ -8,6 +8,7 @@ import {
   emptyResultMessage,
   formatRemainingFields,
   humanizeField,
+  noMatchNote,
   truncate,
 } from '@/mcp-server/tools/format-utils.js';
 
@@ -163,15 +164,21 @@ describe('emptyResultMessage', () => {
     expect(msg).toBe('Try different filters.');
   });
 
-  it('adds pagination context when skip > 0 and the total is unknown', () => {
-    const msg = emptyResultMessage(10, 0, 'Try different filters.');
+  it('adds pagination context when skip > 0 and the total is unverified', () => {
+    const msg = emptyResultMessage(10, 0, 'Try different filters.', true);
     expect(msg).toContain('skip=10');
     expect(msg).toContain('Try different filters.');
   });
 
   it('mentions skip=0 in the pagination hint', () => {
-    const msg = emptyResultMessage(500, 0, 'Some hint.');
+    const msg = emptyResultMessage(500, 0, 'Some hint.', true);
     expect(msg).toContain('skip=0');
+  });
+
+  // #47 — the service recovers the total at skip > 0, so a confirmed zero is a plain miss.
+  it('returns the base hint alone when skip > 0 and the zero total is confirmed', () => {
+    const msg = emptyResultMessage(10, 0, 'Try different filters.');
+    expect(msg).toBe('Try different filters.');
   });
 
   it('says the offset overshot — not "no match" — when records did match', () => {
@@ -179,5 +186,18 @@ describe('emptyResultMessage', () => {
     expect(msg).toContain('1175 matched');
     expect(msg).toContain('skip=2000');
     expect(msg).not.toContain('Try different filters.');
+  });
+});
+
+describe('noMatchNote', () => {
+  it('keeps the flat line when the zero total is confirmed, even at skip > 0', () => {
+    expect(noMatchNote('No results found.', 40)).toBe('No results found.');
+  });
+
+  it('names both readings when the total behind an offset is unverified', () => {
+    const note = noMatchNote('No results found.', 40, true);
+    expect(note).toContain('No results found at skip=40');
+    expect(note).toContain('either nothing matched or the offset ran past the end');
+    expect(note).toContain('Retry with skip=0');
   });
 });

@@ -25,6 +25,7 @@ import {
   SEARCH_BALANCE_NOTE,
   SKIP_DESCRIPTION,
   sortExpression,
+  totalUnverifiedField,
 } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
@@ -122,6 +123,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
         skip: z.number().describe('Pagination offset'),
         limit: z.number().describe(META_LIMIT_DESCRIPTION),
         lastUpdated: z.string().describe('Dataset last updated date'),
+        totalUnverified: totalUnverifiedField,
       })
       .describe('Response metadata'),
     results: z
@@ -208,11 +210,12 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
     }
 
     const resolvedEndpoint = `${input.category}/${endpointValue}`;
-    const emptyNotice = (skip: number, total: number) =>
+    const emptyNotice = (skip: number, total: number, totalUnverified?: boolean) =>
       emptyResultMessage(
         skip,
         total,
         `No recall/enforcement records matched${input.search ? ` search: ${input.search}` : ''} in ${resolvedEndpoint}. Try broadening filters or check field names (e.g. classification, recalling_firm, reason_for_recall). ${formatFieldHint(resolvedEndpoint)}`,
+        totalUnverified,
       );
 
     const canvas = getCanvas();
@@ -276,7 +279,9 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
     ctx.enrich({ totalResults: response.meta.total });
     if (input.search) ctx.enrich.echo(input.search);
     const notices = [
-      page.results.length === 0 ? emptyNotice(response.meta.skip, response.meta.total) : undefined,
+      page.results.length === 0
+        ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
+        : undefined,
       pageBudgetNotice(page),
     ].filter(Boolean);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
@@ -286,7 +291,12 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
 
   format: (result) => {
     if (result.results.length === 0 && result.meta.total === 0) {
-      return [{ type: 'text' as const, text: noMatchNote('No results found.', result.meta.skip) }];
+      return [
+        {
+          type: 'text' as const,
+          text: noMatchNote('No results found.', result.meta.skip, result.meta.totalUnverified),
+        },
+      ];
     }
 
     const header = `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Last updated: ${result.meta.lastUpdated}\n`;

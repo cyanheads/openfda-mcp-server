@@ -91,14 +91,20 @@ export function formatRemainingFields(
  * Build an empty-result message that distinguishes "no matches" from
  * "paginated past the end". A non-zero `total` settles it — records matched, so
  * the offset overshot and the field hints are noise. openFDA answers both cases
- * with the same 404 (total 0), so without a total the message names both
- * possibilities and the request's `skip` is the only clue.
+ * with the same 404, and the service recovers the real total for a page at
+ * `skip > 0`; only when that recovery failed (`totalUnverified`) does the
+ * message name both possibilities.
  */
-export function emptyResultMessage(skip: number, total: number, baseHint: string): string {
+export function emptyResultMessage(
+  skip: number,
+  total: number,
+  baseHint: string,
+  totalUnverified?: boolean,
+): string {
   if (total > 0) {
     return `No records at skip=${skip}: ${total} matched, so the offset is past the end of the result set. Lower skip to read them.`;
   }
-  return skip > 0
+  return totalUnverified
     ? `No results at skip=${skip}. Either no records match or pagination ran past the end of the result set — try skip=0 to confirm. ${baseHint}`
     : baseHint;
 }
@@ -152,13 +158,14 @@ export function emptyPageNote(
 }
 
 /**
- * Qualify a tool's no-match line when the request carried an offset. openFDA
- * answers a page past the end of a result set with the same empty payload and
- * `total: 0` it uses for a genuine miss, so at `skip > 0` the flat wording would
- * assert something the response cannot support.
+ * Qualify a tool's no-match line when the total behind it is unverified. openFDA
+ * answers a page past the end of a result set with the same empty payload it
+ * uses for a genuine miss; the service recovers the real total, and when that
+ * recovery failed (`totalUnverified`) the flat wording would assert something
+ * the response cannot support.
  */
-export function noMatchNote(miss: string, skip: number): string {
-  return skip > 0
+export function noMatchNote(miss: string, skip: number, totalUnverified?: boolean): string {
+  return totalUnverified
     ? `${miss.replace(/\.$/, '')} at skip=${skip} — either nothing matched or the offset ran past the end of the result set. Retry with skip=0 to tell them apart.`
     : miss;
 }

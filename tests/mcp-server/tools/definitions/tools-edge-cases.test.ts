@@ -66,7 +66,8 @@ describe('openfda_count_values (edge cases)', () => {
     );
   });
 
-  it('passes limit to service', async () => {
+  // #44 — one term past the limit is the look-ahead that shows whether more exist.
+  it('asks the service for one term past the limit', async () => {
     mockQuery.mockResolvedValue({ meta: { lastUpdated: '' }, results: [] });
 
     await countValuesTool.handler(
@@ -76,7 +77,7 @@ describe('openfda_count_values (edge cases)', () => {
 
     expect(mockQuery).toHaveBeenCalledWith(
       'drug/event',
-      expect.objectContaining({ limit: 500 }),
+      expect.objectContaining({ limit: 501 }),
       ctx,
     );
   });
@@ -138,9 +139,9 @@ describe('openfda_search_recalls (edge cases)', () => {
     expect(enrichment.effectiveQuery).toBeUndefined();
   });
 
-  it('sets pagination-context notice when empty at skip > 0', async () => {
+  it('sets pagination-context notice when empty at skip > 0 with an unverified total', async () => {
     mockQuery.mockResolvedValue({
-      meta: { total: 0, skip: 200, limit: 10, lastUpdated: '' },
+      meta: { total: 0, skip: 200, limit: 10, lastUpdated: '', totalUnverified: true },
       results: [],
     });
 
@@ -259,9 +260,9 @@ describe('openfda_get_drug_label (edge cases)', () => {
     );
   });
 
-  it('sets pagination-context notice when empty at skip > 0', async () => {
+  it('sets pagination-context notice when empty at skip > 0 with an unverified total', async () => {
     mockQuery.mockResolvedValue({
-      meta: { total: 0, skip: 50, limit: 5, lastUpdated: '' },
+      meta: { total: 0, skip: 50, limit: 5, lastUpdated: '', totalUnverified: true },
       results: [],
     });
 
@@ -389,9 +390,9 @@ describe('openfda_lookup_ndc (edge cases)', () => {
     );
   });
 
-  it('sets pagination-context notice when empty at skip > 0', async () => {
+  it('sets pagination-context notice when empty at skip > 0 with an unverified total', async () => {
     mockQuery.mockResolvedValue({
-      meta: { total: 0, skip: 50, limit: 10, lastUpdated: '' },
+      meta: { total: 0, skip: 50, limit: 10, lastUpdated: '', totalUnverified: true },
       results: [],
     });
 
@@ -507,9 +508,9 @@ describe('openfda_search_drug_approvals (edge cases)', () => {
     );
   });
 
-  it('sets pagination-context notice when empty at skip > 0', async () => {
+  it('sets pagination-context notice when empty at skip > 0 with an unverified total', async () => {
     mockQuery.mockResolvedValue({
-      meta: { total: 0, skip: 30, limit: 10, lastUpdated: '' },
+      meta: { total: 0, skip: 30, limit: 10, lastUpdated: '', totalUnverified: true },
       results: [],
     });
 
@@ -615,9 +616,9 @@ describe('openfda_search_device_clearances (edge cases)', () => {
     expect(enrichment.effectiveQuery).toBeUndefined();
   });
 
-  it('sets pagination-context notice when empty at skip > 0', async () => {
+  it('sets pagination-context notice when empty at skip > 0 with an unverified total', async () => {
     mockQuery.mockResolvedValue({
-      meta: { total: 0, skip: 100, limit: 10, lastUpdated: '' },
+      meta: { total: 0, skip: 100, limit: 10, lastUpdated: '', totalUnverified: true },
       results: [],
     });
 
@@ -782,9 +783,9 @@ describe('openfda_search_animal_events (edge cases)', () => {
     expect(enrichment.effectiveQuery).toBeUndefined();
   });
 
-  it('sets pagination-context notice when empty at skip > 0', async () => {
+  it('sets pagination-context notice when empty at skip > 0 with an unverified total', async () => {
     mockQuery.mockResolvedValue({
-      meta: { total: 0, skip: 300, limit: 10, lastUpdated: '' },
+      meta: { total: 0, skip: 300, limit: 10, lastUpdated: '', totalUnverified: true },
       results: [],
     });
 
@@ -871,9 +872,9 @@ describe('openfda_search_tobacco_reports (edge cases)', () => {
     expect(enrichment.effectiveQuery).toBeUndefined();
   });
 
-  it('sets pagination-context notice when empty at skip > 0', async () => {
+  it('sets pagination-context notice when empty at skip > 0 with an unverified total', async () => {
     mockQuery.mockResolvedValue({
-      meta: { total: 0, skip: 150, limit: 10, lastUpdated: '' },
+      meta: { total: 0, skip: 150, limit: 10, lastUpdated: '', totalUnverified: true },
       results: [],
     });
 

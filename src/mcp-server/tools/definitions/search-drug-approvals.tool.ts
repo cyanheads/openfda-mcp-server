@@ -25,6 +25,7 @@ import {
   SEARCH_BALANCE_NOTE,
   SKIP_DESCRIPTION,
   sortExpression,
+  totalUnverifiedField,
 } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
@@ -100,6 +101,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
         skip: z.number().describe('Pagination offset'),
         limit: z.number().describe(META_LIMIT_DESCRIPTION),
         lastUpdated: z.string().describe('Dataset last updated date'),
+        totalUnverified: totalUnverifiedField,
       })
       .describe('Response metadata'),
     results: z
@@ -169,11 +171,12 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
     assertSkipWithinCeiling(input.skip, ctx);
     assertSearchDelimitersBalanced(input.search, ctx);
 
-    const emptyNotice = (skip: number, total: number) =>
+    const emptyNotice = (skip: number, total: number, totalUnverified?: boolean) =>
       emptyResultMessage(
         skip,
         total,
         `No drug approvals matched the query. Try broader terms, check field names (e.g. openfda.brand_name, sponsor_name), or remove filters. ${formatFieldHint('drug/drugsfda')}`,
+        totalUnverified,
       );
 
     const canvas = getCanvas();
@@ -237,7 +240,9 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
     ctx.enrich({ totalResults: response.meta.total });
     if (input.search) ctx.enrich.echo(input.search);
     const notices = [
-      page.results.length === 0 ? emptyNotice(response.meta.skip, response.meta.total) : undefined,
+      page.results.length === 0
+        ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
+        : undefined,
       pageBudgetNotice(page),
     ].filter(Boolean);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
@@ -248,7 +253,14 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
   format: (result) => {
     if (result.results.length === 0 && result.meta.total === 0) {
       return [
-        { type: 'text' as const, text: noMatchNote('No drug approvals found.', result.meta.skip) },
+        {
+          type: 'text' as const,
+          text: noMatchNote(
+            'No drug approvals found.',
+            result.meta.skip,
+            result.meta.totalUnverified,
+          ),
+        },
       ];
     }
 
