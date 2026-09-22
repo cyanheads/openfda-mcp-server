@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.7.6-blue.svg?style=flat-square)](./CHANGELOG.md) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.0.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.7.7-blue.svg?style=flat-square)](./CHANGELOG.md) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.0.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -188,7 +188,7 @@ openFDA-specific:
 - Generic API client for all 20 openFDA endpoints with retry (exponential backoff) and rate-limit awareness
 - Automatic error normalization — 404 returns empty results, 429/5xx retries, 400 surfaces an actionable message
 - Optional API key — works without one (1K requests/day), increases to 120K/day with a free key
-- Optional DataCanvas staging (`CANVAS_PROVIDER_TYPE=duckdb`, per call with `stage: true`) — stage large result sets as DuckDB tables and run SQL via `openfda_dataframe_query`
+- Optional DataCanvas staging (`CANVAS_PROVIDER_TYPE=duckdb`, per call with `stage: true`) — stage large result sets as DuckDB tables, list their columns with `openfda_dataframe_describe`, and run SQL via `openfda_dataframe_query`
 - Optional local bulk mirror (`OPENFDA_MIRROR_ENABLED=true`) — a self-refreshing SQLite copy of four drug datasets that answers exact-key lookups without spending API budget, with live fallback
 
 Agent-friendly output:

@@ -22,6 +22,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import type { AnyToolDefinition } from '@cyanheads/mcp-ts-core/tools';
 import { describe, expect, it } from 'vitest';
 import { allToolDefinitions } from '@/mcp-server/tools/definitions/index.js';
 
@@ -58,8 +59,9 @@ describe('tool input strictness', () => {
 
 describe('service-raised error reasons', () => {
   /**
-   * Raised by `openfda-service.ts` or by the shared guards in `schema-utils.ts`,
-   * never by a handler's own `ctx.fail`.
+   * Raised by `openfda-service.ts`, by the shared guards in `schema-utils.ts`, or
+   * by the framework canvas layer (`canvas.acquire()`), never by a handler's own
+   * `ctx.fail`.
    */
   const SERVICE_REASONS = new Set([
     'rate_limited',
@@ -68,11 +70,23 @@ describe('service-raised error reasons', () => {
     'not_aggregatable',
     'pagination_limit_reached',
     'malformed_search',
+    'canvas_not_found',
+    'canvas_capacity_exhausted',
   ]);
 
-  const declared = allToolDefinitions.flatMap((definition) =>
+  /**
+   * `tool:reason` pairs whose handler catches the service throw and re-raises it
+   * through its own `ctx.fail`, so the entry is correctly left unmarked.
+   */
+  const RERAISED_BY_HANDLER = new Set(['openfda_dataframe_query:canvas_not_found']);
+
+  const declared = allToolDefinitions.flatMap((definition: AnyToolDefinition) =>
     (definition.errors ?? [])
-      .filter((entry) => SERVICE_REASONS.has(entry.reason))
+      .filter(
+        (entry) =>
+          SERVICE_REASONS.has(entry.reason) &&
+          !RERAISED_BY_HANDLER.has(`${definition.name}:${entry.reason}`),
+      )
       .map((entry) => [definition.name, entry.reason, entry] as const),
   );
 

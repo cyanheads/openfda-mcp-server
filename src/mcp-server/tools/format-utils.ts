@@ -127,7 +127,7 @@ export function canvasStagingLine(total: number, result: CanvasResultFields): st
   const cut = result.truncated
     ? ` Truncated: staging stopped at its size budget, so the table holds the first ${staged} records — narrow the query for a complete set.${AGGREGATE_ROUTE}`
     : '';
-  return `> Staged ${staged} of ${total} matched rows on canvas table \`${result.canvas_table}\` (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled}) — query with openfda_dataframe_query.${cut}`;
+  return `> Staged ${staged} of ${total} matched rows on canvas table \`${result.canvas_table}\` (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled}) — openfda_dataframe_describe for its columns, then openfda_dataframe_query for SQL.${cut}`;
 }
 
 /**

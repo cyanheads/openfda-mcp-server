@@ -28,9 +28,12 @@ import {
 } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
+  canvasCapacityExhaustedError,
   canvasDisabledError,
+  canvasNotFoundError,
   canvasOutputShape,
   canvasResult,
+  STAGING_WORKFLOW,
   spillSearch,
   stageInput,
   stagingNotice,
@@ -63,8 +66,7 @@ const TOBACCO_REPORTS_CANVAS_SCHEMA: ColumnSchema[] = [
 ];
 
 export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
-  description:
-    'Search problem reports submitted to the FDA for tobacco products, including e-cigarettes, vaping products, cigarettes, and smokeless tobacco. Reports capture product type, reported health problems (e.g. seizure, chest pain), product problems (e.g. exploding battery), whether a non-user was affected, and submission date. Use to investigate safety signals, find reports by product type, or analyze health effects.',
+  description: `Search problem reports submitted to the FDA for tobacco products, including e-cigarettes, vaping products, cigarettes, and smokeless tobacco. Reports capture product type, reported health problems (e.g. seizure, chest pain), product problems (e.g. exploding battery), whether a non-user was affected, and submission date. Use to investigate safety signals, find reports by product type, or analyze health effects.${STAGING_WORKFLOW}`,
   annotations: { readOnlyHint: true },
 
   input: z.object({
@@ -125,6 +127,8 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
 
   errors: [
     canvasDisabledError,
+    canvasNotFoundError,
+    canvasCapacityExhaustedError,
     {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,

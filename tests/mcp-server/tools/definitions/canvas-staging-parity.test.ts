@@ -1,12 +1,14 @@
 /**
  * @fileoverview Cross-tool guarantees for the canvas staging surface. Every
  * search tool that can stage shares one contract: staging is opt-in, staging is
- * disclosed in content[], and an empty inline page for a query that matched
+ * disclosed in content[] with a describe-then-query pointer, the canvas.acquire()
+ * failures are declared, and an empty inline page for a query that matched
  * records never renders as "no results". Asserted against every staging tool
  * rather than the two or three a bug report happens to name.
  * @module tests/mcp-server/tools/definitions/canvas-staging-parity.test
  */
 
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { describe, expect, it } from 'vitest';
 import { lookupNdcTool } from '@/mcp-server/tools/definitions/lookup-ndc.tool.js';
 import { searchAdverseEventsTool } from '@/mcp-server/tools/definitions/search-adverse-events.tool.js';
@@ -16,6 +18,7 @@ import { searchDrugApprovalsTool } from '@/mcp-server/tools/definitions/search-d
 import { searchDrugShortagesTool } from '@/mcp-server/tools/definitions/search-drug-shortages.tool.js';
 import { searchRecallsTool } from '@/mcp-server/tools/definitions/search-recalls.tool.js';
 import { searchTobaccoReportsTool } from '@/mcp-server/tools/definitions/search-tobacco-reports.tool.js';
+import { AGGREGATE_ROUTE } from '@/services/openfda/canvas-spill.js';
 
 /** Minimal valid input per tool, before the `stage` default is applied. */
 const STAGING_TOOLS = [
@@ -47,6 +50,24 @@ describe.each(STAGING_TOOLS.map(([tool, input]) => [tool.name, tool, input] as c
 
     it('declares the canvas_disabled failure mode', () => {
       expect(tool.errors?.map((e) => e.reason)).toContain('canvas_disabled');
+    });
+
+    it('declares both canvas.acquire() failures as service-raised (#54)', () => {
+      const byReason = new Map((tool.errors ?? []).map((e) => [e.reason, e]));
+      expect(byReason.get('canvas_not_found')).toMatchObject({
+        code: JsonRpcErrorCode.NotFound,
+        thrownBy: 'service',
+      });
+      expect(byReason.get('canvas_capacity_exhausted')).toMatchObject({
+        code: JsonRpcErrorCode.RateLimited,
+        retryable: true,
+        thrownBy: 'service',
+      });
+    });
+
+    it('leaves canvas_id_malformed undeclared — CanvasIdSchema rejects it before acquire (#54)', () => {
+      expect(tool.errors?.map((e) => e.reason)).not.toContain('canvas_id_malformed');
+      expect(tool.input.safeParse({ ...baseInput, canvas_id: 'not an id!' }).success).toBe(false);
     });
 
     it('never reports "no results" for a query that matched records (#31)', () => {
@@ -107,6 +128,43 @@ describe.each(STAGING_TOOLS.map(([tool, input]) => [tool.name, tool, input] as c
     it('names the aggregate alternative in the stage input description (#36)', () => {
       const stage = tool.input.shape.stage as { description?: string };
       expect(stage.description).toContain('openfda_count_values');
+    });
+
+    it('points the staging line at openfda_dataframe_describe before openfda_dataframe_query (#50)', () => {
+      for (const truncated of [true, false]) {
+        const text = formatText(tool, {
+          meta: { total: 609_468, skip: 0, limit: 1, lastUpdated: '2026-06-01' },
+          results: [{}],
+          canvas_id: 'cv_1',
+          canvas_table: 'spilled_ab12cd34',
+          spilled: true,
+          staged_rows: truncated ? 235 : 609_468,
+          ...(truncated ? { truncated: true } : {}),
+        });
+        const line = text.split('\n').find((l) => l.startsWith('> Staged')) ?? '';
+        const describeAt = line.indexOf('openfda_dataframe_describe');
+        expect(describeAt).toBeGreaterThan(-1);
+        expect(describeAt).toBeLessThan(line.indexOf('openfda_dataframe_query'));
+        /** #36's aggregate route still closes a truncated line, unchanged. */
+        expect(line.endsWith(AGGREGATE_ROUTE)).toBe(truncated);
+      }
+    });
+
+    it('renders no staging pointer when the call did not stage (#50)', () => {
+      const text = formatText(tool, {
+        meta: { total: 3, skip: 0, limit: 1, lastUpdated: '2026-06-01' },
+        results: [{}],
+      });
+      expect(text).not.toContain('> Staged');
+      expect(text).not.toContain('openfda_dataframe_describe');
+    });
+
+    it('names the describe-then-query workflow in the stage input and tool description (#50)', () => {
+      const stage = tool.input.shape.stage as { description?: string };
+      for (const surface of [stage.description ?? '', tool.description]) {
+        expect(surface).toContain('openfda_dataframe_describe');
+        expect(surface).toContain('openfda_dataframe_query');
+      }
     });
 
     it('points past-the-end offsets at the staged table with a runnable query (#32)', () => {

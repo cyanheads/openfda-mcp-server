@@ -27,9 +27,12 @@ import {
 } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
+  canvasCapacityExhaustedError,
   canvasDisabledError,
+  canvasNotFoundError,
   canvasOutputShape,
   canvasResult,
+  STAGING_WORKFLOW,
   spillSearch,
   stageInput,
   stagingNotice,
@@ -65,8 +68,7 @@ const ANIMAL_EVENTS_CANVAS_SCHEMA: ColumnSchema[] = [
 ];
 
 export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
-  description:
-    'Search adverse event reports for veterinary drugs and devices submitted to the FDA Center for Veterinary Medicine. Records include animal species, breed, age, weight, drug name and route, adverse reactions (using VeDDRA terminology), and outcome. Use to investigate safety signals for veterinary products, find reports by animal species or drug, or explore reaction patterns.',
+  description: `Search adverse event reports for veterinary drugs and devices submitted to the FDA Center for Veterinary Medicine. Records include animal species, breed, age, weight, drug name and route, adverse reactions (using VeDDRA terminology), and outcome. Use to investigate safety signals for veterinary products, find reports by animal species or drug, or explore reaction patterns.${STAGING_WORKFLOW}`,
   annotations: { readOnlyHint: true },
 
   input: z.object({
@@ -127,6 +129,8 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
 
   errors: [
     canvasDisabledError,
+    canvasNotFoundError,
+    canvasCapacityExhaustedError,
     {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,

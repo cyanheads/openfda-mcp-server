@@ -28,9 +28,12 @@ import {
 } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
+  canvasCapacityExhaustedError,
   canvasDisabledError,
+  canvasNotFoundError,
   canvasOutputShape,
   canvasResult,
+  STAGING_WORKFLOW,
   spillSearch,
   stageInput,
   stagingNotice,
@@ -61,8 +64,7 @@ const DRUG_APPROVALS_CANVAS_SCHEMA: ColumnSchema[] = [
 
 /** Exported tool definition for searching drug approvals. */
 export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
-  description:
-    'Search the Drugs@FDA database for drug application approvals (NDAs and ANDAs). Returns application details, sponsor info, and full submission history. Pair with openfda_get_drug_label to read the approved label, or openfda_count_values to aggregate by sponsor_name, product_type, or route.',
+  description: `Search the Drugs@FDA database for drug application approvals (NDAs and ANDAs). Returns application details, sponsor info, and full submission history. Pair with openfda_get_drug_label to read the approved label, or openfda_count_values to aggregate by sponsor_name, product_type, or route.${STAGING_WORKFLOW}`,
   annotations: { readOnlyHint: true },
 
   input: z.object({
@@ -125,6 +127,8 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
 
   errors: [
     canvasDisabledError,
+    canvasNotFoundError,
+    canvasCapacityExhaustedError,
     {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,

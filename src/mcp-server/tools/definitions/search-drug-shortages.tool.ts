@@ -28,9 +28,12 @@ import {
 } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
+  canvasCapacityExhaustedError,
   canvasDisabledError,
+  canvasNotFoundError,
   canvasOutputShape,
   canvasResult,
+  STAGING_WORKFLOW,
   spillSearch,
   stageInput,
   stagingNotice,
@@ -67,8 +70,7 @@ const DRUG_SHORTAGES_CANVAS_SCHEMA: ColumnSchema[] = [
 ];
 
 export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
-  description:
-    'Search FDA drug shortage records. Returns per-product shortage status, availability, therapeutic category, dosage form, manufacturer, and dates. Use to check whether a drug is currently in shortage, find all oncology drugs with supply issues, or retrieve the openfda block (brand_name, product_ndc, rxcui) to chain into openfda_get_drug_label or openfda_lookup_ndc.',
+  description: `Search FDA drug shortage records. Returns per-product shortage status, availability, therapeutic category, dosage form, manufacturer, and dates. Use to check whether a drug is currently in shortage, find all oncology drugs with supply issues, or retrieve the openfda block (brand_name, product_ndc, rxcui) to chain into openfda_get_drug_label or openfda_lookup_ndc.${STAGING_WORKFLOW}`,
   annotations: { readOnlyHint: true },
 
   input: z.object({
@@ -129,6 +131,8 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
 
   errors: [
     canvasDisabledError,
+    canvasNotFoundError,
+    canvasCapacityExhaustedError,
     {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,

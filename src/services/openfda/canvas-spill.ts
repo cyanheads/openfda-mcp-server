@@ -6,8 +6,8 @@
  * set identically in both modes, and the page carries the same inline byte budget
  * (`page-budget.ts`), so a staged call and an unstaged one never disagree about
  * what a window holds — and, alongside it, registers a bounded drain of
- * the matched set as a canvas table the agent queries with
- * openfda_dataframe_query. The drain is capped by a serialized-byte budget as
+ * the matched set as a canvas table the agent inspects with
+ * openfda_dataframe_describe and queries with openfda_dataframe_query. The drain is capped by a serialized-byte budget as
  * well as openFDA's 25,000-row `skip` ceiling, so a staged call on a
  * large-record endpoint cannot run for minutes; `stagedRows` vs `total`
  * discloses how much of the match actually reached the canvas.
@@ -50,7 +50,7 @@ export const stageInput = z
   .boolean()
   .default(false)
   .describe(
-    'Stage the matched set on a DataCanvas for SQL analysis with openfda_dataframe_query. Default false — the call returns one page for one upstream request. When true, records are also drained onto a canvas table up to a size budget (staged_rows reports how many reached it). Staging is for record-level SQL over a bounded slice; for a distribution over everything that matched, openfda_count_values aggregates server-side in one request. Requires CANVAS_PROVIDER_TYPE=duckdb.',
+    'Stage the matched set on a DataCanvas for SQL analysis — openfda_dataframe_describe lists the staged columns, openfda_dataframe_query runs the SQL. Default false — the call returns one page for one upstream request. When true, records are also drained onto a canvas table up to a size budget (staged_rows reports how many reached it). Staging is for record-level SQL over a bounded slice; for a distribution over everything that matched, openfda_count_values aggregates server-side in one request. Requires CANVAS_PROVIDER_TYPE=duckdb.',
   );
 
 /**
@@ -60,6 +60,14 @@ export const stageInput = z
  */
 export const AGGREGATE_ROUTE =
   ' A GROUP BY over the staged rows describes only those rows — for a distribution over the whole matched set, use openfda_count_values with the same search and a count field.';
+
+/**
+ * Clause appended to every staging tool's `description`. Names describe before
+ * query: the inline page renders nested blocks that are not canvas columns, so
+ * SQL written from it without the column list fails.
+ */
+export const STAGING_WORKFLOW =
+  ' With stage=true, call openfda_dataframe_describe for the staged columns, then openfda_dataframe_query for SQL.';
 
 /**
  * `canvas_disabled` contract entry shared by every search tool that can stage.
@@ -72,6 +80,36 @@ export const canvasDisabledError = {
   when: 'Staging was requested (stage=true or a canvas_id) but DataCanvas is disabled.',
   recovery:
     'Set CANVAS_PROVIDER_TYPE=duckdb to enable staging, or drop stage/canvas_id to get the inline page.',
+} as const;
+
+/**
+ * `canvas_not_found` contract entry shared by every search tool that can stage.
+ * Raised by the framework's `canvas.acquire()` inside `spillSearch`, below the
+ * handler, hence `thrownBy: 'service'`. A malformed id never gets this far —
+ * `CanvasIdSchema` rejects it at argument validation.
+ */
+export const canvasNotFoundError = {
+  reason: 'canvas_not_found',
+  code: JsonRpcErrorCode.NotFound,
+  when: 'The canvas_id is well-formed but names no active canvas — expired or never minted.',
+  recovery:
+    'Omit canvas_id to stage onto a fresh canvas, or pass a canvas_id copied from a recent response.',
+  thrownBy: 'service',
+} as const;
+
+/**
+ * `canvas_capacity_exhausted` contract entry shared by every search tool that
+ * can stage. Raised by `canvas.acquire()` when a call omits `canvas_id` and the
+ * tenant already holds its cap of active canvases.
+ */
+export const canvasCapacityExhaustedError = {
+  reason: 'canvas_capacity_exhausted',
+  code: JsonRpcErrorCode.RateLimited,
+  when: 'canvas_id was omitted and the active canvas cap is already reached.',
+  retryable: true,
+  recovery:
+    'Pass a canvas_id you already hold to stage onto it, or retry once idle canvases expire.',
+  thrownBy: 'service',
 } as const;
 
 /**
@@ -91,13 +129,13 @@ export const canvasOutputShape = {
     .string()
     .optional()
     .describe(
-      'Canvas table holding the staged rows. Present when rows were staged; reference it in SQL FROM clauses.',
+      'Canvas table holding the staged rows. Present when rows were staged; list its columns with openfda_dataframe_describe, then reference it in openfda_dataframe_query FROM clauses.',
     ),
   spilled: z
     .boolean()
     .optional()
     .describe(
-      'True when this call staged its matched set on the canvas — use canvas_id with openfda_dataframe_query for SQL. Absent when staging was not requested.',
+      'True when this call staged its matched set on the canvas — use canvas_id with openfda_dataframe_describe for its columns, then openfda_dataframe_query for SQL. Absent when staging was not requested.',
     ),
   staged_rows: z
     .number()
@@ -283,7 +321,7 @@ export function stagingNotice(spill: OpenFdaSpillResult): string {
   const cut = spill.truncated
     ? ` Staging stopped at its size budget, so the table holds the first ${spill.stagedRows} records — narrow the query (filters, date range) for a complete set.${AGGREGATE_ROUTE}`
     : '';
-  return `Staged ${spill.stagedRows} of ${spill.total} matched records on canvas table "${spill.tableName}". Query it with openfda_dataframe_query using canvas_id "${spill.canvasId}".${cut}`;
+  return `Staged ${spill.stagedRows} of ${spill.total} matched records on canvas table "${spill.tableName}" (canvas_id "${spill.canvasId}"). Call openfda_dataframe_describe for the column names, then openfda_dataframe_query to run SQL over the staged set.${cut}`;
 }
 
 /**

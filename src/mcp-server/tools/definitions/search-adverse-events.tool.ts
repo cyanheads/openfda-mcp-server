@@ -28,9 +28,12 @@ import {
 } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
+  canvasCapacityExhaustedError,
   canvasDisabledError,
+  canvasNotFoundError,
   canvasOutputShape,
   canvasResult,
+  STAGING_WORKFLOW,
   spillSearch,
   stageInput,
   stagingNotice,
@@ -89,8 +92,7 @@ const ADVERSE_EVENT_SCHEMAS: Record<'drug' | 'food' | 'device', ColumnSchema[]> 
 };
 
 export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
-  description:
-    'Search adverse event reports across drugs, food, and devices. Use to investigate safety signals, find reports for a specific product, or explore reactions by demographics.',
+  description: `Search adverse event reports across drugs, food, and devices. Use to investigate safety signals, find reports for a specific product, or explore reactions by demographics.${STAGING_WORKFLOW}`,
   annotations: { readOnlyHint: true },
 
   input: z.object({
@@ -156,6 +158,8 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
 
   errors: [
     canvasDisabledError,
+    canvasNotFoundError,
+    canvasCapacityExhaustedError,
     {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,

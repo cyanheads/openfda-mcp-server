@@ -28,9 +28,12 @@ import {
 } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
+  canvasCapacityExhaustedError,
   canvasDisabledError,
+  canvasNotFoundError,
   canvasOutputShape,
   canvasResult,
+  STAGING_WORKFLOW,
   spillSearch,
   stageInput,
   stagingNotice,
@@ -73,7 +76,7 @@ const DEVICE_CLEARANCES_CANVAS_SCHEMA: ColumnSchema[] = [
 ];
 
 export const searchDeviceClearancesTool = tool('openfda_search_device_clearances', {
-  description: 'Search FDA device premarket notifications — 510(k) clearances and PMA approvals.',
+  description: `Search FDA device premarket notifications — 510(k) clearances and PMA approvals.${STAGING_WORKFLOW}`,
   annotations: { readOnlyHint: true },
 
   input: z.object({
@@ -139,6 +142,8 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
 
   errors: [
     canvasDisabledError,
+    canvasNotFoundError,
+    canvasCapacityExhaustedError,
     {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,

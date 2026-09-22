@@ -28,9 +28,12 @@ import {
 } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
+  canvasCapacityExhaustedError,
   canvasDisabledError,
+  canvasNotFoundError,
   canvasOutputShape,
   canvasResult,
+  STAGING_WORKFLOW,
   spillSearch,
   stageInput,
   stagingNotice,
@@ -70,8 +73,7 @@ const NDC_CANVAS_SCHEMA: ColumnSchema[] = [
 ];
 
 export const lookupNdcTool = tool('openfda_lookup_ndc', {
-  description:
-    'Look up drugs in the NDC (National Drug Code) Directory. Identify drug products by NDC code, find active ingredients, packaging details, or manufacturer info. Pair with openfda_get_drug_label using the returned brand_name or set_id to read the package insert.',
+  description: `Look up drugs in the NDC (National Drug Code) Directory. Identify drug products by NDC code, find active ingredients, packaging details, or manufacturer info. Pair with openfda_get_drug_label using the returned brand_name or set_id to read the package insert.${STAGING_WORKFLOW}`,
   annotations: { readOnlyHint: true },
 
   input: z.object({
@@ -131,6 +133,8 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
 
   errors: [
     canvasDisabledError,
+    canvasNotFoundError,
+    canvasCapacityExhaustedError,
     {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,

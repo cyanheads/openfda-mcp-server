@@ -28,9 +28,12 @@ import {
 } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
+  canvasCapacityExhaustedError,
   canvasDisabledError,
+  canvasNotFoundError,
   canvasOutputShape,
   canvasResult,
+  STAGING_WORKFLOW,
   spillSearch,
   stageInput,
   stagingNotice,
@@ -81,7 +84,7 @@ const Endpoint = z
   .describe('Report type. Default enforcement. The recall endpoint is only available for devices.');
 
 export const searchRecallsTool = tool('openfda_search_recalls', {
-  description: 'Search enforcement reports and recall actions across drugs, food, and devices.',
+  description: `Search enforcement reports and recall actions across drugs, food, and devices.${STAGING_WORKFLOW}`,
   annotations: { readOnlyHint: true },
 
   input: z.object({
@@ -152,6 +155,8 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       recovery: 'Set endpoint=enforcement for drug and food categories; recall is device-only.',
     },
     canvasDisabledError,
+    canvasNotFoundError,
+    canvasCapacityExhaustedError,
     {
       reason: 'rate_limited',
       code: JsonRpcErrorCode.RateLimited,

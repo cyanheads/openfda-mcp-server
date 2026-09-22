@@ -33,7 +33,13 @@ vi.mock('@/services/openfda/openfda-service.js', () => {
   };
 });
 
-import { OPENFDA_MAX_ROWS, spillSearch, stagingNotice } from '@/services/openfda/canvas-spill.js';
+import {
+  AGGREGATE_ROUTE,
+  canvasOutputShape,
+  OPENFDA_MAX_ROWS,
+  spillSearch,
+  stagingNotice,
+} from '@/services/openfda/canvas-spill.js';
 
 async function setCanvasMock(c: unknown) {
   const mod = await import('@/services/canvas/canvas-accessor.js');
@@ -317,6 +323,7 @@ describe('stagingNotice', () => {
     canvasId: 'cv_1',
     lastUpdated: '2026-06-01',
     preview: [],
+    previewBudget: {},
     skip: 0,
     spilled: true,
     stagedRows: 235,
@@ -333,5 +340,43 @@ describe('stagingNotice', () => {
   it('omits the aggregate route when the whole match was staged (#36)', () => {
     const notice = stagingNotice({ ...base, stagedRows: 609_468, truncated: false });
     expect(notice).not.toContain('openfda_count_values');
+  });
+
+  it('names openfda_dataframe_describe before openfda_dataframe_query, truncated or not (#50)', () => {
+    for (const truncated of [true, false]) {
+      const notice = stagingNotice({ ...base, truncated });
+      const describeAt = notice.indexOf('openfda_dataframe_describe');
+      expect(describeAt).toBeGreaterThan(-1);
+      expect(describeAt).toBeLessThan(notice.indexOf('openfda_dataframe_query'));
+      expect(notice).toContain('canvas_id "cv_1"');
+      expect(notice).toContain('"spilled_ab12cd34"');
+      /** #36's aggregate route still closes a truncated notice, unchanged. */
+      expect(notice.endsWith(AGGREGATE_ROUTE)).toBe(truncated);
+    }
+  });
+
+  it('keeps the nothing-staged notice free of SQL pointers', () => {
+    const notice = stagingNotice({
+      ...base,
+      spilled: false,
+      stagedRows: 0,
+      tableName: '',
+      truncated: false,
+    });
+    expect(notice).toBe('Nothing was staged on canvas "cv_1" — 609468 records matched.');
+  });
+});
+
+describe('canvasOutputShape', () => {
+  it('names both dataframe tools on canvas_table (#50)', () => {
+    const text = canvasOutputShape.canvas_table.description ?? '';
+    expect(text).toContain('openfda_dataframe_describe');
+    expect(text).toContain('openfda_dataframe_query');
+  });
+
+  it('leaves the canvas_id description unchanged', () => {
+    expect(canvasOutputShape.canvas_id.description).toBe(
+      'DataCanvas session id for the staged result set. Present when this call staged. Pass to openfda_dataframe_query / openfda_dataframe_describe, or back into this tool to accumulate more tables on the same canvas.',
+    );
   });
 });

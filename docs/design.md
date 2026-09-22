@@ -268,6 +268,9 @@ Every multi-row search tool — `openfda_search_adverse_events`, `_recalls`, `_d
 
 - `stage` (boolean, default `false`) — stage the matched set for SQL. Passing a `canvas_id` implies it, so successive searches accumulate onto one canvas for cross-table joins. The `canvas_id` input is declared with `CanvasIdSchema` (10 URL-safe characters, advertised as a `pattern`), so a value that could never be an id fails argument validation instead of reaching the canvas registry.
 - Output fields `canvas_id`, `canvas_table`, `spilled`, `staged_rows`, `truncated` (all absent unless the call staged).
+- Error reasons `canvas_disabled`, `canvas_not_found` (a well-formed `canvas_id` that expired or was never minted), and `canvas_capacity_exhausted` (`RateLimited`, retryable — a mint with `canvas_id` omitted at the per-tenant canvas cap). The last two come from the framework's `canvas.acquire()`; `canvas_id_malformed` is undeclared because `CanvasIdSchema` rejects a malformed id first.
+
+**Decision — every staging surface names `openfda_dataframe_describe` before `openfda_dataframe_query`.** The staging notice, the `content[]` staging line, the `stage` and `canvas_table` descriptions, and each staging tool's `description` point at describe first. The inline page renders nested blocks (`openfda.brand_name`, `products[].marketing_status`) that are not canvas columns, so SQL written from the page without the column list fails as `invalid_query`.
 
 `limit`/`skip` mean the same thing in both modes: a window over the matched set, served from the drain's first page when it covers the window and fetched directly otherwise, and bounded by the same [inline byte budget](#bounded-page-many-rows). A staged call therefore never disagrees with an unstaged one about whether records exist at a given offset or about how many of a window fit inline, and record size never empties the page.
 
