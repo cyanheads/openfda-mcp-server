@@ -1,6 +1,6 @@
 # openfda-mcp-server - Directory Structure
 
-Generated on: 2026-09-16 10:34:54
+Generated on: 2026-09-22 05:03:12
 
 ```text
 openfda-mcp-server/
@@ -14,6 +14,8 @@ openfda-mcp-server/
 │   │   ├── bug_report.yml
 │   │   ├── config.yml
 │   │   └── feature_request.yml
+│   ├── workflows/
+│   │   └── codeql.yml
 │   ├── CODE_OF_CONDUCT.md
 │   ├── CONTRIBUTING.md
 │   ├── FUNDING.yml
@@ -190,6 +192,7 @@ openfda-mcp-server/
 │   │       │   ├── dataframe-describe.tool.test.ts
 │   │       │   ├── dataframe-query.tool.test.ts
 │   │       │   ├── describe-fields.tool.test.ts
+│   │       │   ├── drug-profile-aliases.test.ts
 │   │       │   ├── drug-profile.tool.test.ts
 │   │       │   ├── get-drug-label.tool.test.ts
 │   │       │   ├── input-validation.test.ts

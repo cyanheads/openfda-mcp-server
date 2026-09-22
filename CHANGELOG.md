@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.6](changelog/0.7.x/0.7.6.md) — 2026-09-21
+
+openfda_drug_profile takes drug_name/name aliases, canvas_id inputs validate against the minted id shape, and mcp-ts-core bumps to 0.13.6
+
 ## [0.7.5](changelog/0.7.x/0.7.5.md) — 2026-09-16 · 🛡️ Security
 
 Adopts mcp-ts-core 0.13.x: the HTTP transport declares itself stateless, shutdown closes the local bulk mirror through a teardown hook, and three inherited framework security fixes land — an SSRF DNS-guard bypass, an unevictable rate-limit key, and a linear-time SQL-comment scan.
