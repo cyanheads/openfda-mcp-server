@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.7.8](changelog/0.7.x/0.7.8.md) — 2026-09-22
+
+openfda_describe_fields records each field's verified count form; count_values and pagination stop misreporting aggregability, truncation, and past-the-end totals
+
 ## [0.7.7](changelog/0.7.x/0.7.7.md) — 2026-09-22
 
 Staging search tools declare canvas_not_found and canvas_capacity_exhausted, staged responses point to openfda_dataframe_describe before openfda_dataframe_query, and tests/ is now typechecked

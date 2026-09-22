@@ -1,6 +1,6 @@
 # openfda-mcp-server - Directory Structure
 
-Generated on: 2026-09-22 18:51:39
+Generated on: 2026-09-22 19:59:10
 
 ```text
 openfda-mcp-server/
@@ -191,7 +191,9 @@ openfda-mcp-server/
 │   │       ├── definitions/
 │   │       │   ├── canvas-acquire-failures.test.ts
 │   │       │   ├── canvas-staging-parity.test.ts
+│   │       │   ├── count-values.classification.test.ts
 │   │       │   ├── count-values.tool.test.ts
+│   │       │   ├── count-values.truncation.test.ts
 │   │       │   ├── dataframe-describe.tool.test.ts
 │   │       │   ├── dataframe-query.tool.test.ts
 │   │       │   ├── describe-fields.tool.test.ts
@@ -202,6 +204,7 @@ openfda-mcp-server/
 │   │       │   ├── lookup-ndc.tool.test.ts
 │   │       │   ├── page-budget-contract.test.ts
 │   │       │   ├── pagination-contract.test.ts
+│   │       │   ├── pagination-past-end.test.ts
 │   │       │   ├── record-parity.test.ts
 │   │       │   ├── search-adverse-events-edge.test.ts
 │   │       │   ├── search-adverse-events.tool.test.ts
@@ -214,6 +217,7 @@ openfda-mcp-server/
 │   │       │   ├── search-tobacco-reports.tool.test.ts
 │   │       │   ├── tools-edge-cases.test.ts
 │   │       │   └── wire-contract.test.ts
+│   │       ├── field-catalog.test.ts
 │   │       └── format-utils.test.ts
 │   └── services/
 │       └── openfda/
@@ -227,6 +231,7 @@ openfda-mcp-server/
 │           │   └── routing.test.ts
 │           ├── canvas-spill.test.ts
 │           ├── openfda-service-security.test.ts
+│           ├── openfda-service.side-requests.test.ts
 │           └── openfda-service.test.ts
 ├── .dockerignore
 ├── .env.example
