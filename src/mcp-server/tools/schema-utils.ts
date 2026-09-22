@@ -232,6 +232,8 @@ const SEARCH_FAULT_MESSAGE: Record<SearchDelimiterFault, string> = {
  * The `errors[]` entry every tool taking a caller-supplied `search` declares, so
  * the locally-rejected shape is advertised and distinguishable from the
  * `query_error` openFDA raises on field semantics. Spread into the contract.
+ * Raised by {@link assertSearchDelimitersBalanced}, below the handler body, hence
+ * `thrownBy: 'service'`.
  */
 export const malformedSearchError = {
   reason: 'malformed_search',
@@ -239,6 +241,7 @@ export const malformedSearchError = {
   when: 'The search query leaves a double quote, parenthesis, or range bracket unclosed, or ends on a backslash.',
   recovery:
     'Close the unterminated quote, group, or range, and write a literal " ( ) [ ] or backslash escaped with a backslash.',
+  thrownBy: 'service',
 } as const;
 
 /** The slice of a handler's `ctx` {@link assertSearchDelimitersBalanced} needs. */

@@ -11,6 +11,10 @@
  * - **Reserved `error` key.** `structuredContent.error` is the failure envelope,
  *   so a success payload declaring the same field is indistinguishable from a
  *   failure on the wire.
+ * - **Service-raised reasons are marked.** A reason produced below the handler
+ *   carries `thrownBy: 'service'` on every tool that declares it. The lint that
+ *   reads the marker scans only handlers holding a literal `ctx.fail(`, so it
+ *   cannot catch a tool left unmarked.
  *
  * Asserted against the definitions as `tool()` returns them — the same objects
  * the server registers — not against the schema literals in their source.
@@ -50,6 +54,31 @@ describe('tool input strictness', () => {
       expect(schema.additionalProperties).toBe(false);
     },
   );
+});
+
+describe('service-raised error reasons', () => {
+  /**
+   * Raised by `openfda-service.ts` or by the shared guards in `schema-utils.ts`,
+   * never by a handler's own `ctx.fail`.
+   */
+  const SERVICE_REASONS = new Set([
+    'rate_limited',
+    'upstream_error',
+    'query_error',
+    'not_aggregatable',
+    'pagination_limit_reached',
+    'malformed_search',
+  ]);
+
+  const declared = allToolDefinitions.flatMap((definition) =>
+    (definition.errors ?? [])
+      .filter((entry) => SERVICE_REASONS.has(entry.reason))
+      .map((entry) => [definition.name, entry.reason, entry] as const),
+  );
+
+  it.each(declared)('%s marks %s as thrownBy: service', (_name, _reason, entry) => {
+    expect(entry.thrownBy).toBe('service');
+  });
 });
 
 describe('reserved error key', () => {

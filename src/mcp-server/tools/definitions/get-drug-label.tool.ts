@@ -233,6 +233,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       retryable: true,
       recovery:
         'Wait briefly and retry, or configure OPENFDA_API_KEY to raise the daily limit to 120K requests.',
+      thrownBy: 'service',
     },
     {
       reason: 'upstream_error',
@@ -240,6 +241,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       when: 'The openFDA API returned a 5xx server error.',
       retryable: true,
       recovery: 'Retry after a short wait; if the error persists check api.fda.gov status.',
+      thrownBy: 'service',
     },
     malformedSearchError,
     {
@@ -248,6 +250,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       when: 'The search query was rejected by openFDA (malformed field name, invalid syntax).',
       recovery:
         'Verify field names using the openFDA field reference and correct boolean operators (AND/OR, quoted phrases).',
+      thrownBy: 'service',
     },
     {
       reason: 'pagination_limit_reached',
@@ -255,6 +258,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       when: 'skip exceeds the 25000 record pagination ceiling.',
       recovery:
         'Narrow the search query with additional filters or date ranges instead of increasing skip.',
+      thrownBy: 'service',
     },
   ],
 

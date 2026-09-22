@@ -109,6 +109,7 @@ export const countValuesTool = tool('openfda_count_values', {
       retryable: true,
       recovery:
         'Wait briefly and retry, or configure OPENFDA_API_KEY to raise the daily limit to 120K requests.',
+      thrownBy: 'service',
     },
     {
       reason: 'upstream_error',
@@ -116,6 +117,7 @@ export const countValuesTool = tool('openfda_count_values', {
       when: 'The openFDA API returned a 5xx server error.',
       retryable: true,
       recovery: 'Retry after a short wait; if the error persists check api.fda.gov status.',
+      thrownBy: 'service',
     },
     malformedSearchError,
     {
@@ -124,6 +126,7 @@ export const countValuesTool = tool('openfda_count_values', {
       when: 'The search or count query was rejected by openFDA (malformed field name, invalid syntax).',
       recovery:
         'Verify field names using the openFDA field reference and correct boolean operators (AND/OR, quoted phrases).',
+      thrownBy: 'service',
     },
     {
       reason: 'not_aggregatable',
@@ -131,6 +134,7 @@ export const countValuesTool = tool('openfda_count_values', {
       when: 'openFDA cannot aggregate the count expression as written — an analyzed text field, or .exact on a field already indexed as a keyword.',
       recovery:
         'Add .exact to tally whole values of an analyzed text field, or drop .exact from an identifier field openFDA already indexes as a keyword.',
+      thrownBy: 'service',
     },
   ],
 
