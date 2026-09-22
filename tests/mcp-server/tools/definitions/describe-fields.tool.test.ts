@@ -136,6 +136,60 @@ describe('openfda_describe_fields', () => {
     expect(queryTips).not.toMatch(/tallies individual words/i);
   });
 
+  // Issue #49 — every field carries the count expression a live probe verified,
+  // so a caller can pick a countable field before openfda_count_values rejects it.
+  describe('count expression (#49)', () => {
+    const countAsByPath = (result: {
+      groups: { fields: { path: string; countAs: string | null }[] }[];
+    }) => new Map(result.groups.flatMap((g) => g.fields.map((f) => [f.path, f.countAs] as const)));
+
+    it('marks the uncountable device/classification fields and names the .exact form', async () => {
+      const result = await describeFieldsTool.handler(
+        describeFieldsTool.input.parse({ endpoint: 'device/classification' }),
+        ctx,
+      );
+      const countAs = countAsByPath(result);
+
+      for (const path of [
+        'device_class',
+        'product_code',
+        'implant_flag',
+        'life_sustain_support_flag',
+        'gmp_exempt_flag',
+        'third_party_flag',
+      ]) {
+        expect(countAs.get(path)).toBeNull();
+      }
+      expect(countAs.get('medical_specialty_description')).toBe(
+        'medical_specialty_description.exact',
+      );
+      expect(countAs.get('openfda.k_number')).toBe('openfda.k_number');
+    });
+
+    it('renders the count expression in the content[] table', async () => {
+      const result = await describeFieldsTool.handler(
+        describeFieldsTool.input.parse({ endpoint: 'device/classification' }),
+        ctx,
+      );
+      const text = textOf(describeFieldsTool.format!(result));
+
+      expect(text).toContain('| Field path | Type | Count as | Description |');
+      expect(text).toMatch(/\| `device_class` \| string \| not countable \|/);
+      expect(text).toContain(
+        '| `medical_specialty_description` | string | `medical_specialty_description.exact` |',
+      );
+    });
+
+    it('queryTips points at the per-field count expression', async () => {
+      const { queryTips } = await describeFieldsTool.handler(
+        describeFieldsTool.input.parse({ endpoint: 'drug/enforcement' }),
+        ctx,
+      );
+
+      expect(queryTips).toMatch(/countAs/);
+    });
+  });
+
   // Issue #16 — the count-only endpoints exposed by openfda_count_values now have
   // field catalogs, so openfda_describe_fields accepts them too.
   const countOnlyEndpoints: Array<[string, string]> = [

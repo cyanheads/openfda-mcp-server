@@ -5,8 +5,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import {
-  type FieldEntry,
-  type FieldGroup,
+  countExpression,
   getCatalogedEndpoints,
   getFieldGroups,
 } from '@/mcp-server/tools/field-catalog.js';
@@ -40,6 +39,12 @@ export const describeFieldsTool = tool('openfda_describe_fields', {
                   .object({
                     path: z.string().describe('Dotted field path for use in search queries'),
                     type: z.string().describe('Data type (string, date, integer, float, boolean)'),
+                    countAs: z
+                      .string()
+                      .nullable()
+                      .describe(
+                        'Verified expression to pass as count in openfda_count_values (the bare path or path.exact); null when openFDA cannot aggregate the field in any form',
+                      ),
                     note: z.string().describe('What this field contains'),
                   })
                   .describe('A single searchable field entry'),
@@ -68,22 +73,36 @@ export const describeFieldsTool = tool('openfda_describe_fields', {
       'Phrase matching requires double quotes. ' +
       'Combine filters with AND or OR. ' +
       'Every double quote, parenthesis, and range bracket must close, and a query cannot end on a backslash — write a literal delimiter as \\" \\( \\[ or \\\\. ' +
-      'For aggregation in openfda_count_values, count identifier fields bare (product_ndc, application_number, pma_number, unique_aer_id_number) — openFDA already indexes them as keywords and rejects .exact on them as not countable. ' +
+      'For aggregation in openfda_count_values, pass the countAs expression listed for each field; null means openFDA cannot aggregate that field bare or with .exact. ' +
+      'For a field not listed here, count identifier fields bare (product_ndc, application_number, pma_number, unique_aer_id_number) — openFDA already indexes them as keywords and rejects .exact on them as not countable. ' +
       'Free-text fields are the opposite: count them with .exact (e.g. patient.reaction.reactionmeddrapt.exact, openfda.brand_name.exact), since openFDA refuses to aggregate the analyzed field bare rather than tallying its words. ' +
       'Date fields accept YYYYMMDD format and support range syntax [20200101 TO 20221231].';
 
-    return { endpoint: input.endpoint, groups, queryTips };
+    return {
+      endpoint: input.endpoint,
+      groups: groups.map((group) => ({
+        label: group.label,
+        fields: group.fields.map((field) => ({
+          path: field.path,
+          type: field.type,
+          countAs: countExpression(field),
+          note: field.note,
+        })),
+      })),
+      queryTips,
+    };
   },
 
   format: (result) => {
     const lines: string[] = [`## Searchable fields — \`${result.endpoint}\`\n`];
 
-    for (const group of result.groups as FieldGroup[]) {
+    for (const group of result.groups) {
       lines.push(`### ${group.label}`);
-      lines.push('| Field path | Type | Description |');
-      lines.push('|:---|:---|:---|');
-      for (const field of group.fields as FieldEntry[]) {
-        lines.push(`| \`${field.path}\` | ${field.type} | ${field.note} |`);
+      lines.push('| Field path | Type | Count as | Description |');
+      lines.push('|:---|:---|:---|:---|');
+      for (const field of group.fields) {
+        const countAs = field.countAs === null ? 'not countable' : `\`${field.countAs}\``;
+        lines.push(`| \`${field.path}\` | ${field.type} | ${countAs} | ${field.note} |`);
       }
       lines.push('');
     }
