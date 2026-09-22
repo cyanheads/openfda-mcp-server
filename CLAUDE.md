@@ -194,6 +194,7 @@ src/
       field-catalog.ts                  # Searchable field paths per endpoint + live-verified count form per field
       format-utils.ts                   # Shared format() helpers
       schema-utils.ts                   # Shared input schemas + handler guards (skip ceiling, search delimiters)
+      spl-table.ts                      # SPL *_table markup → GFM table, for openfda_get_drug_label content[]
     tools/definitions/
       count-values.tool.ts              # openfda_count_values
       dataframe-describe.tool.ts        # openfda_dataframe_describe

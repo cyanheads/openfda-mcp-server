@@ -13,6 +13,12 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 
 import { getDrugLabelTool } from '@/mcp-server/tools/definitions/get-drug-label.tool.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import {
+  FOOTNOTE_INLINE,
+  ROWSPAN_GRID,
+  SUBSCRIPT_FORMULA,
+  WARFARIN_DOSING,
+} from '../../../fixtures/spl-tables.js';
 import { textOf } from '../../../helpers/content.js';
 
 const mockQuery = vi.fn();
@@ -569,6 +575,142 @@ describe('openfda_get_drug_label', () => {
       const text = textOf(content);
       expect(text).toContain('boxed_warning');
       expect(text).toContain('9012');
+    });
+
+    it('passes prose sections through verbatim, literal angle brackets included (#45)', () => {
+      const inactive =
+        'Inactive Ingredients <paragraph>Aminomethyl Propanol, Carbomer, [Aqua], Thyme Leaf oil. <E050800>';
+      const dosage = 'Take *1 tablet* daily; adjust by INR &#x2265; 2.';
+      const text = textOf(
+        getDrugLabelTool.format!({
+          meta: { total: 1, skip: 0, limit: 5, lastUpdated: '' },
+          kind: 'full',
+          results: [
+            {
+              openfda: { brand_name: ['Prose'] },
+              inactive_ingredient: [inactive],
+              dosage_and_administration: [dosage, 'Second paragraph.'],
+            },
+          ],
+        }),
+      );
+      expect(text).toContain(`**Inactive ingredient:**\n${inactive}`);
+      expect(text).toContain(`**Dosage and administration:**\n${dosage}\nSecond paragraph.`);
+    });
+
+    describe('*_table sections (#45)', () => {
+      const label = (sections: Record<string, unknown>) => ({
+        openfda: { brand_name: ['Warfarin Sodium'], generic_name: ['warfarin sodium'] },
+        set_id: 'set-w',
+        id: 'id-w',
+        effective_time: '20260101',
+        version: '4',
+        ...sections,
+      });
+
+      it('keeps the raw SPL string in structuredContent and renders a Markdown table in content[]', async () => {
+        mockQuery.mockResolvedValue({
+          meta: { total: 1, skip: 0, limit: 1, lastUpdated: '2026-01-01' },
+          results: [
+            label({
+              dosage_and_administration_table: [WARFARIN_DOSING],
+              boxed_warning: ['Bleeding risk.'],
+            }),
+          ],
+        });
+
+        const result = await getDrugLabelTool.handler(
+          getDrugLabelTool.input.parse({
+            search: 'openfda.generic_name:"warfarin"',
+            limit: 1,
+            sections: ['dosage_and_administration_table'],
+          }),
+          ctx,
+        );
+
+        // structuredContent: the provider string, byte for byte.
+        expect(result.results?.[0]?.dosage_and_administration_table).toEqual([WARFARIN_DOSING]);
+
+        const text = textOf(getDrugLabelTool.format!(result));
+        expect(text).toContain(
+          '**Dosage and administration table:**\n\nTable 1: Three Ranges of Expected Maintenance Warfarin Sodium Tablets Daily Doses Based on CYP2C9 and VKORC1 Genotypes†\n\n| VKORC1 | CYP2C9 |  |  |  |  |  |\n| --- | --- | --- | --- | --- | --- | --- |\n|  | \\*1/\\*1 |',
+        );
+        expect(text).not.toMatch(/<table|<td|styleCode|&#x2020;/);
+      });
+
+      it('measures the outline on the raw strings, unchanged by rendering', async () => {
+        const record = label({
+          dosage_and_administration_table: [WARFARIN_DOSING],
+          clinical_studies: ['C'.repeat(30_000)],
+        });
+        mockQuery.mockResolvedValue({
+          meta: { total: 1, skip: 0, limit: 1, lastUpdated: '2026-01-01' },
+          results: [record],
+        });
+
+        const result = await getDrugLabelTool.handler(
+          getDrugLabelTool.input.parse({ search: 'openfda.generic_name:"warfarin"', limit: 1 }),
+          ctx,
+        );
+
+        expect(result.kind).toBe('outline');
+        const entry = result.outline?.find((s) => s.name === 'dosage_and_administration_table');
+        expect(entry?.bytes).toBe(JSON.stringify([WARFARIN_DOSING]).length);
+      });
+
+      it('renders every string of a multi-table section, blank-line separated', () => {
+        const text = textOf(
+          getDrugLabelTool.format!({
+            meta: { total: 1, skip: 0, limit: 1, lastUpdated: '' },
+            kind: 'full',
+            results: [label({ drug_interactions_table: [FOOTNOTE_INLINE, ROWSPAN_GRID] })],
+          }),
+        );
+        const section = text.slice(text.indexOf('**Drug interactions table:**'));
+        expect(section).toContain('[^1]: Body system not specified\n\n|  |  | Atorvastatin (mg) |');
+      });
+
+      it('renders a lone string value and leaves a non-string value to the generic rendering', () => {
+        const text = textOf(
+          getDrugLabelTool.format!({
+            meta: { total: 1, skip: 0, limit: 1, lastUpdated: '' },
+            kind: 'full',
+            results: [
+              label({
+                description_table: SUBSCRIPT_FORMULA,
+                odd_table: { rows: 2 },
+                mixed_table: ['<table><tr><td>a</td></tr></table>', 7],
+              }),
+            ],
+          }),
+        );
+        expect(text).toContain('**Description table:**\n\n| C\\_22H\\_29FO\\_5 | MW 392.47 |');
+        expect(text).toContain('**Odd table:**\n{"rows":2}');
+        expect(text).toContain('**Mixed table:**\n<table><tr><td>a</td></tr></table>\n7');
+      });
+
+      it('falls back to decoded text for a table string that does not parse', () => {
+        const text = textOf(
+          getDrugLabelTool.format!({
+            meta: { total: 1, skip: 0, limit: 1, lastUpdated: '' },
+            kind: 'full',
+            results: [label({ warnings_table: ['<table><tr><td>Bleeding &#x2265; major'] })],
+          }),
+        );
+        expect(text).toContain('**Warnings table:**\n\nBleeding ≥ major');
+      });
+
+      it('omits a table section whose strings render to nothing', () => {
+        const text = textOf(
+          getDrugLabelTool.format!({
+            meta: { total: 1, skip: 0, limit: 1, lastUpdated: '' },
+            kind: 'full',
+            results: [label({ empty_table: ['<table></table>'], boxed_warning: ['Kept.'] })],
+          }),
+        );
+        expect(text).not.toContain('Empty table');
+        expect(text).toContain('Kept.');
+      });
     });
 
     it('renders both arms when both fields are present (parity sentinel shape)', () => {

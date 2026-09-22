@@ -32,6 +32,7 @@ import {
   sortExpression,
   totalUnverifiedField,
 } from '@/mcp-server/tools/schema-utils.js';
+import { renderSplTable } from '@/mcp-server/tools/spl-table.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 const ENDPOINT = 'drug/label';
@@ -42,6 +43,19 @@ const ENDPOINT = 'drug/label';
  * same revision.
  */
 const LABEL_METADATA_KEYS = ['openfda', 'set_id', 'id', 'effective_time', 'version'];
+
+/**
+ * A `*_table` section's text for `content[]` — each SPL table string rendered as
+ * Markdown, blank-line separated. Undefined when the value is not the string or
+ * string array openFDA ships, so the generic section rendering takes it.
+ */
+function renderTableSection(value: unknown): string | undefined {
+  if (typeof value === 'string') return renderSplTable(value);
+  if (Array.isArray(value) && value.every((item) => typeof item === 'string')) {
+    return value.map(renderSplTable).filter(Boolean).join('\n\n');
+  }
+  return;
+}
 
 /**
  * Section outline for a page of SPL records: one entry per top-level label key,
@@ -174,7 +188,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       .array(nonBlankString().describe('A top-level label section name.'))
       .optional()
       .describe(
-        'Label sections to return, e.g. ["boxed_warning","indications_and_usage"]. Names come from the outline an oversized page returns, or from openfda_describe_fields. Omit for the whole label — which returns the section outline instead when the page exceeds the inline size budget. A selection is returned whole even when it exceeds that budget, with its serialized size reported on the notice; the outline names a section measured to fit at the requested limit. Metadata (openfda, set_id, id, effective_time, version) is returned either way and counts toward the size.',
+        'Label sections to return, e.g. ["boxed_warning","indications_and_usage"]. Names come from the outline an oversized page returns, or from openfda_describe_fields. Omit for the whole label — which returns the section outline instead when the page exceeds the inline size budget; an empty list is treated as omitted. A selection is returned whole even when it exceeds that budget, with its serialized size reported on the notice; the outline names a section measured to fit at the requested limit. Sections ending in _table hold SPL table markup: raw in structured results, rendered as Markdown tables in the text output. Metadata (openfda, set_id, id, effective_time, version) is returned either way and counts toward the size.',
       ),
   }),
 
@@ -197,7 +211,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       .array(z.record(z.string(), z.any()))
       .optional()
       .describe(
-        'Drug label records, present when kind is "full". Each carries an openfda block (brand_name, generic_name, manufacturer_name, route) plus optional SPL sections like indications_and_usage, warnings, dosage_and_administration, contraindications, adverse_reactions; section presence varies per label. Narrowed to the requested sections plus metadata when sections was supplied.',
+        'Drug label records, present when kind is "full". Each carries an openfda block (brand_name, generic_name, manufacturer_name, route) plus optional SPL sections like indications_and_usage, warnings, dosage_and_administration, contraindications, adverse_reactions; section presence varies per label. Sections ending in _table carry raw SPL table markup (tags and character entities) exactly as openFDA returns it. Narrowed to the requested sections plus metadata when sections was supplied.',
       ),
     outline: z
       .array(
@@ -415,8 +429,15 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
 
       // Every label section present in the record, whole — `structuredContent`
       // carries the untrimmed record, so trimming here would desync the surfaces.
+      // `*_table` sections are SPL table markup and render as Markdown tables;
+      // prose sections pass through verbatim.
       for (const [key, value] of Object.entries(r)) {
         if (metaKeys.has(key) || value == null) continue;
+        const table = key.endsWith('_table') ? renderTableSection(value) : undefined;
+        if (table !== undefined) {
+          if (table) lines.push(`\n**${humanizeField(key)}:**\n\n${table}`);
+          continue;
+        }
         const text = Array.isArray(value)
           ? value.join('\n')
           : typeof value === 'object'
