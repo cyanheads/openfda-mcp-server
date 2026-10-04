@@ -7,13 +7,13 @@
 
 <div align="center">
 
-[![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![Version](https://img.shields.io/badge/Version-0.7.9-blue.svg?style=flat-square)](./CHANGELOG.md) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.0.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.0-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.7.9-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/openfda-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.2.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
 <div align="center">
 
-[![Install in Claude Desktop](https://img.shields.io/badge/Install_in-Claude_Desktop-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](https://github.com/cyanheads/openfda-mcp-server/releases/latest/download/openfda-mcp-server.mcpb) [![Install in Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/en/install-mcp?name=openfda-mcp-server&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBjeWFuaGVhZHMvb3BlbmZkYS1tY3Atc2VydmVyIl0sImVudiI6eyJPUEVORkRBX0FQSV9LRVkiOiJ5b3VyLWFwaS1rZXkifX0=) [![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect?url=vscode:mcp/install?%7B%22name%22%3A%22openfda-mcp-server%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40cyanheads/openfda-mcp-server%22%5D%2C%22env%22%3A%7B%22OPENFDA_API_KEY%22%3A%22your-api-key%22%7D%7D)
+[![Install in Claude Desktop](https://img.shields.io/badge/Install_in-Claude_Desktop-D97757?style=for-the-badge&logo=anthropic&logoColor=white)](https://github.com/cyanheads/openfda-mcp-server/releases/latest/download/openfda-mcp-server.mcpb) [![Install in Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/en/install-mcp?name=openfda-mcp-server&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsIkBjeWFuaGVhZHMvb3BlbmZkYS1tY3Atc2VydmVyIl0sImVudiI6eyJPUEVORkRBX0FQSV9LRVkiOiJ5b3VyLWFwaS1rZXkifX0=) [![Install in VS Code](https://img.shields.io/badge/VS_Code-Install_Server-0098FF?style=for-the-badge&logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect?url=vscode:mcp/install?%7B%22name%22%3A%22openfda-mcp-server%22%2C%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40cyanheads%2Fopenfda-mcp-server%22%5D%2C%22env%22%3A%7B%22OPENFDA_API_KEY%22%3A%22your-api-key%22%7D%7D)
 
 [![Framework](https://img.shields.io/badge/Built%20on-@cyanheads/mcp--ts--core-67E8F9?style=flat-square)](https://www.npmjs.com/package/@cyanheads/mcp-ts-core)
 
@@ -38,150 +38,127 @@ FDA data on drugs, food, devices, and recalls from the openFDA public API. Searc
 | `openfda_drug_profile` | One drug name → consolidated FDA profile: identity, label, adverse events, recalls, approval, shortage |
 | `openfda_search_adverse_events` | Search adverse event reports across drugs, food, and devices |
 | `openfda_search_animal_events` | Search adverse event reports for veterinary drugs and devices |
-| `openfda_search_drug_shortages` | Search FDA drug shortage records — status, availability, therapeutic category, manufacturer |
+| `openfda_search_drug_shortages` | Search FDA drug shortage records by status, availability, therapeutic category, manufacturer |
 | `openfda_search_tobacco_reports` | Search problem reports for tobacco products, e-cigarettes, and vaping devices |
 | `openfda_search_recalls` | Search enforcement reports and recall actions across drugs, food, and devices |
 | `openfda_count_values` | Aggregate and tally unique values for any field across any openFDA endpoint |
 | `openfda_describe_fields` | Return searchable field paths for an openFDA endpoint, grouped by category |
 | `openfda_get_drug_label` | Look up FDA drug labeling (package inserts / SPL documents) |
 | `openfda_search_drug_approvals` | Search the Drugs@FDA database for NDA/ANDA application approvals |
-| `openfda_search_device_clearances` | Search FDA device premarket notifications — 510(k) clearances and PMA approvals |
+| `openfda_search_device_clearances` | Search FDA device premarket notifications: 510(k) clearances and PMA approvals |
 | `openfda_lookup_ndc` | Look up drugs in the NDC (National Drug Code) Directory |
-| `openfda_dataframe_query` | Run read-only SQL over a result set staged on a DataCanvas (opt-in) |
 | `openfda_dataframe_describe` | List tables and column schemas staged on a DataCanvas (opt-in) |
+| `openfda_dataframe_query` | Run read-only SQL over a result set staged on a DataCanvas (opt-in) |
+| `openfda_dataframe_drop` | Delete one table staged on a DataCanvas (opt-in, off by default) |
 
 ## Capability reference
 
 ### `openfda_drug_profile` <sub>tool</sub>
 
-- Resolves a brand or generic drug name to canonical FDA identifiers (generic name, NDC, RxCUI, SPL set ID) once, then keys every sub-query off that identity — avoids the identifier drift that breaks naive tool chaining
-- Fans out in parallel across `drug/label`, `drug/event`, `drug/enforcement`, `drug/drugsfda`, and `drug/shortages`; each section (`label`, `adverse_events`, `recalls`, `approval`, `shortage`) is best-effort and returns `null` on a miss rather than failing the call
-- A single-drug query resolves only to a single-ingredient product, never a combination
-- `degraded[]` names any section whose sub-query failed upstream (rate limit, 5xx, query error) — a section listed there is unknown, not confirmed absent
-- Auth, configuration, and cancellation failures abort the whole call rather than degrading silently
-- Accepts `drug_name` or `name` in place of `drug`
+- One `drug` name, brand or generic, resolved once to canonical identity (generic name, NDC, RxCUI, SPL set ID) that keys every sub-query; `meta.resolvedVia` (`label`, `ndc`, `none`) names the source, and a single-ingredient product is preferred over combinations
+- Sections `label`, `adverse_events`, `recalls`, `approval`, and `shortage` are best-effort and come back `null` (or an empty `recalls`) on a miss; `degraded[]` names each section whose sub-query failed upstream, so a listed section is unknown rather than absent
+- Auth, configuration, and cancellation failures fail the whole call instead of degrading a section
 
 ---
 
 ### `openfda_search_adverse_events` <sub>tool</sub>
 
-- `category` selects `drug`, `food`, or `device` — each returns a different field schema
-- `limit` up to 1000 and `skip` up to openFDA's 25000-record ceiling (past it: typed `pagination_limit_reached`); the page is also bounded by a shared ~24 KB serialized-byte budget — `drug/event` reports run tens of KB each against a few hundred bytes for `food/event`, so an oversized page returns fewer records than requested and reports the cut via `page_omitted`
-- Sortable date field is category-specific (`receivedate` for drug, `date_created` for food, `date_received` for device) — a field from another category causes a query error
-- Optional `stage: true` (or `canvas_id`) drains the matched set onto a DataCanvas table for SQL via `openfda_dataframe_query`
+- `category` (`drug`, `food`, `device`) selects the endpoint and its record schema; up to 1000 records per page
+- Sortable date fields differ by category: `receivedate` (drug), `date_created` (food), `date_received` (device); another category's field fails as `query_error`
 
 ---
 
 ### `openfda_search_animal_events` <sub>tool</sub>
 
-- Covers FDA Center for Veterinary Medicine reports — animal species/breed/age/weight, drug, VeDDRA reaction terms, outcome
-- `limit` up to 1000, bounded by the shared ~24 KB page-byte budget (`page_omitted` reports any cut); `skip` capped at 25000
-- Optional `stage: true` (or `canvas_id`) stages the matched set for SQL via `openfda_dataframe_query`
-- Filter examples: `animal.species`, `drug.brand_name`, `reaction.veddra_term_name`, `serious_ae`
+- Optional `search` over veterinary reports, e.g. `animal.species`, `drug.brand_name`, `reaction.veddra_term_name`, `serious_ae`; up to 1000 records per page
+- Records carry animal species, breed, age, and weight, the drug and route, VeDDRA reaction terms, and outcome
 
 ---
 
 ### `openfda_search_drug_shortages` <sub>tool</sub>
 
-- Filter by `status` (`Current`/`Resolved`), `therapeutic_category`, `generic_name`, or `company_name`
+- Optional `search` over `status` (`Current` / `Resolved`), `therapeutic_category`, `generic_name`, or `company_name`; up to 1000 records per page
 - Each record's `openfda` block carries `brand_name`, `product_ndc`, and `rxcui` for chaining into `openfda_get_drug_label` or `openfda_lookup_ndc`
-- `limit` up to 1000, bounded by the shared ~24 KB page-byte budget; `skip` capped at 25000
-- Optional `stage: true` (or `canvas_id`) for DataCanvas SQL via `openfda_dataframe_query`
 
 ---
 
 ### `openfda_search_tobacco_reports` <sub>tool</sub>
 
-- Filter by `tobacco_products`, `reported_health_problems`, `reported_product_problems`, or `nonuser_affected`
-- Each report carries `number_tobacco_products` / `number_health_problems` / `number_product_problems` counts alongside the arrays
-- `limit` up to 1000, bounded by the shared ~24 KB page-byte budget; `skip` capped at 25000
-- Optional `stage: true` (or `canvas_id`) for DataCanvas SQL via `openfda_dataframe_query`
+- Optional `search` over `tobacco_products`, `reported_health_problems`, `reported_product_problems`, or `nonuser_affected`; up to 1000 records per page
+- Reports carry the problem arrays plus `number_tobacco_products`, `number_health_problems`, and `number_product_problems` counts
 
 ---
 
 ### `openfda_search_recalls` <sub>tool</sub>
 
-- `category` (`drug`/`food`/`device`) plus `endpoint` — `enforcement` covers all categories, `recall` is device-only and rejects a non-device category as a typed `recall_endpoint_non_device` error
-- Filter by `classification` (Class I/II/III), `recalling_firm`, `reason_for_recall`, `status`
-- Device recall records carry their own identity and status (`product_res_number`, `recall_status`) and no hazard classification; the text output renders each record with its endpoint's fields
-- `limit` up to 1000, bounded by the shared ~24 KB page-byte budget — a device record runs several KB against roughly one for drug/food
-- Optional `stage: true` (or `canvas_id`) for DataCanvas SQL via `openfda_dataframe_query`
+- `category` (`drug`, `food`, `device`) plus `endpoint`: `enforcement` (default, every category) or `recall` (devices only; other categories fail as `recall_endpoint_non_device`); up to 1000 records per page
+- Enforcement records carry `recall_number`, `classification` (Class I/II/III), and `status`; device recall records carry `product_res_number` and `recall_status` instead, with no hazard classification
 
 ---
 
 ### `openfda_count_values` <sub>tool</sub>
 
-- Works across all 20 openFDA endpoints (drug, food, device, animal/veterinary, tobacco, other) — the same set `openfda_describe_fields` covers
-- `count` takes a dotted field path — `openfda_describe_fields` lists the verified expression for each field (`countAs`); outside the catalog, append `.exact` on analyzed text fields and count keyword identifiers (`product_ndc`, `application_number`, `pma_number`) bare
-- A field that can't be aggregated fails as `not_aggregatable`, naming the expression that does count or saying the field has none; a search whose matched records lack the field returns an empty tally with a notice
-- Optional `search` scopes the aggregation; returns up to 1000 top terms ranked by count descending
-- `truncated` is set only when more distinct terms exist past `limit` (the tool reads one term ahead); at openFDA's 1000-term count maximum no look-ahead is possible, so a full list carries a notice that more may exist instead
-- Pairs with the search/label/recall tools when sample records help interpret an aggregate
-- Runs against the live API even when the local bulk mirror is enabled — a partial mirror can't produce complete aggregates
+- `endpoint` (any of the 20 openFDA endpoints), a `count` field expression, and an optional `search`; returns up to 1000 top terms (default 100), ranked by count
+- `truncated` flags more distinct terms past `limit`, except at the 1000-term maximum, where a notice says completeness can't be known; an expression openFDA can't aggregate fails as `not_aggregatable` (take the `countAs` form from `openfda_describe_fields`)
+- Always runs against the live API, even with the bulk mirror enabled
 
 ---
 
 ### `openfda_describe_fields` <sub>tool</sub>
 
-- Covers all 20 cataloged openFDA endpoints — the same set `openfda_count_values` accepts
-- Returns field paths grouped by category, each with type, a one-line description, and `countAs` — the live-verified `openfda_count_values` expression (bare or `.exact`), or `null` when the field can't be aggregated — plus `queryTips` covering quoting, AND/OR, `.exact`, and date-range syntax
-- Call before constructing a `search` query — field paths differ per endpoint and aren't derivable from a tool's own schema
+- `endpoint`: the same 20 endpoints `openfda_count_values` accepts
+- Field paths grouped by category, each with `type`, a description, and `countAs` (the verified count expression, or `null` when the field can't be aggregated), plus `queryTips` on quoting, AND/OR, `.exact`, and date ranges
 
 ---
 
 ### `openfda_get_drug_label` <sub>tool</sub>
 
-- `search` targets label fields (`openfda.brand_name`, `openfda.generic_name`, `openfda.manufacturer_name`, or `set_id` for a specific SPL revision); default `limit` 5, up to 1000
-- A page over the ~24 KB inline budget returns `kind: "outline"` — section names and their serialized size, largest first — instead of label text; re-call with `sections: [...]` for the ones needed
-- Outline sizes are summed across the whole page, so cost scales with `limit`; a `sections` selection is always returned whole even when it overflows the budget, with its size disclosed
-- `sections` narrows each record to the requested keys plus identity metadata (`openfda`, `set_id`, `id`, `effective_time`, `version`)
-- `*_table` sections render as Markdown tables in the text output (caption, spans, footnotes, and footer rows preserved); structured results keep the raw SPL table markup
-- `skip` capped at openFDA's 25000-record pagination ceiling
+- Required `search` on label fields (`openfda.brand_name`, `openfda.generic_name`, `openfda.manufacturer_name`, `set_id`); `limit` defaults to 5, max 1000
+- A page over the 24,000-byte inline budget returns `kind: "outline"` (section names and sizes, largest first) instead of label text; re-call with `sections: [...]` to get those sections plus identity metadata (`openfda`, `set_id`, `id`, `effective_time`, `version`), returned whole even when over budget
+- `*_table` sections render as Markdown tables in the text output; structured results keep the raw SPL markup
 
 ---
 
 ### `openfda_search_drug_approvals` <sub>tool</sub>
 
-- Filter by brand/generic name (`openfda.brand_name`), `sponsor_name` (stored uppercase — a lowercase quoted value matches nothing), or `submissions.submission_type` / `submissions.review_priority`
-- Each record carries the application's full submission history, so `limit` up to 1000 is bounded by the shared ~24 KB page-byte budget — a long-running application is an order of magnitude larger than a recent one
-- `page_omitted` reports any cut with the routes to the rest; `skip` capped at 25000
-- Optional `stage: true` (or `canvas_id`) for DataCanvas SQL via `openfda_dataframe_query`
+- Optional `search` over `openfda.brand_name`, `sponsor_name` (stored uppercase, so a lowercase quoted value matches nothing), `submissions.submission_type`, or `submissions.review_priority`; up to 1000 records per page
+- Records carry `application_number`, `sponsor_name`, `products[]`, and the application's full `submissions[]` history
 
 ---
 
 ### `openfda_search_device_clearances` <sub>tool</sub>
 
-- `pathway` selects `510k` (174K+ records, most common) or `pma` (higher-risk devices) — one pathway per call
-- Filter by `applicant`, `product_code`, `advisory_committee_description`, or `openfda.device_name`
-- `limit` up to 1000, bounded by the shared ~24 KB page-byte budget — a 510(k) record carries a summary narrative and runs several times the size of a PMA record
-- Optional `stage: true` (or `canvas_id`) for DataCanvas SQL via `openfda_dataframe_query`
+- `pathway` (`510k` or `pma`, one per call) plus an optional `search` over `applicant`, `product_code`, `advisory_committee_description`, or `openfda.device_name`; up to 1000 records per page
+- 510(k) records carry `k_number`, `device_name`, and `decision_date`; PMA records carry `pma_number`, `trade_name`, and `supplement_number`
 
 ---
 
 ### `openfda_lookup_ndc` <sub>tool</sub>
 
-- Search by `product_ndc`, `brand_name`, `generic_name`, `openfda.manufacturer_name`, or `active_ingredients.name`
-- Pair with `openfda_get_drug_label` via the returned `brand_name` or `set_id` to read the package insert
-- `limit` up to 1000, bounded by the shared ~24 KB page-byte budget — a product with many packaging configurations is several times the size of one with a single package
-- Optional `stage: true` (or `canvas_id`) for DataCanvas SQL via `openfda_dataframe_query`; `skip` capped at 25000
-
----
-
-### `openfda_dataframe_query` <sub>tool</sub>
-
-- Runs a single read-only `SELECT` against a table staged by a search tool's `stage: true` — DDL, DML, COPY, and file-reading functions are rejected
-- Scalar fields are stored as text (`CAST` for numeric math); nested openFDA objects/arrays are JSON columns, queryable with DuckDB JSON functions
-- Results are capped at the canvas row limit; `truncated: true` means page the rest with `ORDER BY` plus `LIMIT`/`OFFSET`
-- Requires `CANVAS_PROVIDER_TYPE=duckdb` and the optional `@duckdb/node-api` dependency — errors `canvas_disabled` otherwise
+- Required `search` over `product_ndc`, `brand_name`, `generic_name`, `openfda.manufacturer_name`, or `active_ingredients.name`; up to 1000 records per page
+- Records carry `product_ndc`, `labeler_name`, `dosage_form`, `route`, `marketing_category`, `active_ingredients[]`, and `packaging[]`
 
 ---
 
 ### `openfda_dataframe_describe` <sub>tool</sub>
 
-- Lists every table on a canvas by `canvas_id` — name, kind (table/view), full staged row count (not the inline preview count), and column name/DuckDB-type/nullable for each
-- Nested openFDA objects/arrays are stored as JSON columns — query them with DuckDB JSON functions
-- Call before `openfda_dataframe_query` to get exact table and column names
-- Errors `canvas_disabled` when `CANVAS_PROVIDER_TYPE` is unset, `canvas_not_found` when the `canvas_id` has expired or never existed
+- `canvas_id` from a staged search; lists each table's `name`, `kind`, full staged `row_count`, and columns with DuckDB type and nullability
+- Fails as `canvas_disabled` when `CANVAS_PROVIDER_TYPE` is unset, or `canvas_not_found` when the `canvas_id` has expired or never existed
+
+---
+
+### `openfda_dataframe_query` <sub>tool</sub>
+
+- `canvas_id` plus one read-only `SELECT`; DDL, DML, COPY, and file-reading functions are rejected. Scalars are stored as text (`CAST` for math) and nested openFDA blocks as JSON columns
+- Rows are capped at the canvas row limit, and `truncated: true` means page on with `ORDER BY` plus `LIMIT`/`OFFSET`; failures are `canvas_disabled`, `canvas_not_found`, `missing_table`, or `invalid_query`
+
+---
+
+### `openfda_dataframe_drop` <sub>tool</sub>
+
+- Off by default: set `OPENFDA_DATAFRAME_DROP_ENABLED=true` to make it callable; otherwise it is listed as disabled on the landing page and absent from `tools/list`
+- `canvas_id` plus the `table` name from `openfda_dataframe_describe`; deletes that one table or view and returns `remaining_tables`, leaving the canvas and its other tables in place
+- Failures are `canvas_disabled`, `canvas_not_found`, or `missing_table` (already dropped, expired, or mistyped)
 
 ## Features
 
@@ -189,18 +166,18 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 
 openFDA-specific:
 
-- Generic API client for all 20 openFDA endpoints with retry (exponential backoff) and rate-limit awareness
-- Automatic error normalization — 404 returns empty results, 429/5xx retries, 400 surfaces an actionable message
-- Optional API key — works without one (1K requests/day), increases to 120K/day with a free key
-- Optional DataCanvas staging (`CANVAS_PROVIDER_TYPE=duckdb`, per call with `stage: true`) — stage large result sets as DuckDB tables, list their columns with `openfda_dataframe_describe`, and run SQL via `openfda_dataframe_query`
-- Optional local bulk mirror (`OPENFDA_MIRROR_ENABLED=true`) — a self-refreshing SQLite copy of four drug datasets that answers exact-key lookups without spending API budget, with live fallback
+- One client for all 20 openFDA endpoints: 429 and 5xx responses retry with exponential backoff, a 404 is an empty result, and a 400 becomes an actionable `query_error`. No API key is needed (1K requests/day); a free `OPENFDA_API_KEY` raises that to 120K/day
+- Queries are `field:value` over dotted paths that differ per endpoint, joined by AND/OR, with phrases in double quotes; `openfda_describe_fields` lists the paths. A query with an unbalanced quote, parenthesis, or range bracket, or a trailing backslash, fails as `malformed_search` before any request
+- Paging: `limit` up to 1000 and `skip` up to openFDA's 25,000-record ceiling (`pagination_limit_reached` past it). Search pages are also held to a 24,000-byte serialized budget, so an oversized page returns fewer records than requested, but never zero
+- Optional DataCanvas staging (`CANVAS_PROVIDER_TYPE=duckdb`): `stage: true` or a `canvas_id` on any `openfda_search_*` tool or `openfda_lookup_ndc` drains the matched set into a DuckDB table, up to a size budget reported by `staged_rows` and `truncated`
+- Optional local bulk mirror (`OPENFDA_MIRROR_ENABLED=true`): a self-refreshing SQLite copy of four drug datasets that answers exact-key lookups without spending API budget, with live fallback
 
 Agent-friendly output:
 
-- Byte-budget disclosure — oversized pages are bounded by a shared ~24 KB serialized budget and disclosed via `page_omitted`/`page_bytes` on both `content[]` and `structuredContent`, never silently truncated and never emptied to zero records
-- Typed failure contracts — `errors[]` declarations key `ctx.fail` by reason (`rate_limited`, `query_error`, `pagination_limit_reached`, `canvas_disabled`, ...) so callers can branch on `error.data.reason` instead of parsing messages
-- Best-effort degradation — `openfda_drug_profile` returns `null` per section on a miss rather than failing the whole call, and names which sections failed upstream (vs. genuinely absent) in `degraded[]`
-- Empty-result guidance — a no-match search returns a notice pointing at `openfda_describe_fields` and broader query terms rather than a bare empty array; a page requested past the end of its results reports the real match count and says the offset overshot
+- Disclosed bounds: `page_omitted` / `page_bytes`, the label `outline`, and `staged_rows` report every cut on both `content[]` and `structuredContent`, with the routes to the rest
+- Typed failure contracts: callers branch on `error.data.reason` (`rate_limited`, `query_error`, `not_aggregatable`, `pagination_limit_reached`, `canvas_disabled`, ...) instead of parsing messages
+- Unknown vs. absent: `openfda_drug_profile` returns `null` for a section with no FDA record and lists a section whose sub-query failed in `degraded[]`
+- Empty-result guidance: a no-match search returns a notice pointing at `openfda_describe_fields` and broader terms; a page past the end reports the real match count
 
 ## Getting started
 
@@ -221,7 +198,7 @@ A public instance is available at `https://openfda.caseyjhand.com/mcp` — no in
 
 ### Self-Hosted / Local
 
-Add the following to your MCP client configuration file:
+Add the following to your MCP client configuration file.
 
 ```json
 {
@@ -282,8 +259,8 @@ MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
 
 ### Prerequisites
 
-- [Bun v1.3.0](https://bun.sh/) or higher.
-- Optional: [openFDA API key](https://open.fda.gov/apis/authentication/) for higher rate limits (120K requests/day vs 1K/day).
+- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
+- Optional: an [openFDA API key](https://open.fda.gov/apis/authentication/) raises the limit from 1K to 120K requests per day.
 
 ### Installation
 
@@ -305,62 +282,59 @@ cd openfda-mcp-server
 bun install
 ```
 
-## Configuration
+4. **Configure environment:**
 
-All configuration is validated at startup via Zod schemas in `src/config/server-config.ts`. Key environment variables:
+```sh
+cp .env.example .env
+# edit .env and set OPENFDA_API_KEY and the mirror or canvas options as needed
+```
+
+## Configuration
 
 | Variable | Description | Default |
 |:---|:---|:---|
-| `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http` | `stdio` |
-| `MCP_HTTP_PORT` | HTTP server port | `3010` |
-| `MCP_SESSION_MODE` | HTTP session handling: `stateless`, `stateful`, or `auto`. No tool asks the caller for input mid-call, so no session store is needed. | `stateless` |
-| `MCP_AUTH_MODE` | Authentication: `none`, `jwt`, or `oauth` | `none` |
-| `MCP_LOG_LEVEL` | Log level (`debug`, `info`, `warning`, `error`, etc.) | `info` |
-| `LOGS_DIR` | Directory for log files (Node.js only). | `<project-root>/logs` |
-| `STORAGE_PROVIDER_TYPE` | Storage backend: `in-memory`, `filesystem`, `supabase`, `cloudflare-kv/r2/d1` | `in-memory` |
-| `OPENFDA_API_KEY` | Free API key from [open.fda.gov](https://open.fda.gov/apis/authentication/). Increases daily limit from 1K to 120K requests. | none |
-| `OPENFDA_BASE_URL` | Base URL override for testing against a proxy or mock. | `https://api.fda.gov` |
-| `OPENFDA_MIRROR_ENABLED` | Answer exact-key lookups from a local copy of the openFDA bulk downloads instead of the API. See [Local bulk mirror](#local-bulk-mirror). | `false` |
+| `OPENFDA_API_KEY` | Free API key from [open.fda.gov](https://open.fda.gov/apis/authentication/); raises the daily limit from 1K to 120K requests. | none |
+| `OPENFDA_BASE_URL` | API base URL override, for a proxy or mock. | `https://api.fda.gov` |
+| `OPENFDA_MIRROR_ENABLED` | Answer exact-key lookups from the [local bulk mirror](#local-bulk-mirror). | `false` |
 | `OPENFDA_MIRROR_PATH` | Directory holding one SQLite file per mirrored dataset. | `./data/openfda-mirror` |
-| `OPENFDA_MIRROR_REFRESH_CRON` | Cron expression for the in-process mirror refresh (HTTP transport only). Unset means no scheduled refresh. | none |
+| `OPENFDA_MIRROR_REFRESH_CRON` | Cron expression for the in-process mirror refresh (HTTP transport only). | none |
 | `OPENFDA_MIRROR_FALLBACK_LIVE` | Fall back to the live API when the mirror is cold, missing the record, or failing. | `true` |
-| `OPENFDA_MIRROR_REFRESH_TIMEOUT_MS` | Wall-clock budget for one refresh before it is aborted. | `21600000` (6h) |
+| `OPENFDA_MIRROR_REFRESH_TIMEOUT_MS` | Wall-clock budget for one refresh before it is aborted, in ms. | `21600000` (6h) |
 | `OPENFDA_MIRROR_BASE_URL` | Host serving the bulk download manifest (`download.json`). | `https://api.fda.gov` |
-| `CANVAS_PROVIDER_TYPE` | Set to `duckdb` to enable DataCanvas staging — analytical SQL over result sets staged with `stage: true` and queried via `openfda_dataframe_query`. Requires the optional `@duckdb/node-api` dependency. | `none` (disabled) |
-| `OTEL_ENABLED` | Enable OpenTelemetry | `false` |
+| `CANVAS_PROVIDER_TYPE` | Set `duckdb` to enable DataCanvas staging and the `openfda_dataframe_*` tools. | `none` |
+| `OPENFDA_DATAFRAME_DROP_ENABLED` | Enable `openfda_dataframe_drop`, which deletes a staged table. Needs `CANVAS_PROVIDER_TYPE=duckdb`. | `false` |
+| `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |
+| `MCP_HTTP_PORT` | HTTP server port. | `3010` |
+| `MCP_SESSION_MODE` | HTTP session mode: `stateless`, `stateful`, or `auto`. | `stateless` |
+| `MCP_AUTH_MODE` | Authentication: `none`, `jwt`, or `oauth`. | `none` |
+| `MCP_LOG_LEVEL` | Log level (`debug`, `info`, `warning`, `error`, etc.). | `info` |
+| `LOGS_DIR` | Directory for log files (Node.js only). | `<app-root>/logs` |
+| `STORAGE_PROVIDER_TYPE` | Storage backend: `in-memory`, `filesystem`, `supabase`, `cloudflare-kv/r2/d1`. | `in-memory` |
+| `OTEL_ENABLED` | Enable [OpenTelemetry](https://github.com/cyanheads/mcp-ts-core/tree/main/docs/telemetry). | `false` |
 
 See [`.env.example`](./.env.example) for the full list of optional overrides.
 
 ### Local bulk mirror
 
-openFDA publishes whole-dataset JSON dumps alongside the API. With `OPENFDA_MIRROR_ENABLED=true` the server keeps a local SQLite copy of four of them — `drug/label`, `drug/ndc`, `drug/enforcement`, `drug/drugsfda` — and answers eligible lookups from it, leaving the API budget for everything else.
+With `OPENFDA_MIRROR_ENABLED=true` the server keeps a local SQLite copy of four openFDA bulk dumps (`drug/label`, `drug/ndc`, `drug/enforcement`, `drug/drugsfda`) and answers eligible lookups from it. openFDA ranks results in Elasticsearch, which a local corpus can't reproduce, so a query is answered locally only when all of these hold, and goes to the API otherwise:
 
-The mirror is deliberately narrow. openFDA's `search` runs server-side in Elasticsearch, which tokenises and ranks; a local corpus cannot reproduce that. A query is answered locally only when all of the following hold, and is sent to the API otherwise:
-
-- the search is a single quoted `field:"value"` term — no boolean operators, wildcards, or ranges;
-- the field is one of `id`, `set_id`, `product_id`, `product_ndc`, `recall_number`, `event_id`, `application_number`, and the value is a whole identifier in its canonical spelling and case;
-- there is no `count` and no `sort`, and `skip` is 0;
-- the value matches exactly one record.
-
-The last condition is what keeps a mirrored answer identical to the API's rather than merely equivalent. Four of the seven lookup fields are primary keys and always match one record. The other three — `set_id`, `product_ndc`, `event_id` — can address several, and openFDA returns those in relevance order, which a local corpus cannot recompute; such a lookup routes to the API whatever the requested page size.
-
-`openfda_count_values` therefore always runs against the API — a partial mirror would return plausible but incomplete aggregates.
+- the search is a single quoted `field:"value"` term on `id`, `set_id`, `product_id`, `product_ndc`, `recall_number`, `event_id`, or `application_number`, with a whole identifier in its canonical spelling and case
+- there is no `count` and no `sort`, and `skip` is 0
+- the value matches exactly one record, so the mirrored answer is the API's answer
 
 The initial harvest runs out-of-band, never at startup:
 
 ```sh
 bun run mirror:init                  # all four datasets
-bun run mirror:init drug/enforcement # one dataset (~3.8 MB compressed)
+bun run mirror:init drug/enforcement # one dataset
 bun run mirror:status                # sync state per dataset
 bun run mirror:verify                # integrity check + row counts
 bun run mirror:refresh               # re-harvest datasets whose dump has advanced
 ```
 
-openFDA publishes no incremental API for these endpoints, so a refresh re-reads the whole dump and tombstones records the new export no longer carries. It is idempotent and resumable — re-running after an interrupt continues from the persisted cursor. Set `OPENFDA_MIRROR_REFRESH_CRON` to run it in-process on the HTTP transport; on stdio, run `bun run mirror:refresh` from the host.
+openFDA has no incremental feed for these datasets, so a refresh re-reads the whole dump, tombstones records the new export drops, and resumes where it stopped after an interruption. Set `OPENFDA_MIRROR_REFRESH_CRON` to run it in-process on the HTTP transport; on stdio, run `bun run mirror:refresh` from the host. A mirrored response's `meta.lastUpdated` is the served dump's stamp, which can differ from the live API's.
 
-`meta.lastUpdated` on a mirrored response reports the `last_updated` stamp of the dump being served, which can differ from the live API's — the API index and the published dumps advance on separate schedules.
-
-On Node, install the optional `better-sqlite3` peer dependency; Bun uses its built-in `bun:sqlite`. `OPENFDA_MIRROR_REFRESH_CRON` additionally needs the optional `node-cron` peer dependency — without it the server refuses to start rather than run with a schedule it cannot honour.
+On Node, install the optional `better-sqlite3` peer dependency (Bun uses its built-in `bun:sqlite`). `OPENFDA_MIRROR_REFRESH_CRON` also needs the optional `node-cron` peer dependency; without it the server fails at startup.
 
 ## Running the server
 
@@ -392,19 +366,21 @@ docker build -t openfda-mcp-server .
 docker run --rm -p 3010:3010 openfda-mcp-server
 ```
 
-The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `/var/log/openfda-mcp-server`. OpenTelemetry peer dependencies are installed by default — build with `--build-arg OTEL_ENABLED=false` to omit them. Mount a volume over `/usr/src/app/data/openfda-mirror` to persist an `OPENFDA_MIRROR_ENABLED=true` harvest across container replacement.
+The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `/var/log/openfda-mcp-server`. OpenTelemetry peer dependencies are installed by default; build with `--build-arg OTEL_ENABLED=false` to omit them. To keep a mirror harvest across container replacement, mount a volume over `/usr/src/app/data/openfda-mirror`.
 
 ## Project structure
 
 | Directory | Purpose |
 |:---|:---|
-| `src/index.ts` | Entry point — `createApp()` with tool registration and service setup. |
-| `src/config/` | Server-specific env var parsing and validation with Zod. |
-| `src/services/openfda/` | openFDA API client with retry, rate-limit handling, and error normalization. |
-| `src/services/openfda/mirror/` | Opt-in local bulk mirror — dataset registry, dump reader, sync ingester, and the query gate that decides mirror vs live. |
-| `src/services/canvas/` | DataCanvas accessor — resolves the active canvas provider for staging and SQL. |
-| `src/mcp-server/tools/definitions/` | Tool definitions (`*.tool.ts`). Fourteen openFDA tools. |
-| `tests/` | Unit and integration tests mirroring `src/`. |
+| `src/index.ts` | `createApp()` entry point: tool registration, service setup, mirror refresh wiring. |
+| `src/config` | Server-specific environment variable parsing and validation with Zod. |
+| `src/mcp-server/tools/definitions` | Tool definitions (`*.tool.ts`), fourteen in all. |
+| `src/mcp-server/tools` | Shared tool helpers: per-endpoint field catalog, input schemas and guards, formatters, SPL table rendering. |
+| `src/services/openfda` | openFDA API client (retry, rate limits, error normalization), inline page budget, canvas staging. |
+| `src/services/openfda/mirror` | Opt-in local bulk mirror: dataset registry, dump reader, harvester, mirror-vs-live query gate, refresh schedule. |
+| `src/services/canvas` | DataCanvas accessor for staging and SQL. |
+| `scripts/openfda-mirror.ts` | Mirror lifecycle CLI behind the `mirror:*` scripts. |
+| `tests/` | Unit and integration tests, mirroring the `src/` structure. |
 
 ## Development guide
 
@@ -412,14 +388,14 @@ See [`CLAUDE.md`](./CLAUDE.md) for development guidelines and architectural rule
 
 - Handlers throw, framework catches — no `try/catch` in tool logic
 - Use `ctx.log` for request-scoped logging
-- Register new tools in `src/mcp-server/tools/definitions/index.ts`
-- Validate raw upstream data → normalize to the output schema → never fabricate a field openFDA didn't return
+- Register new tools in the barrel at `src/mcp-server/tools/definitions/index.ts`
+- Wrap external API calls: validate raw → normalize to domain type → return output schema; never fabricate a field openFDA didn't return
 
 ## Data attribution
 
-Data is served from [openFDA](https://open.fda.gov), a U.S. Food and Drug Administration service. Under the [openFDA license](https://open.fda.gov/license/) the data is dedicated to the public domain under CC0 1.0, with one exception: GMDN® device-classification content — Term Code, Term Name, and Term Definition — is licensed from The GMDN Agency, and redistributing it or using it to train AI requires a separate licence from the Agency.
+Data comes from [openFDA](https://open.fda.gov), a U.S. Food and Drug Administration service. Under the [openFDA license](https://open.fda.gov/license/) the data is dedicated to the public domain under CC0 1.0, with one exception: GMDN® device-classification content (Term Code, Term Name, and Term Definition) is licensed from The GMDN Agency, and redistributing it or using it to train AI requires a separate licence from the Agency.
 
-The local mirror therefore covers drug datasets only. `device/classification` and every other device endpoint are excluded from it, and the ingester rejects any record carrying a GMDN-bearing field rather than writing it to disk. Extending the mirror to device data requires clearing that licence first.
+That is why the local mirror covers drug datasets only. `device/classification` and every other device endpoint are excluded from it, and the ingester rejects any record carrying a GMDN-bearing field rather than writing it to disk.
 
 FDA does not endorse this project. Do not rely on openFDA to make decisions regarding medical care.
 
