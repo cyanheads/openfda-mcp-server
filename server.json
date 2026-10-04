@@ -18,7 +18,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/openfda-mcp-server",
-      "runtimeHint": "bun",
+      "runtimeHint": "npx",
       "version": "0.7.9",
       "environmentVariables": [
         {
@@ -26,6 +26,20 @@
           "description": "Free API key from open.fda.gov — increases daily limit from 1K to 120K requests.",
           "format": "string",
           "isRequired": false
+        },
+        {
+          "name": "CANVAS_PROVIDER_TYPE",
+          "description": "Set to 'duckdb' to enable DataCanvas staging: stage=true or a canvas_id on an openfda_search_* tool or openfda_lookup_ndc stages the matched records as a SQL table, and the openfda_dataframe_* tools are listed. The DuckDB binding ships with the server.",
+          "format": "string",
+          "isRequired": false,
+          "default": "none"
+        },
+        {
+          "name": "OPENFDA_DATAFRAME_DROP_ENABLED",
+          "description": "Enable openfda_dataframe_drop, which deletes a table staged on a DataCanvas. Off by default; applies only when DataCanvas is enabled (CANVAS_PROVIDER_TYPE=duckdb).",
+          "format": "string",
+          "isRequired": false,
+          "default": "false"
         },
         {
           "name": "OPENFDA_MIRROR_ENABLED",
@@ -84,7 +98,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@cyanheads/openfda-mcp-server",
-      "runtimeHint": "bun",
+      "runtimeHint": "npx",
       "version": "0.7.9",
       "environmentVariables": [
         {
@@ -95,10 +109,9 @@
         },
         {
           "name": "MCP_TRANSPORT_TYPE",
-          "description": "Must be set to 'http' for streamable HTTP transport.",
+          "description": "Selects the HTTP transport.",
           "format": "string",
-          "isRequired": true,
-          "default": "http"
+          "value": "http"
         },
         {
           "name": "MCP_HTTP_HOST",
@@ -127,6 +140,20 @@
           "format": "string",
           "isRequired": false,
           "default": "none"
+        },
+        {
+          "name": "CANVAS_PROVIDER_TYPE",
+          "description": "Set to 'duckdb' to enable DataCanvas staging: stage=true or a canvas_id on an openfda_search_* tool or openfda_lookup_ndc stages the matched records as a SQL table, and the openfda_dataframe_* tools are listed. The DuckDB binding ships with the server.",
+          "format": "string",
+          "isRequired": false,
+          "default": "none"
+        },
+        {
+          "name": "OPENFDA_DATAFRAME_DROP_ENABLED",
+          "description": "Enable openfda_dataframe_drop, which deletes a table staged on a DataCanvas. Off by default; applies only when DataCanvas is enabled (CANVAS_PROVIDER_TYPE=duckdb).",
+          "format": "string",
+          "isRequired": false,
+          "default": "false"
         },
         {
           "name": "OPENFDA_MIRROR_ENABLED",

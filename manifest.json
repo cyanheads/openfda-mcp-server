@@ -23,6 +23,8 @@
         "MCP_AUTH_MODE": "none",
         "NODE_ENV": "production",
         "OPENFDA_API_KEY": "${user_config.openfda_api_key}",
+        "CANVAS_PROVIDER_TYPE": "${user_config.canvas_provider_type}",
+        "OPENFDA_DATAFRAME_DROP_ENABLED": "${user_config.openfda_dataframe_drop_enabled}",
         "OPENFDA_MIRROR_ENABLED": "${user_config.openfda_mirror_enabled}",
         "OPENFDA_MIRROR_PATH": "${user_config.openfda_mirror_path}",
         "OPENFDA_MIRROR_REFRESH_CRON": "${user_config.openfda_mirror_refresh_cron}",
@@ -46,6 +48,20 @@
       "required": false,
       "sensitive": true,
       "default": ""
+    },
+    "canvas_provider_type": {
+      "type": "string",
+      "title": "DataCanvas provider",
+      "description": "Set to duckdb to enable DataCanvas staging (stage=true on the search tools) and the openfda_dataframe_* tools. Leave none to keep it off.",
+      "required": false,
+      "default": "none"
+    },
+    "openfda_dataframe_drop_enabled": {
+      "type": "string",
+      "title": "Enable dataframe drop",
+      "description": "Set to true to enable openfda_dataframe_drop, which deletes a table staged on a DataCanvas. Applies only when DataCanvas is enabled (CANVAS_PROVIDER_TYPE=duckdb).",
+      "required": false,
+      "default": "false"
     },
     "openfda_mirror_enabled": {
       "type": "string",
