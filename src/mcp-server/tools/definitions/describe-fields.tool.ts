@@ -4,6 +4,7 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import { internalError } from '@cyanheads/mcp-ts-core/errors';
 import {
   countExpression,
   getCatalogedEndpoints,
@@ -63,7 +64,9 @@ export const describeFieldsTool = tool('openfda_describe_fields', {
     // This should not happen since input is constrained to cataloged endpoints,
     // but guard defensively so a future catalog gap doesn't silently return wrong data.
     if (!groups) {
-      throw new Error(`No field catalog found for endpoint: ${input.endpoint}`);
+      throw internalError(`No field catalog found for endpoint: ${input.endpoint}`, {
+        endpoint: input.endpoint,
+      });
     }
 
     ctx.log.info('Describe fields requested', { endpoint: input.endpoint });
