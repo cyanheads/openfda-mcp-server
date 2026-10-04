@@ -261,6 +261,29 @@ describe('openfda_get_drug_label', () => {
       expect(notice).not.toContain('Available on this page');
     });
 
+    it('projects each record onto the requested sections it carries when presence varies', async () => {
+      const { boxed_warning: _omitted, ...withoutBoxedWarning } = oversizedLabel();
+      mockQuery.mockResolvedValue({
+        meta: { total: 2, skip: 0, limit: 5, lastUpdated: '2026-01-01' },
+        results: [oversizedLabel(), { ...withoutBoxedWarning, set_id: 'set-2', id: 'id-2' }],
+      });
+
+      const result = await getDrugLabelTool.handler(
+        getDrugLabelTool.input.parse({
+          search: 'openfda.generic_name:"warfarin"',
+          sections: ['boxed_warning'],
+        }),
+        ctx,
+      );
+
+      expect(result.kind).toBe('full');
+      expect(result.results?.[0]?.boxed_warning).toEqual(['B'.repeat(9_000)]);
+      expect(Object.keys(result.results?.[1] ?? {}).sort()).toEqual(
+        ['effective_time', 'id', 'openfda', 'set_id', 'version'].sort(),
+      );
+      expect(String(getEnrichment(ctx).notice ?? '')).not.toContain('Not present on this page');
+    });
+
     it('cuts the payload well below the unfiltered record', async () => {
       const selected = await getDrugLabelTool.handler(
         getDrugLabelTool.input.parse({

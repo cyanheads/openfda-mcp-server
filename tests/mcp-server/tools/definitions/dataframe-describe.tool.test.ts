@@ -3,8 +3,8 @@
  * @module tests/mcp-server/tools/definitions/dataframe-describe.tool.test
  */
 
-import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { dataframeDescribeTool } from '@/mcp-server/tools/definitions/dataframe-describe.tool.js';
 
@@ -57,12 +57,11 @@ describe('openfda_dataframe_describe', () => {
 
   it('throws a typed canvas_disabled error (not -32603) when canvas is not enabled', async () => {
     await setCanvasMock(undefined);
-    const ctx = createMockContext({ errors: dataframeDescribeTool.errors });
-    const input = dataframeDescribeTool.input.parse({ canvas_id: 'cv_abc1234' });
-    const err = (await Promise.resolve(dataframeDescribeTool.handler(input, ctx)).catch(
-      (e) => e,
-    )) as McpError;
-    expect(err).toBeInstanceOf(McpError);
+    // The contract runner applies the framework's declared-recovery fill, as production does.
+    const result = await runToolContract(dataframeDescribeTool, { canvas_id: 'cv_abc1234' });
+    expect(result.isError).toBe(true);
+    const err = (result.structuredContent as unknown as { error: { code: number; data: unknown } })
+      .error;
     expect(err.code).toBe(JsonRpcErrorCode.ValidationError); // typed, not InternalError (-32603)
     expect(err.data).toMatchObject({ reason: 'canvas_disabled' });
     expect((err.data as { recovery?: { hint?: string } }).recovery?.hint).toContain(

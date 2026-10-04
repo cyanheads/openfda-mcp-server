@@ -413,7 +413,6 @@ export const drugProfileTool = tool('openfda_drug_profile', {
       throw ctx.fail(
         'blank_drug_name',
         `"${input.drug}" has no searchable characters, so it cannot be resolved to an FDA drug.`,
-        { ...ctx.recoveryFor('blank_drug_name') },
       );
     }
     // Escaped once here; every interpolation below uses the escaped form, so a

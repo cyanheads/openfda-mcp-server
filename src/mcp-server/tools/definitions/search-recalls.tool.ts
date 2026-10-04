@@ -245,7 +245,6 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       throw ctx.fail(
         'recall_endpoint_non_device',
         'The recall endpoint is only available for devices. Use enforcement for drug and food recalls.',
-        { ...ctx.recoveryFor('recall_endpoint_non_device') },
       );
     }
 
@@ -264,7 +263,6 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       throw ctx.fail(
         'canvas_disabled',
         'Staging requires DataCanvas. Set CANVAS_PROVIDER_TYPE=duckdb, or drop stage/canvas_id for the inline page.',
-        { ...ctx.recoveryFor('canvas_disabled') },
       );
     }
 

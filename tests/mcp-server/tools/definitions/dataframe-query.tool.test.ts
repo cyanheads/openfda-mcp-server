@@ -7,11 +7,11 @@
 
 import {
   JsonRpcErrorCode,
-  McpError,
+  type McpError,
   notFound,
   validationError,
 } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { dataframeQueryTool } from '@/mcp-server/tools/definitions/dataframe-query.tool.js';
 
@@ -42,8 +42,20 @@ async function setFailingCanvas(err: unknown, failOn: 'query' | 'acquire' = 'que
   });
 }
 
-const recoveryHint = (err: McpError) =>
+const recoveryHint = (err: { data?: unknown }) =>
   (err.data as { recovery?: { hint?: string } }).recovery?.hint ?? '';
+
+type ErrorEnvelope = { code: number; message: string; data: Record<string, unknown> };
+
+/**
+ * Runs the tool through its contract boundary — which applies the framework's
+ * declared-recovery fill, as production does — and returns the error envelope.
+ */
+async function contractError(args: { canvas_id: string; query: string }): Promise<ErrorEnvelope> {
+  const result = await runToolContract(dataframeQueryTool, args);
+  expect(result.isError).toBe(true);
+  return (result.structuredContent as unknown as { error: ErrorEnvelope }).error;
+}
 
 describe('openfda_dataframe_query', () => {
   beforeEach(async () => {
@@ -75,12 +87,7 @@ describe('openfda_dataframe_query', () => {
 
   it('throws a typed canvas_disabled error (not -32603) when canvas is not enabled', async () => {
     await setCanvasMock(undefined);
-    const ctx = createMockContext({ errors: dataframeQueryTool.errors });
-    const input = dataframeQueryTool.input.parse({ canvas_id: 'cv_abc1234', query: 'SELECT 1' });
-    const err = (await Promise.resolve(dataframeQueryTool.handler(input, ctx)).catch(
-      (e) => e,
-    )) as McpError;
-    expect(err).toBeInstanceOf(McpError);
+    const err = await contractError({ canvas_id: 'cv_abc1234', query: 'SELECT 1' });
     expect(err.code).toBe(JsonRpcErrorCode.ValidationError); // typed, not InternalError (-32603)
     expect(err.data).toMatchObject({ reason: 'canvas_disabled' });
     expect(recoveryHint(err)).toContain('CANVAS_PROVIDER_TYPE');
@@ -176,16 +183,10 @@ describe('openfda_dataframe_query — canvas error mapping (#28)', () => {
         },
       ),
     );
-    const ctx = createMockContext({ errors: dataframeQueryTool.errors });
-    const err = (await Promise.resolve(
-      dataframeQueryTool.handler(
-        dataframeQueryTool.input.parse({
-          canvas_id: 'cv_abc1234',
-          query: "INSERT INTO spilled_x VALUES ('x')",
-        }),
-        ctx,
-      ),
-    ).catch((e) => e)) as McpError;
+    const err = await contractError({
+      canvas_id: 'cv_abc1234',
+      query: "INSERT INTO spilled_x VALUES ('x')",
+    });
 
     expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
     expect(err.data).toMatchObject({
@@ -204,16 +205,10 @@ describe('openfda_dataframe_query — canvas error mapping (#28)', () => {
         reason: 'plan_operator_not_allowed',
       }),
     );
-    const ctx = createMockContext({ errors: dataframeQueryTool.errors });
-    const err = (await Promise.resolve(
-      dataframeQueryTool.handler(
-        dataframeQueryTool.input.parse({
-          canvas_id: 'cv_abc1234',
-          query: "SELECT * FROM read_csv('/etc/passwd')",
-        }),
-        ctx,
-      ),
-    ).catch((e) => e)) as McpError;
+    const err = await contractError({
+      canvas_id: 'cv_abc1234',
+      query: "SELECT * FROM read_csv('/etc/passwd')",
+    });
 
     expect(err.data).toMatchObject({ reason: 'invalid_query' });
     expect(recoveryHint(err)).toContain('openfda_dataframe_describe');
@@ -284,16 +279,10 @@ describe('openfda_dataframe_query — canvas error mapping (#28)', () => {
         recovery: { hint: 'Re-stage the table via registerTable() or call describe().' },
       }),
     );
-    const ctx = createMockContext({ errors: dataframeQueryTool.errors });
-    const err = (await Promise.resolve(
-      dataframeQueryTool.handler(
-        dataframeQueryTool.input.parse({
-          canvas_id: 'cv_abc1234',
-          query: 'SELECT * FROM spilled_gone',
-        }),
-        ctx,
-      ),
-    ).catch((e) => e)) as McpError;
+    const err = await contractError({
+      canvas_id: 'cv_abc1234',
+      query: 'SELECT * FROM spilled_gone',
+    });
 
     expect(err.code).toBe(JsonRpcErrorCode.NotFound);
     expect(err.data).toMatchObject({ reason: 'missing_table', tableName: 'spilled_gone' });
@@ -309,13 +298,7 @@ describe('openfda_dataframe_query — canvas error mapping (#28)', () => {
       }),
       'acquire',
     );
-    const ctx = createMockContext({ errors: dataframeQueryTool.errors });
-    const err = (await Promise.resolve(
-      dataframeQueryTool.handler(
-        dataframeQueryTool.input.parse({ canvas_id: 'cv_gone001', query: 'SELECT 1' }),
-        ctx,
-      ),
-    ).catch((e) => e)) as McpError;
+    const err = await contractError({ canvas_id: 'cv_gone001', query: 'SELECT 1' });
 
     expect(err.code).toBe(JsonRpcErrorCode.NotFound);
     expect(err.data).toMatchObject({ reason: 'canvas_not_found' });

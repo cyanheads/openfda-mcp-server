@@ -189,7 +189,6 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       throw ctx.fail(
         'canvas_disabled',
         'Staging requires DataCanvas. Set CANVAS_PROVIDER_TYPE=duckdb, or drop stage/canvas_id for the inline page.',
-        { ...ctx.recoveryFor('canvas_disabled') },
       );
     }
 

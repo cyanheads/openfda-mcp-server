@@ -9,8 +9,8 @@
  * @module tests/mcp-server/tools/definitions/pagination-contract.test
  */
 
-import { McpError } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
+import type { AnyToolDefinition } from '@cyanheads/mcp-ts-core/tools';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
@@ -58,27 +58,21 @@ describe.each(PAGINATED_TOOLS.map(([tool, input]) => [tool.name, tool, input] as
     });
 
     it('raises the declared reason and recovery for an over-ceiling skip', async () => {
-      const ctx = createMockContext({ errors: tool.errors });
-      const parsed = tool.input.parse({ ...baseInput, skip: OPENFDA_MAX_SKIP + 1 });
+      // The contract runner applies the framework's declared-recovery fill, as production does.
+      const result = await runToolContract(tool as AnyToolDefinition, {
+        ...baseInput,
+        skip: OPENFDA_MAX_SKIP + 1,
+      });
 
-      const error = await (tool.handler as (i: unknown, c: unknown) => Promise<unknown>)(
-        parsed,
-        ctx,
-      ).then(
-        () => null,
-        (e: unknown) => e,
-      );
-
-      expect(error).toBeInstanceOf(McpError);
-      const data = (error as McpError).data as {
-        reason?: string;
-        recovery?: { hint?: string };
+      expect(result.isError).toBe(true);
+      const { error } = result.structuredContent as unknown as {
+        error: { message: string; data?: { reason?: string; recovery?: { hint?: string } } };
       };
-      expect(data.reason).toBe('pagination_limit_reached');
-      expect(data.recovery?.hint).toEqual(
+      expect(error.data?.reason).toBe('pagination_limit_reached');
+      expect(error.data?.recovery?.hint).toEqual(
         tool.errors?.find((e) => e.reason === 'pagination_limit_reached')?.recovery,
       );
-      expect((error as McpError).message).toContain(String(OPENFDA_MAX_SKIP));
+      expect(error.message).toContain(String(OPENFDA_MAX_SKIP));
       // The ceiling is decided locally — no upstream request is spent on it.
       expect(mockQuery).not.toHaveBeenCalled();
     });

@@ -80,7 +80,6 @@ export const dataframeDescribeTool = tool('openfda_dataframe_describe', {
       throw ctx.fail(
         'canvas_disabled',
         'DataCanvas is not enabled. Set CANVAS_PROVIDER_TYPE=duckdb to use openfda_dataframe_describe.',
-        { ...ctx.recoveryFor('canvas_disabled') },
       );
     }
 

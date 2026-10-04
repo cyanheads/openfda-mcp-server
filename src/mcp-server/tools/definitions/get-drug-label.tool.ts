@@ -105,13 +105,22 @@ function unknownSectionNotice(
  * Projects a page to the requested sections plus the always-kept metadata and
  * measures the result the way the outline budget is measured, so a byte figure
  * quoted in a notice is the figure a caller following that notice gets back.
+ *
+ * Section presence varies per label, and `selectSections` rejects a name the
+ * record lacks, so each record is projected onto the requested names it
+ * carries. Names absent from the whole page are reported by
+ * {@link unknownSectionNotice}, not thrown.
  */
 function projectPage(
   records: Record<string, unknown>[],
   sections: string[],
 ): { bytes: number; results: Partial<Record<string, unknown>>[] } {
   const results = records.map((record) =>
-    selectSections(record, sections, { alwaysKeep: LABEL_METADATA_KEYS }),
+    selectSections(
+      record,
+      sections.filter((name) => Object.hasOwn(record, name)),
+      { alwaysKeep: LABEL_METADATA_KEYS },
+    ),
   );
   return { bytes: JSON.stringify({ results }).length, results };
 }

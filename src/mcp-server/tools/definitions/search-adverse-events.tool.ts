@@ -217,7 +217,6 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       throw ctx.fail(
         'canvas_disabled',
         'Staging requires DataCanvas. Set CANVAS_PROVIDER_TYPE=duckdb, or drop stage/canvas_id for the inline page.',
-        { ...ctx.recoveryFor('canvas_disabled') },
       );
     }
 

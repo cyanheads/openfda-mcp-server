@@ -135,7 +135,6 @@ export const dataframeQueryTool = tool('openfda_dataframe_query', {
       throw ctx.fail(
         'canvas_disabled',
         'DataCanvas is not enabled. Set CANVAS_PROVIDER_TYPE=duckdb to use openfda_dataframe_query.',
-        { ...ctx.recoveryFor('canvas_disabled') },
       );
     }
 
@@ -155,24 +154,20 @@ export const dataframeQueryTool = tool('openfda_dataframe_query', {
         throw ctx.fail(
           'canvas_not_found',
           `Canvas "${input.canvas_id}" is not an active session — it expired or never existed.`,
-          { ...ctx.recoveryFor('canvas_not_found') },
         );
       }
       if (reason === 'missing_table') {
         throw ctx.fail(
           'missing_table',
           `Table ${tableName ? `"${tableName}" ` : ''}is not on canvas "${input.canvas_id}".`,
-          { ...ctx.recoveryFor('missing_table'), ...(tableName ? { tableName } : {}) },
+          tableName ? { tableName } : undefined,
         );
       }
       if (reason === SQL_GATE_REASONS.invalidSql) {
         throw ctx.fail(
           'invalid_query',
           `SQL rejected: ${binderMessage ?? 'the query failed to prepare'}.`,
-          {
-            ...ctx.recoveryFor('invalid_query'),
-            canvas_reason: reason,
-          },
+          { canvas_reason: reason },
         );
       }
       if (reason === DUCKDB_ERROR_REASONS.sqlExecutionError) {
@@ -183,7 +178,6 @@ export const dataframeQueryTool = tool('openfda_dataframe_query', {
       }
       if (reason && reason in SQL_REJECTION_DETAIL) {
         throw ctx.fail('invalid_query', `SQL rejected: ${SQL_REJECTION_DETAIL[reason]}.`, {
-          ...ctx.recoveryFor('invalid_query'),
           canvas_reason: reason,
         });
       }

@@ -185,7 +185,6 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
       throw ctx.fail(
         'canvas_disabled',
         'Staging requires DataCanvas. Set CANVAS_PROVIDER_TYPE=duckdb, or drop stage/canvas_id for the inline page.',
-        { ...ctx.recoveryFor('canvas_disabled') },
       );
     }
 

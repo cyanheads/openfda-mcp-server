@@ -8,7 +8,7 @@
  * @module mcp-server/tools/schema-utils
  */
 
-import { type TypedFail, type TypedRecoveryFor, z } from '@cyanheads/mcp-ts-core';
+import { type TypedFail, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 
 /**
@@ -51,7 +51,6 @@ export const SKIP_DESCRIPTION = `Number of records to skip for pagination (defau
  */
 type PaginationCeilingContext = {
   fail: TypedFail<'pagination_limit_reached'>;
-  recoveryFor: TypedRecoveryFor<'pagination_limit_reached'>;
 };
 
 /**
@@ -65,7 +64,6 @@ export function assertSkipWithinCeiling(skip: number, ctx: PaginationCeilingCont
     throw ctx.fail(
       'pagination_limit_reached',
       `skip=${skip} exceeds openFDA's ${OPENFDA_MAX_SKIP}-record pagination ceiling.`,
-      { ...ctx.recoveryFor('pagination_limit_reached') },
     );
   }
 }
@@ -248,7 +246,6 @@ export const malformedSearchError = {
 /** The slice of a handler's `ctx` {@link assertSearchDelimitersBalanced} needs. */
 type MalformedSearchContext = {
   fail: TypedFail<'malformed_search'>;
-  recoveryFor: TypedRecoveryFor<'malformed_search'>;
 };
 
 /**
@@ -280,9 +277,7 @@ export function assertSearchDelimitersBalanced(
   if (search === undefined) return;
   const fault = findSearchDelimiterFault(search);
   if (!fault) return;
-  throw ctx.fail('malformed_search', SEARCH_FAULT_MESSAGE[fault], {
-    ...ctx.recoveryFor('malformed_search'),
-  });
+  throw ctx.fail('malformed_search', SEARCH_FAULT_MESSAGE[fault]);
 }
 
 /**

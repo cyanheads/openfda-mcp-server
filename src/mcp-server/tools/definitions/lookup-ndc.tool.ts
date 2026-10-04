@@ -191,7 +191,6 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
       throw ctx.fail(
         'canvas_disabled',
         'Staging requires DataCanvas. Set CANVAS_PROVIDER_TYPE=duckdb, or drop stage/canvas_id for the inline page.',
-        { ...ctx.recoveryFor('canvas_disabled') },
       );
     }
 

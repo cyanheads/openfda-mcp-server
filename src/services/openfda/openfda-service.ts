@@ -267,7 +267,7 @@ export class OpenFdaService {
    * to `error.data`. Non-`McpError` throws (network errors, JSON parse failures)
    * and status-less `McpError`s (timeout, abort) propagate unchanged — they are
    * already correctly classified. The reclassified reasons match the calling
-   * tools' `errors[]` contracts so `ctx.recoveryFor` carries the recovery hint.
+   * tools' `errors[]` contracts, so the framework fills each declared recovery hint.
    */
   private async classifyError<T>(
     error: unknown,
@@ -294,7 +294,7 @@ export class OpenFdaService {
         // either 404 — and it fails as written whatever the search matches.
         const verdict = countVerdict(endpoint, params.count);
         if (verdict.kind === 'none' || verdict.kind === 'wrong_form') {
-          throw this.notAggregatableError(endpoint, params.count, ctx);
+          throw this.notAggregatableError(endpoint, params.count);
         }
         // Only a count query can produce this marker; keyed on `params.count` so
         // the error can always name the expression it is telling the caller to fix.
@@ -312,7 +312,7 @@ export class OpenFdaService {
         this.apiKey
           ? 'openFDA rate limit exceeded (240 req/min or 120K/day with key). Retry after a brief wait.'
           : 'openFDA rate limit exceeded (240 req/min or 1K/day without key). Configure OPENFDA_API_KEY to increase to 120K/day.',
-        { reason: 'rate_limited', endpoint, ...ctx.recoveryFor('rate_limited') },
+        { reason: 'rate_limited', endpoint },
       );
     }
 
@@ -337,13 +337,12 @@ export class OpenFdaService {
           {
             reason: 'pagination_limit_reached',
             endpoint,
-            ...ctx.recoveryFor('pagination_limit_reached'),
           },
         );
       }
       throw validationError(
         `openFDA query error: ${message}. Check field names and query syntax — use AND/OR for boolean operators, quotes for exact match.`,
-        { reason: 'query_error', endpoint, ...ctx.recoveryFor('query_error') },
+        { reason: 'query_error', endpoint },
       );
     }
 
@@ -352,7 +351,7 @@ export class OpenFdaService {
       // can name the expression it is correcting; checked before the generic
       // marker set, which also matches this exception.
       if (params.count && OPENFDA_NOT_AGGREGATABLE_5XX.test(body)) {
-        throw this.notAggregatableError(endpoint, params.count, ctx, 'analyzed_text');
+        throw this.notAggregatableError(endpoint, params.count, 'analyzed_text');
       }
       // openFDA reports deterministic, user-fixable query failures (malformed
       // syntax, aggregation on a non-keyword field) as HTTP 5xx. Reclassify those
@@ -360,14 +359,13 @@ export class OpenFdaService {
       if (OPENFDA_QUERY_ERROR_5XX.test(body)) {
         throw validationError(
           `openFDA query error: ${message}. Check field names and query syntax — use AND/OR for boolean operators, quotes for exact match.`,
-          { reason: 'query_error', endpoint, ...ctx.recoveryFor('query_error') },
+          { reason: 'query_error', endpoint },
         );
       }
       throw serviceUnavailable(`openFDA upstream error: ${message}`, {
         reason: 'upstream_error',
         endpoint,
         status,
-        ...ctx.recoveryFor('upstream_error'),
       });
     }
 
@@ -419,7 +417,7 @@ export class OpenFdaService {
     verdict: Extract<CountVerdict, { kind: 'countable' | 'uncataloged' }>,
     ctx: Context,
   ): Promise<OpenFdaResponse<T>> {
-    if (!params.search) throw this.notAggregatableError(endpoint, count, ctx);
+    if (!params.search) throw this.notAggregatableError(endpoint, count);
     if (verdict.kind === 'uncataloged') {
       await this.queryLive(endpoint, { count, limit: 1 }, ctx, SIDE_REQUEST_RETRY);
     }
@@ -492,7 +490,6 @@ export class OpenFdaService {
   private notAggregatableError(
     endpoint: string,
     expression: string,
-    ctx: Context,
     cause: 'not_countable' | 'analyzed_text' = 'not_countable',
   ): McpError {
     const hasExact = expression.endsWith('.exact');
@@ -541,7 +538,7 @@ export class OpenFdaService {
           };
     return validationError(
       `openFDA cannot aggregate "${expression}" on ${endpoint}: ${diagnosis}. ${correction}`,
-      { ...data, ...ctx.recoveryFor('not_aggregatable') },
+      data,
     );
   }
 
