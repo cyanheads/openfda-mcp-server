@@ -1,6 +1,6 @@
 # openfda-mcp-server - Directory Structure
 
-Generated on: 2026-09-22 20:44:11
+Generated on: 2026-10-04 06:10:14
 
 ```text
 openfda-mcp-server/
@@ -31,6 +31,7 @@ openfda-mcp-server/
 │   ├── 0.5.x/
 │   ├── 0.6.x/
 │   ├── 0.7.x/
+│   ├── 0.8.x/
 │   └── template.md
 ├── claude-plans/
 ├── docs/
@@ -133,10 +134,12 @@ openfda-mcp-server/
 │   ├── clean-mcpb.ts
 │   ├── clean.ts
 │   ├── devcheck.ts
+│   ├── install-otel.ts
 │   ├── lint-mcp.ts
 │   ├── lint-packaging.ts
 │   ├── list-skills.ts
 │   ├── openfda-mirror.ts
+│   ├── prune-musl-packages.ts
 │   ├── release-github.ts
 │   ├── split-changelog.ts
 │   └── tree.ts
@@ -148,6 +151,7 @@ openfda-mcp-server/
 │   │       ├── definitions/
 │   │       │   ├── count-values.tool.ts
 │   │       │   ├── dataframe-describe.tool.ts
+│   │       │   ├── dataframe-drop.tool.ts
 │   │       │   ├── dataframe-query.tool.ts
 │   │       │   ├── describe-fields.tool.ts
 │   │       │   ├── drug-profile.tool.ts
@@ -198,7 +202,9 @@ openfda-mcp-server/
 │   │       │   ├── count-values.tool.test.ts
 │   │       │   ├── count-values.truncation.test.ts
 │   │       │   ├── dataframe-describe.tool.test.ts
+│   │       │   ├── dataframe-drop.tool.test.ts
 │   │       │   ├── dataframe-query.tool.test.ts
+│   │       │   ├── describe-fields.catalog-gap.test.ts
 │   │       │   ├── describe-fields.tool.test.ts
 │   │       │   ├── drug-profile-aliases.test.ts
 │   │       │   ├── drug-profile.tool.test.ts

@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.8.0](changelog/0.8.x/0.8.0.md) — 2026-10-03
+
+Adds openfda_dataframe_drop, opt-in through OPENFDA_DATAFRAME_DROP_ENABLED, and moves to mcp-ts-core 0.13.11: error responses now end with a request ID and no longer carry stack traces or request context.
+
 ## [0.7.9](changelog/0.7.x/0.7.9.md) — 2026-09-22
 
 openfda_get_drug_label renders *_table sections as Markdown tables; openfda_search_recalls renders and stages device/recall by its own field shape
