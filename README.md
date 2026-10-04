@@ -1,7 +1,7 @@
 <div align="center">
   <h1>@cyanheads/openfda-mcp-server</h1>
   <p><b>Query FDA data on drugs, food, devices, and recalls via openFDA. STDIO or Streamable HTTP.</b>
-  <div>14 Tools</div>
+  <div>15 Tools</div>
   </p>
 </div>
 
