@@ -13,6 +13,12 @@ const ServerConfigSchema = z.object({
     .describe('openFDA API key — increases daily request limit from 1K to 120K'),
   baseUrl: z.string().default('https://api.fda.gov').describe('openFDA API base URL'),
 
+  /* --- DataCanvas (opt-in; requires CANVAS_PROVIDER_TYPE=duckdb) --- */
+  dataframeDropEnabled: z
+    .stringbool()
+    .default(false)
+    .describe('Register openfda_dataframe_drop, which deletes a staged canvas table'),
+
   /* --- Local bulk mirror (opt-in; off by default) --- */
   mirrorEnabled: z
     .stringbool()
@@ -50,6 +56,7 @@ export function getServerConfig(): ServerConfig {
   _config ??= parseEnvConfig(ServerConfigSchema, {
     apiKey: 'OPENFDA_API_KEY',
     baseUrl: 'OPENFDA_BASE_URL',
+    dataframeDropEnabled: 'OPENFDA_DATAFRAME_DROP_ENABLED',
     mirrorEnabled: 'OPENFDA_MIRROR_ENABLED',
     mirrorPath: 'OPENFDA_MIRROR_PATH',
     mirrorRefreshCron: 'OPENFDA_MIRROR_REFRESH_CRON',

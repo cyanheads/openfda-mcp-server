@@ -78,7 +78,10 @@ describe('service-raised error reasons', () => {
    * `tool:reason` pairs whose handler catches the service throw and re-raises it
    * through its own `ctx.fail`, so the entry is correctly left unmarked.
    */
-  const RERAISED_BY_HANDLER = new Set(['openfda_dataframe_query:canvas_not_found']);
+  const RERAISED_BY_HANDLER = new Set([
+    'openfda_dataframe_query:canvas_not_found',
+    'openfda_dataframe_drop:canvas_not_found',
+  ]);
 
   const declared = allToolDefinitions.flatMap((definition: AnyToolDefinition) =>
     (definition.errors ?? [])

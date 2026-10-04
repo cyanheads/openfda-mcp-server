@@ -5,6 +5,7 @@
 
 import { countValuesTool } from './count-values.tool.js';
 import { dataframeDescribeTool } from './dataframe-describe.tool.js';
+import { dataframeDropTool } from './dataframe-drop.tool.js';
 import { dataframeQueryTool } from './dataframe-query.tool.js';
 import { describeFieldsTool } from './describe-fields.tool.js';
 import { drugProfileTool } from './drug-profile.tool.js';
@@ -33,4 +34,5 @@ export const allToolDefinitions = [
   drugProfileTool,
   dataframeDescribeTool,
   dataframeQueryTool,
+  dataframeDropTool,
 ];

@@ -65,4 +65,17 @@ describe('getServerConfig', () => {
       mirrorRefreshTimeoutMs: 600_000,
     });
   });
+
+  it('leaves openfda_dataframe_drop off by default', async () => {
+    vi.stubEnv('OPENFDA_API_KEY', '');
+    const { getServerConfig } = await import('@/config/server-config.js');
+    expect(getServerConfig().dataframeDropEnabled).toBe(false);
+  });
+
+  it('reads OPENFDA_DATAFRAME_DROP_ENABLED', async () => {
+    vi.stubEnv('OPENFDA_API_KEY', '');
+    vi.stubEnv('OPENFDA_DATAFRAME_DROP_ENABLED', 'true');
+    const { getServerConfig } = await import('@/config/server-config.js');
+    expect(getServerConfig().dataframeDropEnabled).toBe(true);
+  });
 });

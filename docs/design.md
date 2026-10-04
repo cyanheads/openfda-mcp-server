@@ -242,6 +242,19 @@ List the tables and column schemas on a DataCanvas. Call before `openfda_datafra
 
 **Returns:** `tables[]` (`name`, `kind`, `row_count`, `columns[]` of `name`/`type`/`nullable`), `canvas_id`.
 
+### `openfda_dataframe_drop`
+
+Delete one table or view from a DataCanvas, leaving the canvas and its other tables in place. Opt-in: registered as callable only when `OPENFDA_DATAFRAME_DROP_ENABLED=true`; otherwise wrapped in `disabledTool()`, so it stays on the landing page with the enable hint and is skipped at MCP registration.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `canvas_id` | string | Yes | Canvas ID from a search tool response — 10 URL-safe characters (`CanvasIdSchema`). |
+| `table` | string | Yes | Table or view name as `openfda_dataframe_describe` lists it; must match the framework's `CANVAS_IDENTIFIER_REGEX`. |
+
+**Returns:** `canvas_id`, `table`, `remaining_tables[]`. A table that is not on the canvas (already dropped, expired, or mistyped) fails as `missing_table`; an unknown canvas as `canvas_not_found`.
+
+**Decision — drop is off by default.** Possession of a `canvas_id` is the only access control on a canvas, so a drop tool lets any holder of the id delete data another caller staged. The surface stays read-only unless the operator opts in; staged tables otherwise age out on the canvas TTL.
+
 ---
 
 ## Response size
@@ -462,6 +475,7 @@ openFDA returns JSON error objects with `code`, `message`, and sometimes `detail
 | `OPENFDA_API_KEY` | No | Free API key from [open.fda.gov](https://open.fda.gov/apis/authentication/). Increases daily limit from 1K to 120K requests. Passed as `api_key` query parameter. |
 | `OPENFDA_BASE_URL` | No | Base URL override. Default: `https://api.fda.gov`. Useful for testing against a proxy or mock server. |
 | `CANVAS_PROVIDER_TYPE` | No | Set to `duckdb` to enable [DataCanvas staging](#datacanvas-staging-analytical-sql) — analytical SQL over result sets staged with `stage: true` and queried via `openfda_dataframe_query`. Default `none` (disabled). Requires the optional `@duckdb/node-api` dependency; unsupported on Cloudflare Workers. |
+| `OPENFDA_DATAFRAME_DROP_ENABLED` | No | Set to `true` to make `openfda_dataframe_drop` callable. Default `false` (listed as disabled). Meaningful only with `CANVAS_PROVIDER_TYPE=duckdb`. |
 | `OPENFDA_MIRROR_ENABLED` | No | Set to `true` to enable the [local bulk mirror](#local-bulk-mirror). Default `false`. Requires an out-of-band `bun run mirror:init` before it serves anything; on Node, the optional `better-sqlite3` peer dependency. Unsupported on Cloudflare Workers. |
 | `OPENFDA_MIRROR_PATH` | No | Directory holding one SQLite file per mirrored dataset. Default `./data/openfda-mirror`. |
 | `OPENFDA_MIRROR_REFRESH_CRON` | No | Cron expression for the in-process refresh. HTTP transport only; unset means no scheduled refresh. Requires the optional `node-cron` peer dependency — set without it, the server fails to start. |
