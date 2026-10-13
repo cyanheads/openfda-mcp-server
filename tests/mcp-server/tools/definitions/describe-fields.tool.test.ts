@@ -120,6 +120,23 @@ describe('openfda_describe_fields', () => {
     expect(queryTips).toMatch(/free-text fields/i);
   });
 
+  // Issue #62 — drug/shortages dates answer 404 to every YYYYMMDD query, so the
+  // generic tip defers to the field note, which names the accepted forms.
+  it('queryTips defers the date format to the field note (#62)', async () => {
+    const result = await describeFieldsTool.handler(
+      describeFieldsTool.input.parse({ endpoint: 'drug/shortages' }),
+      ctx,
+    );
+
+    expect(result.queryTips).not.toContain('Date fields accept YYYYMMDD format');
+    expect(result.queryTips).toMatch(/unless the field's note names another form/);
+
+    const text = textOf(describeFieldsTool.format!(result));
+    expect(text).toMatch(
+      /\| `update_date` \| date \| `update_date` \| [^|]*\[2026-01-01 TO 2026-12-31\][^|]*\|$/m,
+    );
+  });
+
   // The tips are where a caller learns query syntax before writing a `search`, so
   // they state the delimiter rule the handlers enforce locally. They also must not
   // promise that counting an analyzed field bare tallies its words — openFDA

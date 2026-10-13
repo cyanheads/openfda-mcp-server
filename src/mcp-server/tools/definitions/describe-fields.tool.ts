@@ -79,7 +79,7 @@ export const describeFieldsTool = tool('openfda_describe_fields', {
       'For aggregation in openfda_count_values, pass the countAs expression listed for each field; null means openFDA cannot aggregate that field bare or with .exact. ' +
       'For a field not listed here, count identifier fields bare (product_ndc, application_number, pma_number, unique_aer_id_number) — openFDA already indexes them as keywords and rejects .exact on them as not countable. ' +
       'Free-text fields are the opposite: count them with .exact (e.g. patient.reaction.reactionmeddrapt.exact, openfda.brand_name.exact), since openFDA refuses to aggregate the analyzed field bare rather than tallying its words. ' +
-      'Date fields accept YYYYMMDD format and support range syntax [20200101 TO 20221231].';
+      "Date fields take YYYYMMDD and range syntax [20200101 TO 20221231] unless the field's note names another form.";
 
     return {
       endpoint: input.endpoint,
