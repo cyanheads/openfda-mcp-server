@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-describe('getServerConfig', () => {
+/*
+ * Each test re-imports the config module after `vi.resetModules()`, and the first
+ * import transforms its whole dependency graph: up to ~330 ms alone, past the
+ * 5 s default when the full suite saturates the machine.
+ */
+describe('getServerConfig', { timeout: 20_000 }, () => {
   beforeEach(() => {
     vi.resetModules();
     vi.unstubAllEnvs();
