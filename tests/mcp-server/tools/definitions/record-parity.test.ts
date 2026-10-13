@@ -187,6 +187,8 @@ const CASES: Array<{ name: string; format: (r: never) => { text: string }[]; res
           secondary_reporter: 'SECONDARY-MARKER',
           type_of_information: 'Safety Issue',
           foreign_or_domestic: 'Domestic',
+          number_of_animals_treated: '2',
+          number_of_animals_affected: '1',
           treated_for_ae: 'TREATED-MARKER',
           health_assessment_prior_to_exposure: {
             condition: 'Good',
@@ -269,7 +271,15 @@ const CASES: Array<{ name: string; format: (r: never) => { text: string }[]; res
         {
           generic_name: 'Carboplatin Injection',
           status: 'Current',
+          availability: 'AVAILABILITY-MARKER',
+          therapeutic_category: ['Oncology'],
+          dosage_form: 'Injection, solution',
+          presentation: 'PRESENTATION-MARKER',
           company_name: 'COMPANY-MARKER',
+          contact_info: 'CONTACT-MARKER',
+          initial_posting_date: '20260101',
+          update_date: '20260201',
+          update_type: 'Revised',
           shortage_reason: 'REASON-MARKER',
           openfda: {
             brand_name: ['PARAPLATIN'],
@@ -300,6 +310,7 @@ const CASES: Array<{ name: string; format: (r: never) => { text: string }[]; res
           advisory_committee: 'ADVCOMMITTEE-MARKER',
           advisory_committee_description: 'Cardiovascular',
           clearance_type: 'Traditional',
+          statement_or_summary: 'SUMMARY-MARKER',
           openfda: { device_class: 'CLASS-MARKER', regulation_number: 'REGNUM-MARKER' },
         },
       ],
@@ -405,8 +416,10 @@ const CASES: Array<{ name: string; format: (r: never) => { text: string }[]; res
           brand_name: 'BRAND-MARKER',
           generic_name: 'GENERIC-MARKER',
           labeler_name: 'LABELER-MARKER',
+          dosage_form: 'DOSAGEFORM-MARKER',
           route: ['ORAL'],
           marketing_category: 'CATEGORY-MARKER',
+          listing_expiration_date: 'EXPIRES-MARKER',
           active_ingredients: [{ name: 'ASPIRIN', strength: '325 mg/1' }],
           packaging: [
             {
@@ -482,7 +495,47 @@ const CASES: Array<{ name: string; format: (r: never) => { text: string }[]; res
   },
 ];
 
-describe.each(CASES.map((c) => [c.name, c] as const))(
+/**
+ * A `fields`-projected record on every search tool (#66). Projection strips the
+ * keys each curated renderer routes on (`patient`, `device`, `product_res_number`)
+ * and leaves arrays holding `{}` for elements that carried none of the requested
+ * paths, so every leaf must still reach `content[]` through the projected-record
+ * renderer.
+ */
+const PROJECTED_CASES: typeof CASES = (
+  [
+    ['openfda_search_adverse_events', searchAdverseEventsTool.format, 'safetyreportid'],
+    ['openfda_search_recalls', searchRecallsTool.format, 'product_res_number'],
+    ['openfda_search_drug_approvals', searchDrugApprovalsTool.format, 'application_number'],
+    ['openfda_search_device_clearances', searchDeviceClearancesTool.format, 'pma_number'],
+    ['openfda_search_animal_events', searchAnimalEventsTool.format, 'unique_aer_id_number'],
+    ['openfda_search_drug_shortages', searchDrugShortagesTool.format, 'package_ndc'],
+    ['openfda_search_tobacco_reports', searchTobaccoReportsTool.format, 'report_id'],
+    ['openfda_lookup_ndc', lookupNdcTool.format, 'product_ndc'],
+  ] as const
+).map(([name, format, idKey]) => ({
+  name: `${name} (fields-projected)`,
+  format: format as never,
+  result: {
+    meta: META,
+    projected_fields: ['receivedate', 'patient.drug.medicinalproduct', 'patient.reaction'],
+    results: [
+      {
+        [idKey]: `${idKey.toUpperCase()}-MARKER`,
+        supplement_number: 'S-SUPPLEMENT-MARKER',
+        receivedate: 'DATE-MARKER',
+        patient: {
+          drug: [{ medicinalproduct: 'PRODUCT-MARKER' }, {}],
+          reaction: [{ reactionmeddrapt: 'REACTION-MARKER', reactionoutcome: 'OUTCOME-MARKER' }],
+        },
+      },
+      // A record that carried none of the requested paths, and no identity key.
+      {},
+    ],
+  },
+}));
+
+describe.each([...CASES, ...PROJECTED_CASES].map((c) => [c.name, c] as const))(
   '%s — every structured leaf reaches content[]',
   (_name, testCase) => {
     it('renders every scalar leaf of the record', () => {
@@ -503,6 +556,113 @@ describe.each(CASES.map((c) => [c.name, c] as const))(
             : [`${leaf.path}=${leaf.value}`],
       );
       expect(missing).toEqual([]);
+    });
+  },
+);
+
+describe.each(PROJECTED_CASES.map((c) => [c.name, c] as const))(
+  '%s — no placeholder for a projected-away field (#66)',
+  (_name, testCase) => {
+    const render = (result: unknown) =>
+      testCase
+        .format(result as never)
+        .map((b) => b.text)
+        .join('\n');
+    const placeholder = /\bN\/A\b|\bUnknown\b|Unclassified/;
+
+    it('renders each record under its identity heading with no placeholder text', () => {
+      const text = render(testCase.result);
+      expect(text).toMatch(/^### [a-z_]+: [A-Z_]+-MARKER$/m);
+      expect(text).toMatch(/^### Record$/m);
+      expect(text).not.toMatch(placeholder);
+
+      // Control: the curated renderer fills the same records with placeholders.
+      const { projected_fields: _, ...unmarked } = testCase.result as Record<string, unknown>;
+      expect(render(unmarked)).toMatch(placeholder);
+    });
+  },
+);
+
+/** `value` with every string leaf passed through `rewrite`, keyed by its dotted path. */
+function mapStrings(
+  value: unknown,
+  rewrite: (s: string, path: string) => string,
+  path = '',
+): unknown {
+  if (typeof value === 'string') return rewrite(value, path);
+  if (Array.isArray(value)) return value.map((v, i) => mapStrings(v, rewrite, `${path}[${i}]`));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [k, mapStrings(v, rewrite, path ? `${path}.${k}` : k)]),
+    );
+  }
+  return value;
+}
+
+/**
+ * `openfda_get_drug_label` renders every label section verbatim and multi-line by
+ * design, so only the leaves its header lines carry are rewritten there.
+ */
+const LABEL_HEADER_LEAF = /^\[\d+\]\.(?:openfda|set_id|effective_time)\b/;
+
+/** Render a case with each rewritable string leaf of its records rewritten. */
+function renderRewritten(
+  testCase: (typeof CASES)[number],
+  rewrite: (s: string) => string,
+): string[] {
+  const result = testCase.result as Record<string, unknown>;
+  const key = 'rows' in result ? 'rows' : 'results';
+  const label = testCase.name === 'openfda_get_drug_label';
+  const rewritten = mapStrings(result[key], (s, path) =>
+    !label || LABEL_HEADER_LEAF.test(path) ? rewrite(s) : s,
+  );
+  return testCase
+    .format({ ...result, [key]: rewritten } as never)
+    .map((b) => b.text)
+    .join('\n')
+    .split('\n');
+}
+
+/** The text a line's block content opens with, past one list marker or its indent. */
+const blockStart = (line: string) => line.replace(/^- /, '').trimStart();
+
+/**
+ * #67 — upstream text cannot change the block structure `content[]` builds around
+ * it. Every string leaf of every fixture is rewritten to carry a line break or to
+ * open with a block marker, and the rendering must keep the clean rendering's
+ * lines: no extra line, and no line opening the block the payload carries.
+ *
+ * The sweep checks which escaper each rendering slot routes through, so a few
+ * markers stand for the rest: each is left alone by `singleLine` and by the table
+ * cell escaper, and caught only by `lineContent`, whose every marker form is
+ * tabled in `format-utils.test.ts`. Projected records share one renderer, so one
+ * projected case stands for all of them.
+ */
+describe.each([...CASES, PROJECTED_CASES[0]!].map((c) => [c.name, c] as const))(
+  '%s — upstream text cannot open a block (#67)',
+  (_name, testCase) => {
+    const clean = renderRewritten(testCase, (s) => s);
+
+    it('adds no line when every value carries line breaks', () => {
+      const lines = renderRewritten(testCase, (s) => `${s}\n### forged\r\n- forged\r> forged`);
+      expect(lines).toHaveLength(clean.length);
+      expect(lines.filter((line) => /^(?:### |- |> )forged/.test(blockStart(line)))).toEqual([]);
+    });
+
+    it.each(['# forged ', '> forged ', '1. forged '])(
+      'opens no block when every value starts with %j',
+      (marker) => {
+        const lines = renderRewritten(testCase, (s) => `${marker}${s}`);
+        expect(lines).toHaveLength(clean.length);
+        expect(lines.filter((line) => blockStart(line).startsWith(marker))).toEqual([]);
+      },
+    );
+
+    it.each(['---', '==='])('opens no block when every value is %j', (value) => {
+      const count = (lines: string[]) => lines.filter((line) => blockStart(line) === value);
+      const lines = renderRewritten(testCase, () => value);
+      expect(lines).toHaveLength(clean.length);
+      expect(count(lines)).toEqual(count(clean));
     });
   },
 );

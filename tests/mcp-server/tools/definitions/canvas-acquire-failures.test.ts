@@ -99,8 +99,15 @@ function declaredReasons(tool: AnyToolDefinition): string[] {
   return (tool.errors ?? []).map((e) => e.reason);
 }
 
+/*
+ * The first staging call starts DuckDB: up to ~450 ms alone, past the 5 s default
+ * when the full suite saturates the machine.
+ */
+const DUCKDB_SUITE = { timeout: 30_000 };
+
 describe.each(STAGING_TOOLS.map(([tool, input]) => [tool.name, tool, input] as const))(
   '%s — canvas.acquire() failures through a real canvas',
+  DUCKDB_SUITE,
   (_name, tool, baseInput) => {
     it('surfaces an unknown well-formed canvas_id as the declared canvas_not_found (#54)', async () => {
       installCanvas(100);
@@ -122,7 +129,7 @@ describe.each(STAGING_TOOLS.map(([tool, input]) => [tool.name, tool, input] as c
   },
 );
 
-describe('canvas_capacity_exhausted recovery (#54)', () => {
+describe('canvas_capacity_exhausted recovery (#54)', DUCKDB_SUITE, () => {
   it('refuses a second mint at the cap, then stages onto the held canvas_id', async () => {
     const live = installCanvas(1);
     const ctx = createMockContext({ errors: searchRecallsTool.errors, tenantId: TENANT });

@@ -11,15 +11,18 @@ import { CanvasIdSchema, type ColumnSchema } from '@cyanheads/mcp-ts-core/canvas
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
-  canvasStagingLine,
-  emptyPageNote,
+  emptyPageBody,
   emptyResultMessage,
   formatRemainingFields,
-  noMatchNote,
+  projectedRecordLines,
+  searchLead,
+  singleLine,
 } from '@/mcp-server/tools/format-utils.js';
 import {
   assertSearchDelimitersBalanced,
   assertSkipWithinCeiling,
+  fieldSelection,
+  fieldsDescription,
   malformedSearchError,
   nonBlankString,
   SEARCH_BALANCE_NOTE,
@@ -44,10 +47,22 @@ import {
   boundedPage,
   META_LIMIT_DESCRIPTION,
   PAGE_BUDGET_NOTE,
-  pageBudgetLine,
   pageBudgetNotice,
   pageBudgetOutputShape,
 } from '@/services/openfda/page-budget.js';
+import {
+  projectionNotice,
+  projectionOutputShape,
+  recordProjection,
+} from '@/services/openfda/record-projection.js';
+
+/**
+ * Keys that tell one record apart, kept on every `fields`-projected record:
+ * `k_number` on 510(k) records; `pma_number` plus
+ * `supplement_number` on PMA records, since every supplement shares its PMA's
+ * number.
+ */
+const IDENTITY_KEYS = ['k_number', 'pma_number', 'supplement_number'] as const;
 
 /**
  * Canvas table projection covering both 510(k) and PMA records (one pathway per
@@ -92,7 +107,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
     sort: sortExpression()
       .optional()
       .describe(
-        'Sort expression — a field path optionally suffixed with :asc or :desc; comma-separate for multi-field sort. Example: decision_date:desc. Field paths take only letters, digits, underscores, and dots; anything else is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
+        'Sort expression — a field path optionally suffixed with :asc or :desc (any letter case; :ascending and :descending are also accepted, and every direction is sent as asc or desc); comma-separate for multi-field sort. Example: decision_date:desc. Field paths take only letters, digits, underscores, and dots; any other character or direction is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
       ),
     limit: z
       .number()
@@ -103,6 +118,9 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
         `Maximum number of records to return (1-1000, default 10). ${PAGE_BUDGET_NOTE} A 510(k) record carries a summary narrative and is several times the size of a PMA record.`,
       ),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
+    fields: fieldSelection()
+      .optional()
+      .describe(fieldsDescription(IDENTITY_KEYS, ['decision_date', 'applicant'])),
     stage: stageInput,
     canvas_id: CanvasIdSchema.optional().describe(
       'Canvas ID returned by a prior stage=true call to this tool or another openFDA search tool (openfda_search_* or openfda_lookup_ndc). Passing one stages this search onto that canvas (same effect as stage=true) so result sets accumulate for cross-table joins. Omit to stage onto a fresh canvas.',
@@ -125,6 +143,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
         '510(k) or PMA records — 510(k) carries k_number, device_name, applicant, product_code, decision_date, decision_description, advisory_committee_description; PMA carries pma_number, trade_name, generic_name, supplement_number plus shared applicant/product_code/decision_date/decision_description.',
       ),
     ...pageBudgetOutputShape,
+    ...projectionOutputShape,
     ...canvasOutputShape,
   }),
 
@@ -138,7 +157,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       .string()
       .optional()
       .describe(
-        'Canvas staging disclosure when the call staged, the byte-budget disclosure and the routes to the withheld records when the inline page was bounded, and guidance when results are empty — how to broaden filters or correct field names.',
+        'Canvas staging disclosure when the call staged, the fields projection and any requested path no record carries, the byte-budget disclosure when the inline page was bounded or one record exceeds it (with the routes to the withheld records and the largest fields of the oversized record), and guidance when results are empty — how to broaden filters or correct field names.',
       ),
   },
 
@@ -195,6 +214,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
         totalUnverified,
       );
 
+    const projection = recordProjection(input.fields, IDENTITY_KEYS);
     const canvas = getCanvas();
     const staging = input.stage || input.canvas_id !== undefined;
     if (staging && !canvas) {
@@ -213,6 +233,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
         schema: DEVICE_CLEARANCES_CANVAS_SCHEMA,
         limit: input.limit,
         skip: input.skip,
+        projection,
         ctx,
       });
       const staged = canvasResult(spill);
@@ -221,6 +242,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       ctx.enrich.notice(
         [
           spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
+          projectionNotice(staged),
           pageBudgetNotice(staged),
           stagingNotice(spill),
         ]
@@ -242,7 +264,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       ctx,
     );
 
-    const page = boundedPage(response);
+    const page = boundedPage(response, projection);
 
     ctx.log.info('Device clearance search completed', {
       pathway: input.pathway,
@@ -257,6 +279,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       page.results.length === 0
         ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
         : undefined,
+      projectionNotice(page),
       pageBudgetNotice(page),
     ].filter(Boolean);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
@@ -265,31 +288,9 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
   },
 
   format: (result) => {
-    if (result.results.length === 0 && result.meta.total === 0) {
-      return [
-        {
-          type: 'text' as const,
-          text: noMatchNote(
-            'No device clearances found.',
-            result.meta.skip,
-            result.meta.totalUnverified,
-          ),
-        },
-      ];
-    }
-
-    const lines: string[] = [
-      `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Data updated: ${result.meta.lastUpdated}\n`,
-    ];
-
-    const budget = pageBudgetLine(result);
-    if (budget) lines.push(`${budget}\n`);
-
-    const staging = canvasStagingLine(result.meta.total, result);
-    if (staging) lines.push(`${staging}\n`);
-
+    const lines = searchLead(result);
     if (result.results.length === 0) {
-      lines.push(emptyPageNote(result.meta.total, result.meta.skip, result));
+      lines.push(emptyPageBody(result, 'No device clearances found.'));
       return [{ type: 'text' as const, text: lines.join('\n') }];
     }
 
@@ -322,36 +323,48 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
     ]);
 
     for (const r of result.results) {
+      if (result.projected_fields) {
+        lines.push(...projectedRecordLines(r, IDENTITY_KEYS), '');
+        continue;
+      }
       // 510(k)
       if (r.k_number) {
-        lines.push(`### ${r.k_number}: ${r.device_name ?? 'Unknown device'}`);
+        lines.push(singleLine(`### ${r.k_number}: ${r.device_name ?? 'Unknown device'}`));
         lines.push(
-          `**Applicant:** ${r.applicant ?? 'N/A'} | **Product code:** ${r.product_code ?? 'N/A'}`,
+          singleLine(
+            `**Applicant:** ${r.applicant ?? 'N/A'} | **Product code:** ${r.product_code ?? 'N/A'}`,
+          ),
         );
         lines.push(
-          `**Decision:** ${r.decision_description ?? 'N/A'} (${r.decision_date ?? 'N/A'})`,
+          singleLine(
+            `**Decision:** ${r.decision_description ?? 'N/A'} (${r.decision_date ?? 'N/A'})`,
+          ),
         );
         if (r.advisory_committee_description)
-          lines.push(`**Advisory committee:** ${r.advisory_committee_description}`);
-        if (r.clearance_type) lines.push(`**Clearance type:** ${r.clearance_type}`);
+          lines.push(singleLine(`**Advisory committee:** ${r.advisory_committee_description}`));
+        if (r.clearance_type) lines.push(singleLine(`**Clearance type:** ${r.clearance_type}`));
         if (r.statement_or_summary) {
-          lines.push(`**Summary:** ${String(r.statement_or_summary)}`);
+          lines.push(singleLine(`**Summary:** ${String(r.statement_or_summary)}`));
         }
         lines.push(...formatRemainingFields(r, rendered510k));
       }
       // PMA
       else if (r.pma_number) {
         const deviceLabel = r.trade_name ?? r.generic_name ?? '';
-        lines.push(`### ${r.pma_number}${deviceLabel ? `: ${deviceLabel}` : ''}`);
+        lines.push(singleLine(`### ${r.pma_number}${deviceLabel ? `: ${deviceLabel}` : ''}`));
         lines.push(
-          `**Applicant:** ${r.applicant ?? 'N/A'} | **Product code:** ${r.product_code ?? 'N/A'}`,
+          singleLine(
+            `**Applicant:** ${r.applicant ?? 'N/A'} | **Product code:** ${r.product_code ?? 'N/A'}`,
+          ),
         );
         lines.push(
-          `**Decision:** ${r.decision_description ?? r.decision_code ?? 'N/A'} (${r.decision_date ?? 'N/A'})`,
+          singleLine(
+            `**Decision:** ${r.decision_description ?? r.decision_code ?? 'N/A'} (${r.decision_date ?? 'N/A'})`,
+          ),
         );
         if (r.advisory_committee_description)
-          lines.push(`**Advisory committee:** ${r.advisory_committee_description}`);
-        if (r.supplement_number) lines.push(`**Supplement:** ${r.supplement_number}`);
+          lines.push(singleLine(`**Advisory committee:** ${r.advisory_committee_description}`));
+        if (r.supplement_number) lines.push(singleLine(`**Supplement:** ${r.supplement_number}`));
         lines.push(...formatRemainingFields(r, renderedPma));
       }
       // Fallback

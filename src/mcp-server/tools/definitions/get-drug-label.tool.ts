@@ -17,10 +17,11 @@ import {
 } from '@cyanheads/mcp-ts-core/utils';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
-  emptyPageNote,
+  emptyPageBody,
   emptyResultMessage,
   humanizeField,
-  noMatchNote,
+  resultHeader,
+  singleLine,
 } from '@/mcp-server/tools/format-utils.js';
 import {
   assertSearchDelimitersBalanced,
@@ -66,6 +67,16 @@ function renderTableSection(value: unknown, sequence: FootnoteSequence): string 
 }
 
 /**
+ * UTF-8 bytes of `value` serialized as JSON — the size it occupies on the wire,
+ * measured as the search tools' page budget measures it. Label text is often
+ * non-ASCII, where a string's length undercounts its bytes.
+ */
+function jsonBytes(value: unknown): number {
+  const json = JSON.stringify(value);
+  return json === undefined ? 0 : Buffer.byteLength(json, 'utf8');
+}
+
+/**
  * Section outline for a page of SPL records: one entry per top-level label key,
  * bytes summed across the records on the page. The helper's default extractor
  * would treat the page wrapper itself (`results`) as the only section, which is
@@ -75,7 +86,7 @@ function extractLabelSections(doc: { results: Record<string, unknown>[] }): Sect
   const bytes = new Map<string, number>();
   for (const record of doc.results) {
     for (const [name, value] of Object.entries(record)) {
-      bytes.set(name, (bytes.get(name) ?? 0) + (JSON.stringify(value)?.length ?? 0));
+      bytes.set(name, (bytes.get(name) ?? 0) + jsonBytes(value));
     }
   }
   return [...bytes].map(([name, size]) => ({ name, bytes: size }));
@@ -103,7 +114,7 @@ function unknownSectionNotice(
 
 /**
  * Projects a page to the requested sections plus the always-kept metadata and
- * measures the result the way the outline budget is measured, so a byte figure
+ * measures the result in UTF-8 bytes ({@link jsonBytes}), so a byte figure
  * quoted in a notice is the figure a caller following that notice gets back.
  *
  * Section presence varies per label, and `selectSections` rejects a name the
@@ -122,7 +133,7 @@ function projectPage(
       { alwaysKeep: LABEL_METADATA_KEYS },
     ),
   );
-  return { bytes: JSON.stringify({ results }).length, results };
+  return { bytes: jsonBytes({ results }), results };
 }
 
 /**
@@ -190,7 +201,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
     sort: sortExpression()
       .optional()
       .describe(
-        'Sort expression — a field path optionally suffixed with :asc or :desc; comma-separate for multi-field sort. Example: effective_time:desc. Field paths take only letters, digits, underscores, and dots; anything else is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
+        'Sort expression — a field path optionally suffixed with :asc or :desc (any letter case; :ascending and :descending are also accepted, and every direction is sent as asc or desc); comma-separate for multi-field sort. Example: effective_time:desc. Field paths take only letters, digits, underscores, and dots; any other character or direction is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
       ),
     limit: z
       .number()
@@ -401,20 +412,10 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
    */
   format: (result) => {
     const records = result.results ?? [];
-    const emptyPage = records.length === 0 && !result.outline;
-    if (emptyPage && result.meta.total === 0) {
-      return [
-        {
-          type: 'text' as const,
-          text: noMatchNote('No labels found.', result.meta.skip, result.meta.totalUnverified),
-        },
-      ];
+    const lines = [`${singleLine(resultHeader(result.meta, records.length, result.kind))}\n`];
+    if (records.length === 0 && !result.outline) {
+      lines.push(emptyPageBody(result, 'No labels found.'));
     }
-
-    const lines: string[] = [
-      `**${result.meta.total} total label results** (returned: ${records.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}, kind: ${result.kind}) | Data updated: ${result.meta.lastUpdated}\n`,
-    ];
-    if (emptyPage) lines.push(emptyPageNote(result.meta.total, result.meta.skip));
 
     /**
      * Keys the header block emits verbatim and unconditionally — skipped during
@@ -432,10 +433,11 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       const genericName = ((openfda.generic_name as string[]) ?? [])[0];
       const manufacturer = ((openfda.manufacturer_name as string[]) ?? [])[0];
 
-      lines.push(`### ${brandName}${genericName ? ` (${genericName})` : ''}`);
-      if (manufacturer) lines.push(`**Manufacturer:** ${manufacturer}`);
-      if (r.effective_time) lines.push(`**Effective date:** ${r.effective_time}`);
-      if (r.set_id) lines.push(`**Set ID:** ${r.set_id}${r.version ? ` (v${r.version})` : ''}`);
+      lines.push(singleLine(`### ${brandName}${genericName ? ` (${genericName})` : ''}`));
+      if (manufacturer) lines.push(singleLine(`**Manufacturer:** ${manufacturer}`));
+      if (r.effective_time) lines.push(singleLine(`**Effective date:** ${r.effective_time}`));
+      if (r.set_id)
+        lines.push(singleLine(`**Set ID:** ${r.set_id}${r.version ? ` (v${r.version})` : ''}`));
 
       // Every openfda field, whole — the header above shows only the first
       // entry of brand_name/generic_name/manufacturer_name, so skipping them
@@ -443,13 +445,13 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       for (const [key, val] of Object.entries(openfda)) {
         if (val == null) continue;
         const display = Array.isArray(val) ? (val as string[]).join(', ') : String(val);
-        if (display) lines.push(`**${humanizeField(key)}:** ${display}`);
+        if (display) lines.push(singleLine(`**${humanizeField(key)}:** ${display}`));
       }
 
       // Every label section present in the record, whole — `structuredContent`
       // carries the untrimmed record, so trimming here would desync the surfaces.
       // `*_table` sections are SPL table markup and render as Markdown tables;
-      // prose sections pass through verbatim.
+      // prose sections pass through verbatim, multi-line, as the label's own text.
       for (const [key, value] of Object.entries(r)) {
         if (metaKeys.has(key) || value == null) continue;
         const table = key.endsWith('_table') ? renderTableSection(value, footnotes) : undefined;
@@ -471,7 +473,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
     if (result.outline) {
       lines.push(`**${result.outline.length} sections available** (page too large to inline)\n`);
       for (const section of result.outline) {
-        lines.push(`- \`${section.name}\` — ${section.bytes} bytes`);
+        lines.push(singleLine(`- \`${section.name}\` — ${section.bytes} bytes`));
       }
     }
 

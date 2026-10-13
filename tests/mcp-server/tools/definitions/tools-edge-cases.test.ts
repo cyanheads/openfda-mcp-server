@@ -218,13 +218,15 @@ describe('openfda_search_recalls (edge cases)', () => {
     expect(textOf(content)).toContain('2026-02-01');
   });
 
-  it('format returns "No results found." for empty results', () => {
+  it('format renders the metadata header, then "No results found.", for empty results (#68)', () => {
     const content = searchRecallsTool.format!({
-      meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
+      meta: { total: 0, skip: 0, limit: 10, lastUpdated: '2026-07-31' },
       results: [],
     });
 
-    expect(textOf(content)).toBe('No results found.');
+    expect(textOf(content)).toBe(
+      '**0 total results** (returned: 0, skip: 0, limit: 10) | Data updated: 2026-07-31\n\nNo results found.',
+    );
   });
 });
 
@@ -340,14 +342,16 @@ describe('openfda_get_drug_label (edge cases)', () => {
     expect(text).toContain('v2');
   });
 
-  it('format returns "No labels found." for empty results', () => {
+  it('format renders the metadata header, kind included, then "No labels found." for empty results (#68)', () => {
     const content = getDrugLabelTool.format!({
-      meta: { total: 0, skip: 0, limit: 5, lastUpdated: '' },
+      meta: { total: 0, skip: 0, limit: 5, lastUpdated: '2026-10-09' },
       kind: 'full',
       results: [],
     });
 
-    expect(textOf(content)).toBe('No labels found.');
+    expect(textOf(content)).toBe(
+      '**0 total results** (returned: 0, skip: 0, limit: 5, kind: full) | Data updated: 2026-10-09\n\nNo labels found.',
+    );
   });
 });
 
@@ -451,13 +455,15 @@ describe('openfda_lookup_ndc (edge cases)', () => {
     expect(text).toContain('metformin');
   });
 
-  it('format returns "No NDC records found." for empty results', () => {
+  it('format renders the metadata header, then "No NDC records found.", for empty results (#68)', () => {
     const content = lookupNdcTool.format!({
-      meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
+      meta: { total: 0, skip: 0, limit: 10, lastUpdated: '2026-07-31' },
       results: [],
     });
 
-    expect(textOf(content)).toBe('No NDC records found.');
+    expect(textOf(content)).toBe(
+      '**0 total results** (returned: 0, skip: 0, limit: 10) | Data updated: 2026-07-31\n\nNo NDC records found.',
+    );
   });
 
   it('format renders route as comma-joined when array', () => {
@@ -564,13 +570,15 @@ describe('openfda_search_drug_approvals (edge cases)', () => {
     expect(text).toContain('Prescription');
   });
 
-  it('format returns "No drug approvals found." for empty results', () => {
+  it('format renders the metadata header, then "No drug approvals found.", for empty results (#68)', () => {
     const content = searchDrugApprovalsTool.format!({
-      meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
+      meta: { total: 0, skip: 0, limit: 10, lastUpdated: '2026-07-31' },
       results: [],
     });
 
-    expect(textOf(content)).toBe('No drug approvals found.');
+    expect(textOf(content)).toBe(
+      '**0 total results** (returned: 0, skip: 0, limit: 10) | Data updated: 2026-07-31\n\nNo drug approvals found.',
+    );
   });
 
   it('format shows generic name in title when no brand name', () => {
@@ -726,13 +734,15 @@ describe('openfda_search_device_clearances (edge cases)', () => {
     expect(text).toContain('some value');
   });
 
-  it('format returns "No device clearances found." for empty results', () => {
+  it('format renders the metadata header, then "No device clearances found.", for empty results (#68)', () => {
     const content = searchDeviceClearancesTool.format!({
-      meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
+      meta: { total: 0, skip: 0, limit: 10, lastUpdated: '2026-07-31' },
       results: [],
     });
 
-    expect(textOf(content)).toBe('No device clearances found.');
+    expect(textOf(content)).toBe(
+      '**0 total results** (returned: 0, skip: 0, limit: 10) | Data updated: 2026-07-31\n\nNo device clearances found.',
+    );
   });
 });
 
@@ -898,13 +908,15 @@ describe('openfda_search_tobacco_reports (edge cases)', () => {
     expect(typeof text).toBe('string');
   });
 
-  it('format returns "No tobacco problem reports found." for empty results', () => {
+  it('format renders the metadata header, then "No tobacco problem reports found.", for empty results (#68)', () => {
     const content = searchTobaccoReportsTool.format!({
-      meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
+      meta: { total: 0, skip: 0, limit: 2, lastUpdated: '2026-07-31' },
       results: [],
     });
 
-    expect(textOf(content)).toBe('No tobacco problem reports found.');
+    expect(textOf(content)).toBe(
+      '**0 total results** (returned: 0, skip: 0, limit: 2) | Data updated: 2026-07-31\n\nNo tobacco problem reports found.',
+    );
   });
 });
 
@@ -1099,5 +1111,297 @@ describe('search delimiter precheck (#38)', () => {
     it.each(FAULTS)('classifies %j as %s', (search, fault) => {
       expect(findSearchDelimiterFault(search)).toBe(fault);
     });
+  });
+});
+
+// ── single-line slots (#67) ───────────────────────────────────────────────────
+
+/**
+ * Upstream and caller text placed on a record heading, a record title, or a list
+ * item has its line breaks flattened, so a value cannot open a heading or list
+ * item of its own. Each case names the exact line the value must stay on.
+ */
+describe('record headings and list items stay on one line (#67)', () => {
+  const META = { total: 1, skip: 0, limit: 10, lastUpdated: '2026-07-31' };
+  const lineSet = (text: string) => new Set(text.split('\n'));
+
+  const cases: [string, () => string, string[]][] = [
+    [
+      'adverse events — device report heading',
+      () =>
+        textOf(
+          searchAdverseEventsTool.format!({
+            meta: META,
+            results: [{ device: [{ brand_name: 'B' }], report_number: 'A\n### injected' }],
+          }),
+        ),
+      ['### Report A ### injected'],
+    ],
+    [
+      'adverse events — drug report heading and drug item',
+      () =>
+        textOf(
+          searchAdverseEventsTool.format!({
+            meta: META,
+            results: [
+              {
+                safetyreportid: 'S\r\n### injected',
+                patient: { drug: [{ medicinalproduct: 'D\n- injected' }] },
+              },
+            ],
+          }),
+        ),
+      ['### Report S ### injected', '- D - injected'],
+    ],
+    [
+      'adverse events — food report heading and product item',
+      () =>
+        textOf(
+          searchAdverseEventsTool.format!({
+            meta: META,
+            results: [{ report_number: 'F\r### injected', products: [{ name_brand: 'P\n- x' }] }],
+          }),
+        ),
+      ['### Report F ### injected', '- P - x'],
+    ],
+    [
+      'animal events — report heading and drug item',
+      () =>
+        textOf(
+          searchAnimalEventsTool.format!({
+            meta: META,
+            results: [
+              { unique_aer_id_number: 'A\n### injected', drug: [{ brand_name: 'B\n- x' }] },
+            ],
+          }),
+        ),
+      ['### Report A ### injected', '- B - x'],
+    ],
+    [
+      'device clearances — 510(k) and PMA headings',
+      () =>
+        textOf(
+          searchDeviceClearancesTool.format!({
+            meta: { ...META, total: 2 },
+            results: [
+              { k_number: 'K1', device_name: 'Dev\n### injected' },
+              { pma_number: 'P1', trade_name: 'T\n### injected' },
+            ],
+          }),
+        ),
+      ['### K1: Dev ### injected', '### P1: T ### injected'],
+    ],
+    [
+      'NDC — product heading and package item',
+      () =>
+        textOf(
+          lookupNdcTool.format!({
+            meta: META,
+            results: [
+              {
+                brand_name: 'N\n### injected',
+                packaging: [{ package_ndc: '1', description: 'pk\n- x' }],
+              },
+            ],
+          }),
+        ),
+      ['### N ### injected', '- 1: pk - x'],
+    ],
+    [
+      'drug label — label heading',
+      () =>
+        textOf(
+          getDrugLabelTool.format!({
+            meta: META,
+            kind: 'full',
+            results: [{ openfda: { brand_name: ['L\n### injected'], generic_name: ['g\nx'] } }],
+          }),
+        ),
+      ['### L ### injected (g x)'],
+    ],
+    [
+      'drug approvals — application heading, product and submission items',
+      () =>
+        textOf(
+          searchDrugApprovalsTool.format!({
+            meta: META,
+            results: [
+              {
+                application_number: 'NDA1',
+                openfda: { brand_name: ['A\n### injected'] },
+                products: [{ brand_name: 'P\n- x' }],
+                submissions: [{ submission_type: 'ORIG\n- x' }],
+              },
+            ],
+          }),
+        ),
+      ['### A ### injected', '- P - x', '- ORIG - x'],
+    ],
+    [
+      'drug shortages — shortage heading',
+      () =>
+        textOf(
+          searchDrugShortagesTool.format!({
+            meta: META,
+            results: [{ generic_name: 'G\n### injected' }],
+          }),
+        ),
+      ['### G ### injected'],
+    ],
+    [
+      'tobacco reports — report heading and product item',
+      () =>
+        textOf(
+          searchTobaccoReportsTool.format!({
+            meta: META,
+            results: [{ report_id: 'R\n### injected', tobacco_products: ['Snus\n- x'] }],
+          }),
+        ),
+      ['### Report R ### injected', '- Snus - x'],
+    ],
+    [
+      'recalls — enforcement and device recall titles',
+      () =>
+        textOf(
+          searchRecallsTool.format!({
+            meta: { ...META, total: 2 },
+            results: [
+              { recall_number: 'F-1\n### injected', classification: 'Class II' },
+              { product_res_number: 'Z-1\n### injected' },
+            ],
+          }),
+        ),
+      ['**Recall #F-1 ### injected** — Class II', '**Recall #Z-1 ### injected**'],
+    ],
+    [
+      'drug profile — heading from the caller term, reaction and recall items',
+      () =>
+        textOf(
+          drugProfileTool.format!({
+            meta: { drug: 'aspirin\n# injected', resolvedVia: 'none', fanOutKey: 'aspirin' },
+            identity: {
+              brand_names: [],
+              generic_name: null,
+              product_ndc: null,
+              rxcui: null,
+              spl_set_id: null,
+            },
+            label: null,
+            adverse_events: {
+              total: 1,
+              seriousCount: 0,
+              topReactions: [{ term: 'NAUSEA\n- x', count: 1 }],
+            },
+            recalls: [
+              {
+                classification: 'Class II\n- x',
+                recalling_firm: null,
+                date: null,
+                reason: 'r\n# x',
+              },
+            ],
+            approval: null,
+            shortage: null,
+            degraded: [],
+          }),
+        ),
+      [
+        '# Drug profile: aspirin # injected',
+        '- NAUSEA - x: 1',
+        '- **Classification:** Class II - x · **Recalling firm:** n/a · **Date:** n/a',
+        '  **Reason:** r # x',
+      ],
+    ],
+    [
+      'drug profile — identity, label, approval, and shortage lines; a reaction term opening with a marker',
+      () =>
+        textOf(
+          drugProfileTool.format!({
+            meta: { drug: 'aspirin', resolvedVia: 'label', fanOutKey: 'aspirin' },
+            identity: {
+              brand_names: ['BAYER\n# x', 'ECOTRIN'],
+              generic_name: 'ASPIRIN\r\n- x',
+              product_ndc: '0280-2000',
+              rxcui: '1191',
+              spl_set_id: 'set\r> x',
+            },
+            label: {
+              indications: 'For pain.\n\n### Warnings forged',
+              warnings: 'Reye syndrome.\n- x',
+              dosage: '1 tablet\n1. x',
+            },
+            adverse_events: {
+              total: 2,
+              seriousCount: 1,
+              topReactions: [
+                { term: '# NAUSEA', count: 2 },
+                { term: '1. VOMITING', count: 1 },
+              ],
+            },
+            recalls: [],
+            approval: {
+              applicationNumber: 'NDA1',
+              sponsor: 'BAYER\n# x',
+              marketingStatus: 'OTC',
+            },
+            shortage: { status: 'Current\n- x', availability: 'Limited\n> x' },
+            degraded: [],
+          }),
+        ),
+      [
+        '**Brand names:** BAYER # x, ECOTRIN',
+        '**Generic name:** ASPIRIN - x',
+        '**SPL set ID:** set > x',
+        '**Indications:** For pain.  ### Warnings forged',
+        '**Warnings:** Reye syndrome. - x',
+        '**Dosage:** 1 tablet 1. x',
+        '- \\# NAUSEA: 2',
+        '- 1\\. VOMITING: 1',
+        '**Application number:** NDA1 | **Sponsor:** BAYER # x | **Marketing status:** OTC',
+        '**Status:** Current - x',
+        '**Availability:** Limited > x',
+      ],
+    ],
+    [
+      'count values — header carrying the dataset date',
+      () =>
+        textOf(
+          countValuesTool.format!({
+            meta: { lastUpdated: '2026-07-31\n# x' },
+            results: [{ term: 'NAUSEA', count: 3 }],
+          }),
+        ),
+      ['**1 terms** (total occurrences: 3) | Data updated: 2026-07-31 # x'],
+    ],
+    [
+      'drug label — manufacturer, set ID, and openfda lines',
+      () =>
+        textOf(
+          getDrugLabelTool.format!({
+            meta: { ...META, lastUpdated: '2026-07-31\n# x' },
+            kind: 'full',
+            results: [
+              {
+                openfda: { brand_name: ['L'], manufacturer_name: ['M\n- x'], route: ['ORAL\n> x'] },
+                set_id: 'S\n### x',
+                version: '2',
+                effective_time: '2026\r\n- x',
+              },
+            ],
+          }),
+        ),
+      [
+        '**1 total results** (returned: 1, skip: 0, limit: 10, kind: full) | Data updated: 2026-07-31 # x',
+        '**Manufacturer:** M - x',
+        '**Effective date:** 2026 - x',
+        '**Set ID:** S ### x (v2)',
+        '**Route:** ORAL > x',
+      ],
+    ],
+  ];
+
+  it.each(cases)('%s', (_name, render, expected) => {
+    const lines = lineSet(render());
+    for (const line of expected) expect(lines).toContain(line);
   });
 });

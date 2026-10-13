@@ -174,13 +174,15 @@ describe('openfda_search_tobacco_reports', () => {
     expect(typeof text).toBe('string');
   });
 
-  it('format returns "No tobacco problem reports found." for empty results', () => {
+  it('format renders the metadata header, then "No tobacco problem reports found.", for empty results (#68)', () => {
     const content = searchTobaccoReportsTool.format!({
-      meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
+      meta: { total: 0, skip: 0, limit: 10, lastUpdated: '2026-07-31' },
       results: [],
     });
 
-    expect(textOf(content)).toBe('No tobacco problem reports found.');
+    expect(textOf(content)).toBe(
+      '**0 total results** (returned: 0, skip: 0, limit: 10) | Data updated: 2026-07-31\n\nNo tobacco problem reports found.',
+    );
   });
 
   it('format includes meta header with totals', () => {

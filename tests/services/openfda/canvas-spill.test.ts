@@ -36,6 +36,7 @@ vi.mock('@/services/openfda/openfda-service.js', () => {
 import {
   AGGREGATE_ROUTE,
   canvasOutputShape,
+  canvasResult,
   OPENFDA_MAX_ROWS,
   spillSearch,
   stagingNotice,
@@ -318,10 +319,79 @@ describe('spillSearch', () => {
   });
 });
 
+/*
+ * #73 — `meta.limit` is the page size applied to the request: the caller's limit,
+ * lowered to the records kept only when the inline byte budget dropped some. The
+ * staged response must report what the plain path reports for the same request,
+ * so a short or empty window never reads as a smaller requested limit.
+ */
+describe('canvasResult meta.limit (#73)', () => {
+  beforeEach(async () => {
+    const { canvas } = makeCanvas();
+    await setCanvasMock(canvas);
+  });
+
+  const stagedMeta = async (
+    svc: ReturnType<typeof makeSvc>,
+    window: { limit: number; skip: number },
+  ) => {
+    await setSvcMock(svc);
+    const spill = await spillSearch({
+      endpoint: 'drug/event',
+      schema: SCHEMA,
+      ctx: createMockContext(),
+      ...window,
+    });
+    return { spill, result: canvasResult(spill) };
+  };
+
+  it('reports the requested limit on a staged miss', async () => {
+    const { result } = await stagedMeta(makeSvc(0), { limit: 2, skip: 0 });
+    expect(result.results).toHaveLength(0);
+    expect(result.meta.limit).toBe(2);
+  });
+
+  it('reports the requested limit when the window runs past the end of the match', async () => {
+    const { result } = await stagedMeta(makeSvc(50), { limit: 5, skip: 100 });
+    expect(result.results).toHaveLength(0);
+    expect(result.meta).toEqual({ total: 50, skip: 100, limit: 5, lastUpdated: '2026-06-01' });
+  });
+
+  it('reports the requested limit when fewer records matched than it asked for', async () => {
+    const { result } = await stagedMeta(makeSvc(3), { limit: 10, skip: 0 });
+    expect(result.results).toHaveLength(3);
+    expect(result.meta.limit).toBe(10);
+  });
+
+  it('reports the requested limit on a full page the budget did not bound', async () => {
+    const { result } = await stagedMeta(makeSvc(2500), { limit: 10, skip: 0 });
+    expect(result.results).toHaveLength(10);
+    expect(result.page_omitted).toBeUndefined();
+    expect(result.meta.limit).toBe(10);
+  });
+
+  it('lowers the limit to the records kept when the budget dropped some', async () => {
+    // ~10 KB records: two fit the 24,000-byte budget, the other eight are dropped.
+    const { result } = await stagedMeta(makeSvc(40, 10_000), { limit: 10, skip: 0 });
+    expect(result.results).toHaveLength(2);
+    expect(result.page_omitted).toBe(8);
+    expect(result.meta.limit).toBe(2);
+  });
+
+  it('keeps the requested limit for a lone record over the budget that dropped nothing', async () => {
+    const { result } = await stagedMeta(makeSvc(1, 70_000), { limit: 10, skip: 0 });
+    expect(result.results).toHaveLength(1);
+    expect(result.page_omitted).toBeUndefined();
+    expect(result.page_bytes).toBeGreaterThan(24_000);
+    expect(result.meta.limit).toBe(10);
+  });
+});
+
 describe('stagingNotice', () => {
   const base = {
     canvasId: 'cv_1',
     lastUpdated: '2026-06-01',
+    limit: 10,
     preview: [],
     previewBudget: {},
     skip: 0,

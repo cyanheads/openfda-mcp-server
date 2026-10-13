@@ -7,6 +7,8 @@
  * @module mcp-server/tools/spl-table
  */
 
+import { escapeTableCell, escapeTableCellFragment } from '@/mcp-server/tools/format-utils.js';
+
 /** A parsed SPL node — an element from the table vocabulary, or text between tags. */
 type SplNode =
   | { kind: 'text'; text: string }
@@ -76,12 +78,16 @@ function decodeEntities(text: string): string {
 }
 
 /**
- * Escape text for a Markdown table cell: the pipe that would split the cell,
- * the backslash, the characters that open emphasis, code, links, or HTML, and
- * an `&` that would re-form an entity reference once decoded.
+ * Escape one decoded text run with the shared table-cell escaper. Whitespace,
+ * line breaks included, collapses to a space first: a break inside a run is
+ * layout, not a block boundary, so it never becomes a `<br>`. A run ends where
+ * inline markup begins, and the next run's text follows it directly, so it is
+ * escaped as a fragment: a trailing `<` or `\` is escaped as though punctuation
+ * came next — `&lt;<content>LLN</content> and &gt;ULN` must not render as an
+ * HTML tag — and an address reaching its end is not kept as an autolink.
  */
-function escapeMarkdown(text: string): string {
-  return text.replace(/[\\`*_[\]<>|~]/g, '\\$&').replace(/&(?=#?\w+;)/g, '\\&');
+function escapeRun(text: string): string {
+  return escapeTableCellFragment(text.replace(/\s+/g, ' '));
 }
 
 function parseAttrs(source: string): Record<string, string> {
@@ -213,7 +219,7 @@ function scripted(marker: string, inner: string): string {
 
 /** Render a node's text for use inside a cell, escaped, with block markers between blocks. */
 function renderInline(node: SplNode, notes: FootnoteRegistry): string {
-  if (node.kind === 'text') return escapeMarkdown(decodeEntities(node.text));
+  if (node.kind === 'text') return escapeRun(decodeEntities(node.text));
   const inner = () => node.children.map((child) => renderInline(child, notes)).join('');
   switch (node.name) {
     case 'br':
@@ -382,13 +388,15 @@ function renderTable(table: SplElement, sequence: FootnoteSequence): string {
 
 /**
  * Markup that does not parse as balanced SPL: its decoded text, with only the
- * SPL vocabulary's tags removed. Nothing throws and no text is dropped.
+ * SPL vocabulary's tags removed, collapsed onto one line and escaped like any
+ * other text — `&lt;b&gt;` decodes to `<b>`, which would otherwise render as a
+ * tag. Nothing throws and no text is dropped.
  */
 function plainText(raw: string): string {
   const stripped = raw.replace(TAG_RE, (whole, _closing, name: string) =>
     SPL_TAGS.has(name.toLowerCase()) ? ' ' : whole,
   );
-  return decodeEntities(stripped).replace(/\s+/g, ' ').trim();
+  return escapeTableCell(decodeEntities(stripped).replace(/\s+/g, ' ').trim());
 }
 
 /**
@@ -403,7 +411,7 @@ export function renderSplTable(
   sequence: FootnoteSequence = createFootnoteSequence(),
 ): string {
   const nodes = parseSpl(raw);
-  if (!nodes) return plainText(raw);
+  if (!nodes) return escapeLineStarts(plainText(raw));
 
   const blocks: string[] = [];
   const looseNotes = new FootnoteRegistry(sequence);
@@ -426,5 +434,19 @@ export function renderSplTable(
   flushLoose();
   const definitions = looseNotes.definitions();
   if (definitions.length > 0) blocks.push(definitions.join('\n'));
-  return blocks.join('\n\n');
+  return escapeLineStarts(blocks.join('\n\n'));
+}
+
+/**
+ * The cell escaper leaves block markers raw — inside a cell they are literal.
+ * Captions, footer rows, loose text, and the plain-text fallback for unbalanced
+ * markup start lines of their own, where a
+ * leading `>`, an ATX `#`, a `+` or `-` bullet, a setext `=`/`-` underline, or
+ * an `n.`/`n)` ordinal would open a block and drop out of the rendered text.
+ * Table rows start with `|`, so they never match.
+ */
+function escapeLineStarts(markdown: string): string {
+  return markdown
+    .replace(/^(?=>|#{1,6}(?:[ \t]|$)|[+-](?:[ \t]|$)|[-=]+[ \t]*$)/gm, '\\')
+    .replace(/^(\d{1,9})(?=[.)](?:[ \t]|$))/gm, '$1\\');
 }

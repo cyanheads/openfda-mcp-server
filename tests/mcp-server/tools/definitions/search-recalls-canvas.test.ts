@@ -282,12 +282,14 @@ describe('openfda_search_recalls — format', () => {
     expect(text).not.toContain('OFFSET 700000');
   });
 
-  it('keeps the no-match wording when nothing matched', () => {
+  it('keeps the no-match wording, after the metadata header, when nothing matched (#68)', () => {
     const blocks = searchRecallsTool.format!({
       meta: { total: 0, skip: 0, limit: 0, lastUpdated: '2026-06-01' },
       results: [],
     });
-    expect(textOf(blocks)).toBe('No results found.');
+    expect(textOf(blocks)).toBe(
+      '**0 total results** (returned: 0, skip: 0, limit: 0) | Data updated: 2026-06-01\n\nNo results found.',
+    );
   });
 
   it('qualifies the no-match wording when the total behind an offset is unverified', () => {

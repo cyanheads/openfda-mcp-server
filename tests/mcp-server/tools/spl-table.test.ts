@@ -60,7 +60,7 @@ describe('renderSplTable', () => {
           '| AG | 5 mg to 7 mg | 3 mg to 4 mg | 3 mg to 4 mg | 3 mg to 4 mg | 0.5 mg to 2 mg | 0.5 mg to 2 mg |',
           '| AA | 3 mg to 4 mg | 3 mg to 4 mg | 0.5 mg to 2 mg | 0.5 mg to 2 mg | 0.5 mg to 2 mg | 0.5 mg to 2 mg |',
           '',
-          '^†Ranges are derived from multiple published clinical studies. VKORC1 -1639G\\>A (rs9923231) variant is used in this table. Other co-inherited VKORC1 variants may also be important determinants of warfarin dose.',
+          '^†Ranges are derived from multiple published clinical studies. VKORC1 -1639G>A (rs9923231) variant is used in this table. Other co-inherited VKORC1 variants may also be important determinants of warfarin dose.',
         ].join('\n'),
       );
     });
@@ -129,8 +129,8 @@ describe('renderSplTable', () => {
         '| C\\_22H\\_29FO\\_5 | MW 392.47 |',
       );
       const sci = renderSplTable(fixtures.SCIENTIFIC_NOTATION);
-      expect(sci).toContain('| WBC Count | \\<1 x 10 ^9/L | 2/103 (4%) | 0/95 |');
-      expect(sci).toContain('| SGOT | \\>5 x ULN ^b |');
+      expect(sci).toContain('| WBC Count | <1 x 10 ^9/L | 2/103 (4%) | 0/95 |');
+      expect(sci).toContain('| SGOT | >5 x ULN ^b |');
       expect(sci).toContain('Percentage of Patients ^a Exceeding');
       expect(sci).not.toContain('109/L');
     });
@@ -250,7 +250,7 @@ describe('renderSplTable', () => {
       const out = renderSplTable(
         '<table><tr><td>&#x2020;&#8224;</td><td>&lt;&gt;&amp;&quot;&apos;</td></tr></table>',
       );
-      expect(cells(tableLines(out)[0] ?? '')).toEqual(['††', '\\<\\>&"\'']);
+      expect(cells(tableLines(out)[0] ?? '')).toEqual(['††', '<>&"\'']);
     });
 
     it('renders an entity-only cell as that character', () => {
@@ -272,11 +272,73 @@ describe('renderSplTable', () => {
       );
       expect(cells(tableLines(out)[0] ?? '')).toEqual([
         'a\\|b',
-        'C:\\\\dir',
+        'C:\\dir',
         '\\*1/\\*1',
         '\\_x\\_ \\`y\\` \\[z\\](u) \\~s\\~',
         '\\&lt;',
       ]);
+    });
+
+    // #67 — the shared cell escaper leaves text that renders as written untouched.
+    it('leaves identifiers and comparisons byte-identical in cells', () => {
+      const out = renderSplTable(
+        '<table><tr><td>snake_case</td><td>p&lt;0.05</td><td>AT&amp;T</td><td>a &gt; b</td><td>C:\\*</td></tr></table>',
+      );
+      expect(cells(tableLines(out)[0] ?? '')).toEqual([
+        'snake_case',
+        'p<0.05',
+        'AT&T',
+        'a > b',
+        'C:\\\\\\*',
+      ]);
+    });
+
+    it('escapes a `>` that opens a caption or footer line, so it never renders as a quote', () => {
+      const out = renderSplTable(
+        '<table><caption>&gt;65 years</caption><tfoot><tr><td>&gt; 2% of patients</td></tr></tfoot><tr><td>a &gt; b</td></tr></table>',
+      );
+      expect(out.split('\n')).toEqual([
+        '\\>65 years',
+        '',
+        '| a > b |',
+        '| --- |',
+        '',
+        '\\> 2% of patients',
+      ]);
+    });
+
+    it('escapes any block marker that opens a caption, footer, or loose line, so its text renders as written', () => {
+      // `+ Denotes ongoing response` is a live tfoot row; unescaped, it renders as a bullet and drops the `+`.
+      const out = renderSplTable(
+        '# of patients<table><caption>1. Pharmacokinetic parameters</caption><tfoot><tr><td>+ Denotes ongoing response</td></tr><tr><td>- 5 mg</td></tr><tr><td>===</td></tr><tr><td>2) Second</td></tr></tfoot><tr><td>+ a</td></tr></table>-5 mg, #3, +2, 1.5 mg',
+      );
+      expect(out.split('\n')).toEqual([
+        '\\# of patients',
+        '',
+        '1\\. Pharmacokinetic parameters',
+        '',
+        '| + a |',
+        '| --- |',
+        '',
+        '\\+ Denotes ongoing response',
+        '\\- 5 mg',
+        '\\===',
+        '2\\) Second',
+        '',
+        '-5 mg, #3, +2, 1.5 mg',
+      ]);
+    });
+
+    it('escapes a `<` or `\\` that ends a text run, since the next run can complete a tag or an escape', () => {
+      const out = renderSplTable(
+        '<table><tr><td>&lt;<content styleCode="italic">LLN</content> and &gt;ULN</td><td>a\\<sup>*</sup></td></tr></table>',
+      );
+      expect(cells(tableLines(out)[0] ?? '')).toEqual(['\\<LLN and >ULN', 'a\\\\^\\*']);
+    });
+
+    it('keeps a line break inside a text run collapsed to a space, never a <br>', () => {
+      const out = renderSplTable('<table><tr><td>one\r\ntwo\nthree</td></tr></table>');
+      expect(tableLines(out)[0]).toBe('| one two three |');
     });
 
     it('keeps a tag-shaped run outside the SPL vocabulary as literal text', () => {
@@ -442,8 +504,37 @@ describe('renderSplTable', () => {
       expect(renderSplTable(raw)).toBe(text);
     });
 
-    it('keeps non-SPL tag-shaped text in the fallback', () => {
-      expect(renderSplTable('<table><tr><td><E050800> water')).toBe('<E050800> water');
+    it('keeps non-SPL tag-shaped text in the fallback, escaped so it is not read as a tag', () => {
+      expect(renderSplTable('<table><tr><td><E050800> water')).toBe('\\<E050800> water');
+    });
+
+    it('escapes the fallback text with the shared escaper, collapsing whitespace', () => {
+      expect(
+        renderSplTable('<table><tr><td>a|b *c* &lt;b&gt; x_\n\n y [t](u) http://a.com/~v</td>'),
+      ).toBe('a\\|b \\*c\\* \\<b> x\\_ y \\[t\\](u) http://a.com/~v');
+    });
+
+    it.each([
+      ['# heading', '\\# heading'],
+      ['- item', '\\- item'],
+      ['1. step', '1\\. step'],
+      ['> quote', '\\> quote'],
+    ])('escapes a block marker that opens the fallback line: %j', (text, escaped) => {
+      expect(renderSplTable(`<table><tr><td>${text}`)).toBe(escaped);
+    });
+  });
+
+  describe('bare addresses in cells', () => {
+    it('keeps an address inside one text run verbatim, so its autolink is exact', () => {
+      expect(renderSplTable('<table><tr><td>see http://a.com/~b_(c) here</td></tr></table>')).toBe(
+        '| see http://a.com/~b_(c) here |\n| --- |',
+      );
+    });
+
+    it('refuses the autolink for an address that runs into the next inline element', () => {
+      expect(renderSplTable('<table><tr><td>http://a.com/~b<sup>2</sup></td></tr></table>')).toBe(
+        '| http\\://a.com/\\~b^2 |\n| --- |',
+      );
     });
   });
 });

@@ -2,8 +2,9 @@
  * @fileoverview Shared Zod building blocks for tool input schemas, plus the
  * handler guards that reject locally-detectable bad input before an upstream
  * request is spent: the openFDA pagination ceiling, and the `search` delimiter
- * balance check. Also holds the `sort` grammar, which is regex-expressible and
- * therefore rides the advertised JSON Schema `pattern`, and the paginated tools'
+ * balance check. Also holds the `sort` grammar and the `fields` path grammar,
+ * which are regex-expressible and therefore ride the advertised JSON Schema
+ * `pattern`, and the paginated tools'
  * shared `meta.totalUnverified` output field.
  * @module mcp-server/tools/schema-utils
  */
@@ -68,56 +69,92 @@ export function assertSkipWithinCeiling(skip: number, ctx: PaginationCeilingCont
   }
 }
 
-/* --- sort grammar --- */
+/* --- field paths: sort grammar and field selection --- */
 
 /**
- * One dotted field path: runs of `[A-Za-z0-9_]` joined by `.`. Every path in
- * `field-catalog.ts` is of this shape, `.exact` subfields included.
+ * A sort direction the schema accepts: `asc`, `desc`, `ascending`, or
+ * `descending`, in any letter case — spelled with character classes because the
+ * advertised JSON Schema `pattern` carries no flags.
+ *
+ * openFDA honours only a lowercase `asc` or `desc`. Every other direction token
+ * — `DESC`, `Desc`, `ascending`, `"desc"`, an empty one — answers HTTP 200 with
+ * that sort key silently dropped, on every sortable endpoint: a single-key sort
+ * returns the unsorted order, and a multi-field sort loses the key. So the four
+ * spellings whose meaning is certain are accepted and rewritten by
+ * {@link normalizeSortDirections}, and anything else is rejected.
  */
-const SORT_FIELD_PATH = String.raw`[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*`;
+const SORT_DIRECTION =
+  '(?:[Aa][Ss][Cc](?:[Ee][Nn][Dd][Ii][Nn][Gg])?|[Dd][Ee][Ss][Cc](?:[Ee][Nn][Dd][Ii][Nn][Gg])?)';
 
 /**
- * One sort segment: a field path, optionally followed by `:` and a direction.
+ * The `sort` grammar, as a single JSON Schema `pattern` so a client sees the
+ * shape before it calls: one or more comma-separated segments, each a dotted
+ * field path (letters, digits, underscores, and dots, with no leading, trailing,
+ * or doubled dot) optionally followed by `:` and a {@link SORT_DIRECTION}, with
+ * spaces allowed around a segment and any whitespace around the whole value.
+ * Equivalent to `^\s*SEG(?: *, *SEG)*\s*$`, `SEG` being `path(?::direction)?`.
  *
- * The direction is deliberately unconstrained beyond excluding `,` and `:`.
- * openFDA validates only the field path — it splits a segment on its **last**
- * colon and checks the left side against the index mapping, so
- * `report_date:ascending` and `report_date:"desc"` both answer 200 while
- * `report_date:desc:asc` fails (its field path becomes `report_date:desc`).
- * Excluding `:` from the direction is therefore what makes the two-colon case
- * reject; narrowing the direction to `asc|desc` would reject values openFDA
- * accepts, which this check must never do.
- */
-const SORT_SEGMENT = `${SORT_FIELD_PATH}(?::[^,:]*)?`;
-
-/**
- * The `sort` grammar openFDA actually accepts, as a single JSON Schema `pattern`
- * so a client sees the shape before it calls.
+ * It is written as one character-class run plus lookaheads, never as a repeated
+ * segment group: on a long run of segments with no valid end, JavaScriptCore's
+ * backtracking cost on the repeated-group form grows several-hundredfold between
+ * 5,000 and 320,000 characters, and this pattern runs over caller-supplied text.
+ * After the leading whitespace, the lookaheads rule out, in order: a
+ * first segment opening on `,`, `:`, or `.`; a comma followed by an empty
+ * segment, a colon, or a dot; a space anywhere but beside a comma or in the
+ * trailing whitespace; a dot not followed by a path character; and a colon not
+ * followed by exactly one direction and the end of its segment — which is what
+ * rejects `report_date:desc:asc`, whose field path openFDA reads as
+ * `report_date:desc`.
  *
- * One or more comma-separated {@link SORT_SEGMENT} groups — multi-field sort is
- * real (`report_date:desc,status.exact:asc` returns 200), and an empty segment
- * from a leading, trailing, or doubled comma is not (openFDA answers a
- * `query_shard_exception` for the empty field path).
+ * Multi-field sort is real (`report_date:desc,status.exact:asc` returns 200), and
+ * an empty segment from a leading, trailing, or doubled comma is not (openFDA
+ * answers a `query_shard_exception` for the empty field path). openFDA trims the
+ * whole value of any whitespace — tabs, line breaks, and no-break spaces
+ * included, exactly the set `\s` matches — and then the spaces around each
+ * segment, and honours the sort: `classification.exact:desc, report_date:asc`
+ * returns the same ordering as the space-free form, and so do
+ * `  report_date:asc  ` and `report_date:asc\t`. Inside the value only spaces
+ * beside a comma are trimmed: any other whitespace there answers 400, and a space
+ * *inside* a segment is not trimmed, so `report_date :asc` stays rejected here as
+ * openFDA rejects it (`query_shard_exception` for `report_date `).
  *
- * Spaces around a segment are allowed because openFDA trims them and honours the
- * sort: `classification.exact:desc, report_date:asc` returns the same ordering as
- * the space-free form, and so does `  report_date:asc  `. Only literal spaces are
- * trimmed — a tab answers 400 — and a space *inside* a field path is not trimmed
- * either, so `report_date :asc` stays rejected here as openFDA rejects it
- * (`query_shard_exception` for `report_date `).
- *
- * Deliberately shape-only. A well-formed path naming a field that does not exist
- * or is analyzed still needs the upstream request to arbitrate — openFDA answers
- * those with a 400 that names the field, which the `query_error` contract
+ * The field path is shape-only. A well-formed path naming a field that does not
+ * exist or is analyzed still needs the upstream request to arbitrate — openFDA
+ * answers those with a 400 that names the field, which the `query_error` contract
  * surfaces as-is.
  */
-export const SORT_EXPRESSION_PATTERN = new RegExp(`^ *${SORT_SEGMENT}(?: *, *${SORT_SEGMENT})* *$`);
+export const SORT_EXPRESSION_PATTERN = new RegExp(
+  [
+    String.raw`^\s*(?=\S)`,
+    '(?![,:.])',
+    String.raw`(?!.*,(?: *[,:.]|\s*$))`,
+    String.raw`(?!.*[^\s,] +[^\s,])`,
+    String.raw`(?!.*\.(?:[.:,\s]|$))`,
+    String.raw`(?!.*:(?!${SORT_DIRECTION}(?: *,|\s*$)))`,
+    String.raw`[A-Za-z0-9_.:, ]*[A-Za-z0-9_]\s*$`,
+  ].join(''),
+);
 
 /**
- * A `sort` input constrained to openFDA's accepted shape. Chain `.optional()`
- * where an unsorted result set is a legitimate mode. Supersedes
- * {@link nonBlankString} on this input: the anchored pattern already excludes
- * blank and whitespace-only values, and `minLength` stays advertised alongside it.
+ * Rewrite every direction in an accepted `sort` to the lowercase `asc` or `desc`
+ * openFDA honours — `ASC` and `ascending` to `asc`, `Desc` and `DESCENDING` to
+ * `desc` — leaving field paths and whitespace as sent. A value already in that
+ * form passes through unchanged.
+ */
+function normalizeSortDirections(sort: string): string {
+  return sort.replace(
+    /:(asc|desc)(?:ending)?(?= *,|\s*$)/gi,
+    (_match, direction: string) => `:${direction.toLowerCase()}`,
+  );
+}
+
+/**
+ * A `sort` input constrained to the grammar openFDA honours, with each direction
+ * normalized after the pattern accepts it — inside the schema, so every handler
+ * and the staged path receive the lowercase form. Chain `.optional()` where an
+ * unsorted result set is a legitimate mode. Supersedes {@link nonBlankString} on
+ * this input: the anchored pattern already excludes blank and whitespace-only
+ * values, and `minLength` stays advertised alongside it.
  */
 export function sortExpression() {
   return z
@@ -125,8 +162,62 @@ export function sortExpression() {
     .min(1)
     .regex(
       SORT_EXPRESSION_PATTERN,
-      'Must be one or more comma-separated field paths, each optionally suffixed with :asc or :desc — e.g. "report_date:desc" or "report_date:desc,status.exact:asc". A field path may contain only letters, digits, underscores, and dots.',
-    );
+      'Must be one or more comma-separated field paths, each optionally suffixed with :asc or :desc (any letter case; ascending and descending are also accepted) — e.g. "report_date:desc" or "report_date:desc,status.exact:asc". A field path may contain only letters, digits, underscores, and dots, and any other direction is rejected.',
+    )
+    .overwrite(normalizeSortDirections);
+}
+
+/**
+ * A `fields` input: dotted record paths the search tools project each inline
+ * record to. Chain `.optional()` — whole records are the default — and describe
+ * with {@link fieldsDescription}.
+ *
+ * Each path carries the advertised `pattern`, so a malformed entry is rejected at
+ * argument validation, before any upstream request. openFDA has no field
+ * selection of its own (an unknown query parameter answers HTTP 400), so the
+ * projection runs server-side on the fetched page.
+ *
+ * No `.max()`, on the list or on a path: the list shapes output only, and a
+ * longer one costs nothing a shorter one does not — a path matching no record
+ * key is named on the response notice rather than rejected. An empty list is the
+ * same as omitting the input, since form-based clients send `[]` for an unset
+ * array.
+ */
+export function fieldSelection() {
+  return z.array(
+    z
+      .string()
+      .regex(
+        FIELD_PATH_PATTERN,
+        'Each field must be a dotted record path of letters, digits, underscores, and dots — e.g. "patient.drug.medicinalproduct".',
+      ),
+  );
+}
+
+/**
+ * One dotted field path — runs of `[A-Za-z0-9_]` joined by `.`, the shape of
+ * every path in `field-catalog.ts` (`.exact` subfields included) and of every key
+ * path on an openFDA record — anchored, in a form whose cost stays linear on
+ * Bun's engine: one character-class run plus three lookaheads ruling out a
+ * leading, doubled, or trailing dot. The nested-quantifier form matches the same strings,
+ * but on a long run of `a.a.a.` with no valid end JavaScriptCore's backtracking
+ * cost jumps roughly sixtyfold between 80,000 and 320,000 characters, and this
+ * pattern runs over caller-supplied text. No flags, since the advertised JSON
+ * Schema `pattern` carries none: `.` stopping at a line break changes nothing,
+ * because the class already rejects one.
+ */
+const FIELD_PATH_PATTERN = /^(?!\.)(?!.*\.\.)(?!.*\.$)[A-Za-z0-9_.]+$/;
+
+/**
+ * `fields` description, naming the identity keys every projected record keeps so
+ * a caller can tell its records apart without asking for them, and an example of
+ * paths the tool's own records carry — a caller copies the example.
+ */
+export function fieldsDescription(
+  identityKeys: readonly string[],
+  example: readonly string[],
+): string {
+  return `Dotted record paths to keep on each returned record, e.g. [${example.map((path) => `"${path}"`).join(', ')}] — any key path on a returned record works, and openfda_describe_fields lists the searchable ones. Each record is projected to these paths plus its identity key (${identityKeys.join(', ')}) before the inline byte budget is measured, identically on both response surfaces, and a path through an array applies to every element. Use it when records are large: a page_bytes over the budget comes with the largest fields of the oversized record. A path no returned record carries is named on the notice. Omit for whole records. Paths take only letters, digits, underscores, and dots; anything else is rejected before the request. With stage=true, only the inline page is projected — the staged table keeps its columns.`;
 }
 
 /* --- search delimiter balance --- */

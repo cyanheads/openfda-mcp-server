@@ -3,13 +3,37 @@
  * search tool that can stage shares one contract: staging is opt-in, staging is
  * disclosed in content[] with a describe-then-query pointer, the canvas.acquire()
  * failures are declared, and an empty inline page for a query that matched
- * records never renders as "no results". Asserted against every staging tool
- * rather than the two or three a bug report happens to name.
+ * records never renders as "no results". A staged call reports the same `meta` as
+ * the plain call for the same request (#73), checked at the handler boundary with
+ * only the openFDA service and the canvas accessor stubbed. Asserted against every
+ * staging tool rather than the two or three a bug report happens to name.
  * @module tests/mcp-server/tools/definitions/canvas-staging-parity.test
  */
 
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { describe, expect, it } from 'vitest';
+import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('@/services/canvas/canvas-accessor.js', () => {
+  let _canvas: unknown;
+  return {
+    getCanvas: () => _canvas,
+    __setMock: (c: unknown) => {
+      _canvas = c;
+    },
+  };
+});
+
+vi.mock('@/services/openfda/openfda-service.js', () => {
+  let _svc: unknown;
+  return {
+    getOpenFdaService: () => _svc,
+    __setMock: (s: unknown) => {
+      _svc = s;
+    },
+  };
+});
+
 import { lookupNdcTool } from '@/mcp-server/tools/definitions/lookup-ndc.tool.js';
 import { searchAdverseEventsTool } from '@/mcp-server/tools/definitions/search-adverse-events.tool.js';
 import { searchAnimalEventsTool } from '@/mcp-server/tools/definitions/search-animal-events.tool.js';
@@ -20,16 +44,20 @@ import { searchRecallsTool } from '@/mcp-server/tools/definitions/search-recalls
 import { searchTobaccoReportsTool } from '@/mcp-server/tools/definitions/search-tobacco-reports.tool.js';
 import { AGGREGATE_ROUTE } from '@/services/openfda/canvas-spill.js';
 
-/** Minimal valid input per tool, before the `stage` default is applied. */
+/**
+ * Minimal valid input per tool, before the `stage` default is applied, and the
+ * tool's own no-match line — asserted exactly, since the past-the-end note also
+ * opens with "No" and ends with a period.
+ */
 const STAGING_TOOLS = [
-  [searchAdverseEventsTool, { category: 'drug' }],
-  [searchAnimalEventsTool, {}],
-  [searchDeviceClearancesTool, { pathway: '510k' }],
-  [searchDrugApprovalsTool, {}],
-  [searchDrugShortagesTool, {}],
-  [searchRecallsTool, { category: 'drug' }],
-  [searchTobaccoReportsTool, {}],
-  [lookupNdcTool, { search: 'aspirin' }],
+  [searchAdverseEventsTool, { category: 'drug' }, 'No results found.'],
+  [searchAnimalEventsTool, {}, 'No animal adverse event reports found.'],
+  [searchDeviceClearancesTool, { pathway: '510k' }, 'No device clearances found.'],
+  [searchDrugApprovalsTool, {}, 'No drug approvals found.'],
+  [searchDrugShortagesTool, {}, 'No drug shortage records found.'],
+  [searchRecallsTool, { category: 'drug' }, 'No results found.'],
+  [searchTobaccoReportsTool, {}, 'No tobacco problem reports found.'],
+  [lookupNdcTool, { search: 'aspirin' }, 'No NDC records found.'],
 ] as const;
 
 const formatText = (
@@ -40,9 +68,9 @@ const formatText = (
   return blocks.map((b) => b.text).join('\n');
 };
 
-describe.each(STAGING_TOOLS.map(([tool, input]) => [tool.name, tool, input] as const))(
+describe.each(STAGING_TOOLS.map(([tool, input, miss]) => [tool.name, tool, input, miss] as const))(
   '%s — canvas staging contract',
-  (_name, tool, baseInput) => {
+  (_name, tool, baseInput, miss) => {
     it('defaults staging off so a plain search costs one upstream request (#30)', () => {
       const parsed = tool.input.parse(baseInput) as { stage: boolean };
       expect(parsed.stage).toBe(false);
@@ -213,16 +241,125 @@ describe.each(STAGING_TOOLS.map(([tool, input]) => [tool.name, tool, input] as c
         meta: { total: 0, skip: 500, limit: 0, lastUpdated: '2026-06-01' },
         results: [],
       });
-      expect(text).toMatch(/^No .*\.$/);
+      expect(text.split('\n').at(-1)).toBe(miss);
       expect(text).not.toContain('Retry with skip=0');
     });
 
-    it('keeps its own no-match wording when nothing matched', () => {
+    it('keeps its own no-match wording, after the metadata header, when nothing matched (#68)', () => {
       const text = formatText(tool, {
         meta: { total: 0, skip: 0, limit: 0, lastUpdated: '2026-06-01' },
         results: [],
       });
-      expect(text).toMatch(/^No .*\.$/);
+      const lines = text.split('\n');
+      expect(lines[0]).toBe(
+        '**0 total results** (returned: 0, skip: 0, limit: 0) | Data updated: 2026-06-01',
+      );
+      expect(lines.at(-1)).toBe(miss);
+    });
+
+    it('renders the staging line between the header and the no-match line on a staged miss (#68)', () => {
+      const text = formatText(tool, {
+        meta: { total: 0, skip: 0, limit: 0, lastUpdated: '2026-06-01' },
+        results: [],
+        canvas_id: 'cv_1',
+        spilled: false,
+        staged_rows: 0,
+      });
+      const lines = text.split('\n').filter(Boolean);
+      expect(lines[0]).toContain('Data updated: 2026-06-01');
+      expect(lines[1]).toBe('> Canvas `cv_1` acquired; no rows staged (spilled=false, 0 matched).');
+      expect(lines.at(-1)).toBe(miss);
     });
   },
 );
+
+/* --- #73: a staged call reports the plain call's meta for the same request --- */
+
+async function setMock(path: string, value: unknown) {
+  const mod = await import(path);
+  (mod as { __setMock: (v: unknown) => void }).__setMock(value);
+}
+
+/**
+ * Paged service stub over `total` records padded to `recordBytes`, echoing the
+ * requested `limit` and `skip` into `meta` the way openFDA and the service do.
+ */
+function makeSvc(total: number, recordBytes = 0) {
+  return {
+    query: vi.fn(async (_endpoint: string, params: { limit?: number; skip?: number }) => {
+      const skip = params.skip ?? 0;
+      const limit = params.limit ?? 1000;
+      const results: Record<string, unknown>[] = [];
+      for (let i = skip; i < Math.min(skip + limit, total); i++) {
+        results.push({ report_id: `rec-${i}`, blob: 'x'.repeat(recordBytes) });
+      }
+      return { meta: { total, skip, limit, lastUpdated: '2026-06-01' }, results };
+    }),
+  };
+}
+
+function makeCanvas() {
+  const instance = {
+    canvasId: 'cv_meta',
+    isNew: true,
+    registerTable: vi.fn(async (name: string, source: AsyncIterable<unknown>) => {
+      let rowCount = 0;
+      for await (const _row of source) rowCount++;
+      return { tableName: name, rowCount, columns: [] };
+    }),
+    drop: vi.fn(),
+  };
+  return { acquire: vi.fn().mockResolvedValue(instance) };
+}
+
+/** Each window and the `meta.limit` both modes must report for it. */
+const META_CASES = [
+  ['a miss', 0, 0, { limit: 2 }, 2],
+  ['a window past the end of the match', 5, 0, { limit: 3, skip: 7 }, 3],
+  ['a short page the budget did not bound', 3, 0, { limit: 10 }, 10],
+  ['a full page the budget did not bound', 50, 0, { limit: 10 }, 10],
+  ['a page the budget bounded', 40, 10_000, { limit: 10 }, 2],
+  ['a lone record over the budget that dropped nothing', 1, 70_000, { limit: 10 }, 10],
+] as const;
+
+/**
+ * Every tool hands its own `limit` to the shared staging path, so each runs the
+ * two windows the bug misreported (a miss, a short page); the full set of windows
+ * runs once, on the tool the bug was reported against. `canvas-spill.test.ts`
+ * tables the same windows at the `canvasResult` seam.
+ */
+const WIRING_CASES = META_CASES.filter(
+  ([name]) => name === 'a miss' || name === 'a short page the budget did not bound',
+);
+
+describe.each(
+  STAGING_TOOLS.map(
+    ([tool, input]) =>
+      [tool.name, tool, input, tool === searchRecallsTool ? META_CASES : WIRING_CASES] as const,
+  ),
+)('%s — staged meta matches the plain call (#73)', (_name, tool, baseInput, cases) => {
+  beforeEach(async () => {
+    await setMock('@/services/canvas/canvas-accessor.js', undefined);
+  });
+
+  it.each(cases)('on %s', async (_case, total, recordBytes, window, limit) => {
+    await setMock('@/services/openfda/openfda-service.js', makeSvc(total, recordBytes));
+    const input = { ...baseInput, ...window } as never;
+    const plain = await runToolContract(tool, input);
+
+    await setMock('@/services/canvas/canvas-accessor.js', makeCanvas());
+    const staged = await runToolContract(tool, { ...baseInput, ...window, stage: true } as never);
+
+    const meta = (r: typeof plain) => (r.structuredContent as { meta: unknown }).meta;
+    const header = (r: typeof plain) =>
+      (r.content[0] as { text: string }).text.split('\n')[0] ?? '';
+
+    expect(plain.isError).toBeFalsy();
+    expect(staged.isError).toBeFalsy();
+    expect((meta(plain) as { limit: number }).limit).toBe(limit);
+    expect(meta(staged)).toEqual(meta(plain));
+    // The #68 header prints meta.limit into content[] on every page, empty or not.
+    expect(header(staged)).toBe(header(plain));
+    expect(header(staged)).toContain(`limit: ${limit})`);
+  });
+});

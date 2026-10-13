@@ -21,10 +21,17 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import {
+  appliedLimit,
   boundPageToBudget,
   type PageBudgetFields,
   pageBudgetFields,
 } from '@/services/openfda/page-budget.js';
+import {
+  type ProjectionFields,
+  projectionFields,
+  projectRecords,
+  type RecordProjection,
+} from '@/services/openfda/record-projection.js';
 
 /** openFDA hard pagination ceiling — `skip` may not exceed this. */
 export const OPENFDA_MAX_ROWS = 25_000;
@@ -159,12 +166,20 @@ export interface OpenFdaSpillResult {
   /** Dataset `last_updated` date from upstream metadata. */
   lastUpdated: string;
   /**
+   * Page size applied to the inline page — the caller's `limit`, lowered to the
+   * records kept only when the inline byte budget dropped some, exactly as the
+   * plain search path reports it.
+   */
+  limit: number;
+  /**
    * Inline page — the caller's `limit`/`skip` window over the matched set,
    * bounded by the same inline byte budget the non-staged path applies.
    */
   preview: Record<string, unknown>[];
   /** Byte-budget disclosure for `preview` — empty when the whole window fit. */
   previewBudget: PageBudgetFields;
+  /** Projection disclosure for `preview` — empty or absent when the call passed no `fields`. */
+  previewProjection?: ProjectionFields | undefined;
   /** Pagination offset applied to the inline page. */
   skip: number;
   /** True when rows were registered on the canvas. */
@@ -193,9 +208,10 @@ function newTableName(): string {
  * `getCanvas()` is defined before invoking.
  *
  * The inline page is the same `limit`/`skip` window the plain search path
- * returns, under the same inline byte budget; the drain always starts at offset 0
- * and runs until its own (much larger) byte budget, the row ceiling, or the
- * matched set is exhausted.
+ * returns, under the same `fields` projection and inline byte budget; the drain
+ * always starts at offset 0, stages whole records into the table's column
+ * projection, and runs until its own (much larger) byte budget, the row ceiling,
+ * or the matched set is exhausted.
  */
 export async function spillSearch(opts: {
   endpoint: string;
@@ -208,8 +224,10 @@ export async function spillSearch(opts: {
   limit: number;
   /** Inline page offset into the matched set — the caller's `skip`. */
   skip: number;
+  /** The caller's `fields` — shapes the inline page only, never the staged table. */
+  projection?: RecordProjection | undefined;
 }): Promise<OpenFdaSpillResult> {
-  const { endpoint, search, sort, canvasId, schema, ctx, limit, skip } = opts;
+  const { endpoint, search, sort, canvasId, schema, ctx, limit, skip, projection } = opts;
   const canvas = getCanvas();
   if (!canvas) {
     throw new Error('DataCanvas is not enabled. Set CANVAS_PROVIDER_TYPE=duckdb.');
@@ -239,20 +257,25 @@ export async function spillSearch(opts: {
         .results;
 
   /*
-   * The staged page carries the same inline byte budget the plain path applies —
-   * a staged call and an unstaged one must agree about what a `limit`/`skip`
-   * window holds, and staging is not a reason to hand back an unholdable page.
+   * The staged page carries the same projection and inline byte budget the plain
+   * path applies — a staged call and an unstaged one must agree about what a
+   * `limit`/`skip` window holds, and staging is not a reason to hand back an
+   * unholdable page. The drain below reads the unprojected probe rows.
    */
-  const page = boundPageToBudget(requested);
+  const page = boundPageToBudget(projectRecords(requested, projection));
   const preview = page.records;
   const previewBudget = pageBudgetFields(page);
+  const previewProjection = projectionFields(projection);
+  const appliedPageLimit = appliedLimit(page, limit);
 
   if (probe.results.length === 0) {
     return {
       canvasId: instance.canvasId,
       lastUpdated,
+      limit: appliedPageLimit,
       preview,
       previewBudget,
+      previewProjection,
       skip,
       spilled: false,
       stagedRows: 0,
@@ -302,8 +325,10 @@ export async function spillSearch(opts: {
   return {
     canvasId: instance.canvasId,
     lastUpdated,
+    limit: appliedPageLimit,
     preview,
     previewBudget,
+    previewProjection,
     skip,
     spilled: true,
     stagedRows: handle.rowCount,
@@ -337,11 +362,12 @@ export function canvasResult(spill: OpenFdaSpillResult) {
     meta: {
       total: spill.total,
       skip: spill.skip,
-      limit: spill.preview.length,
+      limit: spill.limit,
       lastUpdated: spill.lastUpdated,
     },
     results: spill.preview,
     ...spill.previewBudget,
+    ...spill.previewProjection,
     canvas_id: spill.canvasId,
     spilled: spill.spilled,
     staged_rows: spill.stagedRows,

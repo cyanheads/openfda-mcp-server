@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.8.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/openfda-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.2.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.2-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.8.0-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/openfda-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.3-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -70,14 +70,15 @@ FDA data on drugs, food, devices, and recalls from the openFDA public API. Searc
 
 ### `openfda_search_animal_events` <sub>tool</sub>
 
-- Optional `search` over veterinary reports, e.g. `animal.species`, `drug.brand_name`, `reaction.veddra_term_name`, `serious_ae`; up to 1000 records per page
+- Optional `search` over veterinary reports, e.g. `animal.species`, `drug.active_ingredients.name`, `reaction.veddra_term_name`, `serious_ae`; up to 1000 records per page
+- Brand and manufacturer names are masked as `MSK` on every record, so search by active ingredient; `drug.manufacturer.registration_number` narrows to one approval
 - Records carry animal species, breed, age, and weight, the drug and route, VeDDRA reaction terms, and outcome
 
 ---
 
 ### `openfda_search_drug_shortages` <sub>tool</sub>
 
-- Optional `search` over `status` (`Current` / `Resolved`), `therapeutic_category`, `generic_name`, or `company_name`; up to 1000 records per page
+- Optional `search` over `status` (`Current` / `To Be Discontinued` / `Resolved`), `therapeutic_category`, `generic_name`, or `company_name`; up to 1000 records per page
 - Each record's `openfda` block carries `brand_name`, `product_ndc`, and `rxcui` for chaining into `openfda_get_drug_label` or `openfda_lookup_ndc`
 
 ---
@@ -168,13 +169,14 @@ openFDA-specific:
 
 - One client for all 20 openFDA endpoints: 429 and 5xx responses retry with exponential backoff, a 404 is an empty result, and a 400 becomes an actionable `query_error`. No API key is needed (1K requests/day); a free `OPENFDA_API_KEY` raises that to 120K/day
 - Queries are `field:value` over dotted paths that differ per endpoint, joined by AND/OR, with phrases in double quotes; `openfda_describe_fields` lists the paths. A query with an unbalanced quote, parenthesis, or range bracket, or a trailing backslash, fails as `malformed_search` before any request
-- Paging: `limit` up to 1000 and `skip` up to openFDA's 25,000-record ceiling (`pagination_limit_reached` past it). Search pages are also held to a 24,000-byte serialized budget, so an oversized page returns fewer records than requested, but never zero
+- Paging: `limit` up to 1000 and `skip` up to openFDA's 25,000-record ceiling (`pagination_limit_reached` past it). Search pages are also held to a 24,000-byte serialized budget, so an oversized page returns fewer records than requested, but never zero. A single record over the budget comes back whole, with its largest fields named
+- Field selection: `fields` on any `openfda_search_*` tool or `openfda_lookup_ndc` projects each record to the dotted paths you name (`patient.drug.medicinalproduct`) plus its identity key, before the page is measured — the way to read a 4 MB device recall or a 100 KB drug report inline
 - Optional DataCanvas staging (`CANVAS_PROVIDER_TYPE=duckdb`): `stage: true` or a `canvas_id` on any `openfda_search_*` tool or `openfda_lookup_ndc` drains the matched set into a DuckDB table, up to a size budget reported by `staged_rows` and `truncated`
 - Optional local bulk mirror (`OPENFDA_MIRROR_ENABLED=true`): a self-refreshing SQLite copy of four drug datasets that answers exact-key lookups without spending API budget, with live fallback
 
 Agent-friendly output:
 
-- Disclosed bounds: `page_omitted` / `page_bytes`, the label `outline`, and `staged_rows` report every cut on both `content[]` and `structuredContent`, with the routes to the rest
+- Disclosed bounds: `page_omitted` / `page_bytes` / `page_largest_fields`, `projected_fields`, the label `outline`, and `staged_rows` report every cut and every over-budget page on both `content[]` and `structuredContent`, with the routes to the rest
 - Typed failure contracts: callers branch on `error.data.reason` (`rate_limited`, `query_error`, `not_aggregatable`, `pagination_limit_reached`, `canvas_disabled`, ...) instead of parsing messages
 - Unknown vs. absent: `openfda_drug_profile` returns `null` for a section with no FDA record and lists a section whose sub-query failed in `degraded[]`
 - Empty-result guidance: a no-match search returns a notice pointing at `openfda_describe_fields` and broader terms; a page past the end reports the real match count
@@ -374,9 +376,9 @@ The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `
 |:---|:---|
 | `src/index.ts` | `createApp()` entry point: tool registration, service setup, mirror refresh wiring. |
 | `src/config` | Server-specific environment variable parsing and validation with Zod. |
-| `src/mcp-server/tools/definitions` | Tool definitions (`*.tool.ts`), fourteen in all. |
+| `src/mcp-server/tools/definitions` | Tool definitions (`*.tool.ts`), fifteen in all. |
 | `src/mcp-server/tools` | Shared tool helpers: per-endpoint field catalog, input schemas and guards, formatters, SPL table rendering. |
-| `src/services/openfda` | openFDA API client (retry, rate limits, error normalization), inline page budget, canvas staging. |
+| `src/services/openfda` | openFDA API client (retry, rate limits, error normalization), inline page budget, `fields` record projection, canvas staging. |
 | `src/services/openfda/mirror` | Opt-in local bulk mirror: dataset registry, dump reader, harvester, mirror-vs-live query gate, refresh schedule. |
 | `src/services/canvas` | DataCanvas accessor for staging and SQL. |
 | `scripts/openfda-mirror.ts` | Mirror lifecycle CLI behind the `mirror:*` scripts. |

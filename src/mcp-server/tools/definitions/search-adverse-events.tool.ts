@@ -11,15 +11,19 @@ import { CanvasIdSchema, type ColumnSchema } from '@cyanheads/mcp-ts-core/canvas
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
-  canvasStagingLine,
-  emptyPageNote,
+  emptyPageBody,
   emptyResultMessage,
   formatRemainingFields,
-  noMatchNote,
+  lineContent,
+  projectedRecordLines,
+  searchLead,
+  singleLine,
 } from '@/mcp-server/tools/format-utils.js';
 import {
   assertSearchDelimitersBalanced,
   assertSkipWithinCeiling,
+  fieldSelection,
+  fieldsDescription,
   malformedSearchError,
   nonBlankString,
   SEARCH_BALANCE_NOTE,
@@ -44,10 +48,22 @@ import {
   boundedPage,
   META_LIMIT_DESCRIPTION,
   PAGE_BUDGET_NOTE,
-  pageBudgetLine,
   pageBudgetNotice,
   pageBudgetOutputShape,
 } from '@/services/openfda/page-budget.js';
+import {
+  projectionNotice,
+  projectionOutputShape,
+  recordProjection,
+} from '@/services/openfda/record-projection.js';
+
+/**
+ * Keys that tell one report apart, kept on every `fields`-projected record:
+ * `safetyreportid` on drug reports, `report_number` on food and device reports,
+ * plus `mdr_report_key` on device reports. A category's record carries only its
+ * own, so one list serves all three.
+ */
+const IDENTITY_KEYS = ['safetyreportid', 'report_number', 'mdr_report_key'] as const;
 
 /**
  * Canvas table projections per category — each call stages one category, so the
@@ -108,7 +124,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
     sort: sortExpression()
       .optional()
       .describe(
-        'Sort expression — a field path optionally suffixed with :asc or :desc; comma-separate for multi-field sort. Field paths take only letters, digits, underscores, and dots; anything else is rejected before the request. Sortable date fields are category-specific: drug → receivedate:desc (or receiptdate), food → date_created:desc (or date_started), device → date_received:desc (or date_of_event). A field from another category (e.g. receivedate on food or device) causes a query error — use the field for this category.',
+        'Sort expression — a field path optionally suffixed with :asc or :desc (any letter case; :ascending and :descending are also accepted, and every direction is sent as asc or desc); comma-separate for multi-field sort. Field paths take only letters, digits, underscores, and dots; any other character or direction is rejected before the request. Sortable date fields are category-specific: drug → receivedate:desc (or receiptdate), food → date_created:desc (or date_started), device → date_received:desc (or date_of_event). A field from another category (e.g. receivedate on food or device) causes a query error — use the field for this category.',
       ),
     limit: z
       .number()
@@ -119,6 +135,9 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
         `Maximum number of records to return (1-1000, default 10). ${PAGE_BUDGET_NOTE} Drug reports are by far the largest — a single drug/event report averages tens of kilobytes where a food/event report is a few hundred bytes.`,
       ),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
+    fields: fieldSelection()
+      .optional()
+      .describe(fieldsDescription(IDENTITY_KEYS, ['receivedate', 'patient.drug.medicinalproduct'])),
     stage: stageInput,
     canvas_id: CanvasIdSchema.optional().describe(
       'Canvas ID returned by a prior stage=true call to this tool or another openFDA search tool (openfda_search_* or openfda_lookup_ndc). Passing one stages this search onto that canvas (same effect as stage=true) so result sets accumulate for cross-table joins. Omit to stage onto a fresh canvas.',
@@ -141,6 +160,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
         'Adverse event records — fields vary by category (drug: patient/reactions/drugs, device: device details/event type, food: products/outcomes)',
       ),
     ...pageBudgetOutputShape,
+    ...projectionOutputShape,
     ...canvasOutputShape,
   }),
 
@@ -154,7 +174,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       .string()
       .optional()
       .describe(
-        'Canvas staging disclosure when the call staged, the byte-budget disclosure and the routes to the withheld records when the inline page was bounded, and guidance when results are empty or paging overshot — how to broaden filters or adjust the query.',
+        'Canvas staging disclosure when the call staged, the fields projection and any requested path no record carries, the byte-budget disclosure when the inline page was bounded or one record exceeds it (with the routes to the withheld records and the largest fields of the oversized record), and guidance when results are empty or paging overshot — how to broaden filters or adjust the query.',
       ),
   },
 
@@ -211,6 +231,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
         totalUnverified,
       );
 
+    const projection = recordProjection(input.fields, IDENTITY_KEYS);
     const canvas = getCanvas();
     const staging = input.stage || input.canvas_id !== undefined;
     if (staging && !canvas) {
@@ -229,6 +250,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
         schema: ADVERSE_EVENT_SCHEMAS[input.category],
         limit: input.limit,
         skip: input.skip,
+        projection,
         ctx,
       });
       const staged = canvasResult(spill);
@@ -237,6 +259,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       ctx.enrich.notice(
         [
           spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
+          projectionNotice(staged),
           pageBudgetNotice(staged),
           stagingNotice(spill),
         ]
@@ -258,7 +281,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       ctx,
     );
 
-    const page = boundedPage(response);
+    const page = boundedPage(response, projection);
 
     ctx.log.info('Adverse event search completed', {
       category: input.category,
@@ -273,6 +296,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       page.results.length === 0
         ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
         : undefined,
+      projectionNotice(page),
       pageBudgetNotice(page),
     ].filter(Boolean);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
@@ -281,46 +305,34 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
   },
 
   format: (result) => {
-    if (result.results.length === 0 && result.meta.total === 0) {
-      return [
-        {
-          type: 'text' as const,
-          text: noMatchNote('No results found.', result.meta.skip, result.meta.totalUnverified),
-        },
-      ];
-    }
-
-    const lines: string[] = [
-      `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Data updated: ${result.meta.lastUpdated}\n`,
-    ];
-
-    const budget = pageBudgetLine(result);
-    if (budget) lines.push(`${budget}\n`);
-
-    const staging = canvasStagingLine(result.meta.total, result);
-    if (staging) lines.push(`${staging}\n`);
-
+    const lines = searchLead(result);
     if (result.results.length === 0) {
-      lines.push(emptyPageNote(result.meta.total, result.meta.skip, result));
+      lines.push(emptyPageBody(result, 'No results found.'));
       return [{ type: 'text' as const, text: lines.join('\n') }];
     }
 
     for (const r of result.results) {
+      if (result.projected_fields) {
+        lines.push(...projectedRecordLines(r, IDENTITY_KEYS), '');
+        continue;
+      }
       // Device adverse events. Checked before `patient`: a device/event record
       // also carries a `patient` array, so a patient-first branch would route
       // every device report into the drug renderer.
       if (r.device) {
-        lines.push(`### Report ${r.report_number ?? r.mdr_report_key ?? 'N/A'}`);
-        if (r.event_type) lines.push(`**Event type:** ${r.event_type}`);
+        lines.push(singleLine(`### Report ${r.report_number ?? r.mdr_report_key ?? 'N/A'}`));
+        if (r.event_type) lines.push(singleLine(`**Event type:** ${r.event_type}`));
         for (const d of Array.isArray(r.device) ? r.device : []) {
           lines.push(
-            `**Device:** ${d.brand_name ?? d.generic_name ?? 'Unknown'}${d.manufacturer_d_name ? ` by ${d.manufacturer_d_name}` : ''}`,
+            singleLine(
+              `**Device:** ${d.brand_name ?? d.generic_name ?? 'Unknown'}${d.manufacturer_d_name ? ` by ${d.manufacturer_d_name}` : ''}`,
+            ),
           );
           lines.push(...formatRemainingFields(d, new Set(['brand_name', 'manufacturer_d_name'])));
         }
         for (const t of (r.mdr_text ?? []) as Record<string, unknown>[]) {
           const label = t.text_type_code ? `Narrative (${t.text_type_code})` : 'Narrative';
-          if (t.text) lines.push(`**${label}:** ${t.text as string}`);
+          if (t.text) lines.push(singleLine(`**${label}:** ${t.text as string}`));
           lines.push(...formatRemainingFields(t, new Set(['text', 'text_type_code'])));
         }
 
@@ -336,15 +348,19 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
           .filter(Boolean)
           .join(', ');
 
-        lines.push(`### Report ${r.safetyreportid ?? 'N/A'}`);
+        lines.push(singleLine(`### Report ${r.safetyreportid ?? 'N/A'}`));
         lines.push(
-          `**Date:** ${r.receivedate ?? 'N/A'} | **Serious:** ${r.serious === '1' ? 'Yes' : r.serious === '2' ? 'No' : (r.serious ?? 'N/A')}`,
+          singleLine(
+            `**Date:** ${r.receivedate ?? 'N/A'} | **Serious:** ${r.serious === '1' ? 'Yes' : r.serious === '2' ? 'No' : (r.serious ?? 'N/A')}`,
+          ),
         );
         if (patient.patientsex)
           lines.push(
-            `**Patient:** Sex ${patient.patientsex === '1' ? 'Male' : patient.patientsex === '2' ? 'Female' : patient.patientsex}`,
+            singleLine(
+              `**Patient:** Sex ${patient.patientsex === '1' ? 'Male' : patient.patientsex === '2' ? 'Female' : patient.patientsex}`,
+            ),
           );
-        if (reactions) lines.push(`**Reactions:** ${reactions}`);
+        if (reactions) lines.push(singleLine(`**Reactions:** ${reactions}`));
         for (const rx of (patient.reaction ?? []) as Record<string, unknown>[]) {
           lines.push(...formatRemainingFields(rx, new Set(['reactionmeddrapt'])));
         }
@@ -369,7 +385,9 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
             ]
               .filter(Boolean)
               .join(', ');
-            lines.push(`- ${d.medicinalproduct ?? 'Unknown'}${detail ? ` (${detail})` : ''}`);
+            lines.push(
+              `- ${lineContent(`${d.medicinalproduct ?? 'Unknown'}${detail ? ` (${detail})` : ''}`)}`,
+            );
             lines.push(
               ...formatRemainingFields(
                 d,
@@ -389,14 +407,18 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       }
       // Food adverse events
       else if (r.products || r.reactions) {
-        lines.push(`### Report ${r.report_number ?? 'N/A'}`);
+        lines.push(singleLine(`### Report ${r.report_number ?? 'N/A'}`));
         if (r.reactions)
           lines.push(
-            `**Reactions:** ${(Array.isArray(r.reactions) ? r.reactions : [r.reactions]).join(', ')}`,
+            singleLine(
+              `**Reactions:** ${(Array.isArray(r.reactions) ? r.reactions : [r.reactions]).join(', ')}`,
+            ),
           );
         if (r.outcomes)
           lines.push(
-            `**Outcomes:** ${(Array.isArray(r.outcomes) ? r.outcomes : [r.outcomes]).join(', ')}`,
+            singleLine(
+              `**Outcomes:** ${(Array.isArray(r.outcomes) ? r.outcomes : [r.outcomes]).join(', ')}`,
+            ),
           );
         const productsList = (r.products ?? []) as Record<string, unknown>[];
         if (productsList.length > 0) {
@@ -409,7 +431,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
             ]
               .filter(Boolean)
               .join(', ');
-            lines.push(`- ${name}${detail ? ` (${detail})` : ''}`);
+            lines.push(`- ${lineContent(`${name}${detail ? ` (${detail})` : ''}`)}`);
             lines.push(
               ...formatRemainingFields(p, new Set(['name_brand', 'role', 'industry_code'])),
             );

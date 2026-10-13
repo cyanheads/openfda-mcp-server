@@ -101,8 +101,86 @@ const DEVICE_RECALLS: Record<string, unknown>[] = [
   },
 ];
 
-/** Live-shaped drug/enforcement record. */
+/**
+ * openFDA cuts `code_info` at 32,600 characters, mid-token, and continues the
+ * lot list in `more_code_info` (live `D-1396-2016` ends `…Service Code 2K8` and
+ * continues `870 , Lot Number 160950031C`).
+ */
+const CUT_CODE_INFO = `${'Lot Number 160950031A, '.repeat(1500)}Service Code 2K8`.slice(-32_600);
+const MORE_CODE_INFO = '870 , Lot Number 160950031C';
+
+/**
+ * Live drug/enforcement records: D-0435-2021 and D-0325-2021 as returned
+ * (openfda block trimmed), D-1396-2016 with its cut lot list, and a sparse
+ * D-0850-2026 that carries none of the fields #69 added — plus a stray
+ * `product_code`, a key no enforcement record carries, to show the projection
+ * drops fields outside its column set.
+ */
 const DRUG_ENFORCEMENT: Record<string, unknown>[] = [
+  {
+    status: 'Terminated',
+    city: 'Dublin',
+    state: 'OH',
+    country: 'United States',
+    classification: 'Class II',
+    openfda: { brand_name: ['XIGDUO'] },
+    product_type: 'Drugs',
+    event_id: '87512',
+    recalling_firm: 'Cardinal Health Inc.',
+    address_1: '7000 Cardinal Pl',
+    address_2: 'N/A',
+    postal_code: '43017-1091',
+    voluntary_mandated: 'Voluntary: Firm initiated',
+    initial_firm_notification: 'Letter',
+    distribution_pattern: 'FL, GA, SC',
+    recall_number: 'D-0435-2021',
+    product_description: 'xigduo XR (dapgliflozin/metformin HCl extended-release) tablets',
+    product_quantity: '664 bottles',
+    reason_for_recall: 'CGMP Deviations: Intermittent exposure to temperature excursion.',
+    recall_initiation_date: '20210315',
+    center_classification_date: '20210524',
+    termination_date: '20240617',
+    report_date: '20210602',
+    code_info: 'MP0077',
+  },
+  {
+    status: 'Terminated',
+    city: 'Princeton',
+    state: 'NJ',
+    country: 'United States',
+    classification: 'Class III',
+    openfda: { brand_name: ['METFORMIN HYDROCHLORIDE'] },
+    product_type: 'Drugs',
+    event_id: '87617',
+    recalling_firm: 'SUN PHARMACEUTICAL INDUSTRIES INC',
+    address_1: '2 Independence Way',
+    address_2: 'N/A',
+    postal_code: '08540-6620',
+    voluntary_mandated: 'Voluntary: Firm initiated',
+    initial_firm_notification: 'Letter',
+    distribution_pattern: 'Nationwide in the USA',
+    recall_number: 'D-0325-2021',
+    product_description: 'Metformin HCl Extended-Release Tablets, USP, 500 mg',
+    product_quantity: '2520 bottles',
+    reason_for_recall: 'Failed Moisture Limits: Out of specification for water content',
+    recall_initiation_date: '20210325',
+    center_classification_date: '20210407',
+    termination_date: '20220414',
+    report_date: '20210414',
+    code_info: 'Lot #JKU4639A, Exp 10/2022',
+  },
+  {
+    status: 'Terminated',
+    classification: 'Class II',
+    product_type: 'Drugs',
+    event_id: '74057',
+    recall_number: 'D-1396-2016',
+    initial_firm_notification:
+      'Two or more of the following: Email, Fax, Letter, Press Release, Telephone, Visit',
+    code_info: CUT_CODE_INFO,
+    more_code_info: MORE_CODE_INFO,
+    openfda: {},
+  },
   {
     status: 'Ongoing',
     city: 'Deerfield',
@@ -125,7 +203,10 @@ const DRUG_ENFORCEMENT: Record<string, unknown>[] = [
   },
 ];
 
-/** The enforcement table's column set as it stood before #59 — pinned so it cannot drift. */
+/**
+ * The enforcement table's column set — every top-level field the drug, device,
+ * and food enforcement endpoints return (#69), pinned so it cannot drift.
+ */
 const ENFORCEMENT_COLUMNS = [
   'recall_number',
   'event_id',
@@ -136,16 +217,34 @@ const ENFORCEMENT_COLUMNS = [
   'product_description',
   'reason_for_recall',
   'voluntary_mandated',
+  'initial_firm_notification',
   'distribution_pattern',
   'product_quantity',
+  'code_info',
+  'more_code_info',
   'recall_initiation_date',
   'report_date',
+  'center_classification_date',
+  'termination_date',
   'state',
   'country',
   'city',
-  'product_code',
-  'res_event_number',
+  'address_1',
+  'address_2',
+  'postal_code',
   'openfda',
+];
+
+/** The fields #69 added to the enforcement projection. */
+const ADDED_COLUMNS = [
+  'code_info',
+  'more_code_info',
+  'termination_date',
+  'center_classification_date',
+  'initial_firm_notification',
+  'address_1',
+  'address_2',
+  'postal_code',
 ];
 
 let canvas: DataCanvas | undefined;
@@ -164,6 +263,7 @@ beforeEach(() => {
   setCanvas(canvas);
   DATASETS['device/recall'] = DEVICE_RECALLS;
   DATASETS['device/enforcement'] = DRUG_ENFORCEMENT.map((r) => ({ ...r, product_type: 'Devices' }));
+  DATASETS['food/enforcement'] = DRUG_ENFORCEMENT.map((r) => ({ ...r, product_type: 'Food' }));
   DATASETS['drug/enforcement'] = DRUG_ENFORCEMENT;
 });
 
@@ -200,22 +300,27 @@ async function query(canvasId: string, sql: string) {
   );
 }
 
-describe('openfda_search_recalls staging — enforcement columns unchanged (#59)', () => {
-  it.each([
-    ['drug', 'enforcement'],
-    ['device', 'enforcement'],
-  ])(
-    '%s/%s stages the pinned enforcement column set with its values',
-    async (category, endpoint) => {
-      const staged = await stage({ category, endpoint });
+/*
+ * The first staging call starts DuckDB: up to ~750 ms alone, past the 5 s default
+ * when the full suite saturates the machine.
+ */
+const DUCKDB_SUITE = { timeout: 30_000 };
+
+describe('openfda_search_recalls staging — enforcement columns (#59, #69)', DUCKDB_SUITE, () => {
+  it.each(['drug', 'device', 'food'])(
+    '%s/enforcement stages every enforcement field and keeps the existing values',
+    async (category) => {
+      const staged = await stage({ category, endpoint: 'enforcement' });
       const { result } = await describeTable(staged.canvas_id ?? '');
       const table = result.tables.find((t) => t.name === staged.canvas_table);
+      // Pinned whole: product_code and res_event_number are gone — no enforcement
+      // record carries them, so a filter on them silently matched nothing.
       expect(table?.columns.map((c) => c.name)).toEqual(ENFORCEMENT_COLUMNS);
-      expect(table?.row_count).toBe(1);
+      expect(table?.row_count).toBe(DRUG_ENFORCEMENT.length);
 
       const rows = await query(
         staged.canvas_id ?? '',
-        `SELECT recall_number, classification, status, json_extract_string(openfda, '$.brand_name[0]') AS brand FROM ${staged.canvas_table}`,
+        `SELECT recall_number, classification, status, json_extract_string(openfda, '$.brand_name[0]') AS brand FROM ${staged.canvas_table} WHERE recall_number = 'D-0850-2026'`,
       );
       expect(rows.rows).toEqual([
         {
@@ -227,9 +332,65 @@ describe('openfda_search_recalls staging — enforcement columns unchanged (#59)
       ]);
     },
   );
+
+  it('answers the affected-lot question in SQL, a lot list cut at 32,600 characters included', async () => {
+    const staged = await stage({ category: 'drug' });
+    const lots = await query(
+      staged.canvas_id ?? '',
+      `SELECT recall_number, code_info FROM ${staged.canvas_table} WHERE recall_number IN ('D-0435-2021', 'D-0325-2021') ORDER BY recall_number`,
+    );
+    expect(lots.rows).toEqual([
+      { recall_number: 'D-0325-2021', code_info: 'Lot #JKU4639A, Exp 10/2022' },
+      { recall_number: 'D-0435-2021', code_info: 'MP0077' },
+    ]);
+
+    const rows = await query(
+      staged.canvas_id ?? '',
+      `SELECT length(code_info) AS cut_at, code_info || coalesce(more_code_info, '') AS lots FROM ${staged.canvas_table} WHERE recall_number = 'D-1396-2016'`,
+    );
+    expect(Number(rows.rows[0]?.cut_at)).toBe(32_600);
+    expect(rows.rows[0]?.lots).toBe(`${CUT_CODE_INFO}${MORE_CODE_INFO}`);
+    expect(rows.rows[0]?.lots).toContain('Service Code 2K8870 , Lot Number 160950031C');
+  });
+
+  it('stages recall status, dates, notification, and firm address', async () => {
+    const staged = await stage({ category: 'food' });
+    const rows = await query(
+      staged.canvas_id ?? '',
+      `SELECT ${ADDED_COLUMNS.filter((c) => !c.endsWith('code_info')).join(', ')} FROM ${staged.canvas_table} WHERE recall_number = 'D-0325-2021'`,
+    );
+    expect(rows.rows).toEqual([
+      {
+        termination_date: '20220414',
+        center_classification_date: '20210407',
+        initial_firm_notification: 'Letter',
+        address_1: '2 Independence Way',
+        address_2: 'N/A',
+        postal_code: '08540-6620',
+      },
+    ]);
+  });
+
+  it('stages an added field a record lacks as NULL', async () => {
+    const staged = await stage({ category: 'device' });
+    const rows = await query(
+      staged.canvas_id ?? '',
+      `SELECT ${ADDED_COLUMNS.join(', ')} FROM ${staged.canvas_table} WHERE recall_number = 'D-0850-2026'`,
+    );
+    expect(rows.rows).toEqual([Object.fromEntries(ADDED_COLUMNS.map((c) => [c, null]))]);
+
+    const sparse = await query(
+      staged.canvas_id ?? '',
+      `SELECT recall_number FROM ${staged.canvas_table} WHERE termination_date IS NULL ORDER BY recall_number`,
+    );
+    expect(sparse.rows).toEqual([
+      { recall_number: 'D-0850-2026' },
+      { recall_number: 'D-1396-2016' },
+    ]);
+  });
 });
 
-describe('openfda_search_recalls staging — device/recall columns (#59)', () => {
+describe('openfda_search_recalls staging — device/recall columns (#59)', DUCKDB_SUITE, () => {
   const DEVICE_RECALL_SCALARS = [
     'cfres_id',
     'product_res_number',

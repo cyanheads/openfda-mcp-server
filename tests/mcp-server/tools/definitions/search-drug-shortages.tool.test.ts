@@ -197,13 +197,15 @@ describe('openfda_search_drug_shortages', () => {
     expect(typeof text).toBe('string');
   });
 
-  it('format returns "No drug shortage records found." for empty results', () => {
+  it('format renders the metadata header, then "No drug shortage records found.", for empty results (#68)', () => {
     const content = searchDrugShortagesTool.format!({
-      meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
+      meta: { total: 0, skip: 0, limit: 10, lastUpdated: '2026-07-31' },
       results: [],
     });
 
-    expect(textOf(content)).toBe('No drug shortage records found.');
+    expect(textOf(content)).toBe(
+      '**0 total results** (returned: 0, skip: 0, limit: 10) | Data updated: 2026-07-31\n\nNo drug shortage records found.',
+    );
   });
 
   it('format includes meta header with totals', () => {

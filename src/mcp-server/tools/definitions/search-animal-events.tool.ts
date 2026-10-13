@@ -10,15 +10,20 @@ import { CanvasIdSchema, type ColumnSchema } from '@cyanheads/mcp-ts-core/canvas
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
-  canvasStagingLine,
-  emptyPageNote,
+  emptyPageBody,
   emptyResultMessage,
   formatRemainingFields,
-  noMatchNote,
+  lineContent,
+  projectedRecordLines,
+  renderValue,
+  searchLead,
+  singleLine,
 } from '@/mcp-server/tools/format-utils.js';
 import {
   assertSearchDelimitersBalanced,
   assertSkipWithinCeiling,
+  fieldSelection,
+  fieldsDescription,
   malformedSearchError,
   nonBlankString,
   SEARCH_BALANCE_NOTE,
@@ -43,10 +48,31 @@ import {
   boundedPage,
   META_LIMIT_DESCRIPTION,
   PAGE_BUDGET_NOTE,
-  pageBudgetLine,
   pageBudgetNotice,
   pageBudgetOutputShape,
 } from '@/services/openfda/page-budget.js';
+import {
+  projectionNotice,
+  projectionOutputShape,
+  recordProjection,
+} from '@/services/openfda/record-projection.js';
+
+/**
+ * Keys that tell one record apart, kept on every `fields`-projected record:
+ * `unique_aer_id_number`.
+ */
+const IDENTITY_KEYS = ['unique_aer_id_number'] as const;
+
+/**
+ * The value openFDA stores in place of every veterinary brand and manufacturer
+ * name — FDA's `MSK` ("masked") null flavor.
+ */
+const MASKED = 'MSK';
+
+/** Search fields that hold only {@link MASKED}, so a filter on a real name matches nothing. */
+const MASKED_FIELDS = ['drug.brand_name', 'drug.manufacturer.name'] as const;
+
+const MASKED_FIELD_GUIDANCE = `drug.brand_name and drug.manufacturer.name hold only "${MASKED}" (masked on every record), so a brand or manufacturer filter matches nothing. Search the ingredient on drug.active_ingredients.name, unsuffixed, or narrow to one approval with drug.manufacturer.registration_number (the full value, e.g. "USA-USFDACVM-N141426").`;
 
 /**
  * Canvas table projection for veterinary adverse event records. Scalars are
@@ -69,19 +95,19 @@ const ANIMAL_EVENTS_CANVAS_SCHEMA: ColumnSchema[] = [
 ];
 
 export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
-  description: `Search adverse event reports for veterinary drugs and devices submitted to the FDA Center for Veterinary Medicine. Records include animal species, breed, age, weight, drug name and route, adverse reactions (using VeDDRA terminology), and outcome. Use to investigate safety signals for veterinary products, find reports by animal species or drug, or explore reaction patterns.${STAGING_WORKFLOW}`,
+  description: `Search adverse event reports for veterinary drugs and devices submitted to the FDA Center for Veterinary Medicine. Records include animal species, breed, age, weight, drug name and route, adverse reactions (using VeDDRA terminology), and outcome. Use to investigate safety signals for veterinary products, find reports by animal species or drug, or explore reaction patterns. Brand and manufacturer names are masked as "MSK" on every record (the FDA null flavor for withheld data), so find a product by active ingredient on drug.active_ingredients.name, unsuffixed. An ingredient search spans every product containing it and cannot attribute reports to one brand; drug.manufacturer.registration_number (the full value, e.g. "USA-USFDACVM-N141426") narrows it to one approval.${STAGING_WORKFLOW}`,
   annotations: { readOnlyHint: true },
 
   input: z.object({
     search: nonBlankString()
       .optional()
       .describe(
-        `openFDA search query using field:value syntax. Examples: animal.species:"Dog", drug.brand_name:"Bravecto", reaction.veddra_term_name:"Vomiting", serious_ae:"true". Omit to browse recent reports. ${SEARCH_BALANCE_NOTE}`,
+        `openFDA search query using field:value syntax. Examples: animal.species:"Dog", drug.active_ingredients.name:"Fluralaner", reaction.veddra_term_name:"Vomiting", serious_ae:"true". Omit to browse recent reports. ${SEARCH_BALANCE_NOTE}`,
       ),
     sort: sortExpression()
       .optional()
       .describe(
-        'Sort expression — a field path optionally suffixed with :asc or :desc; comma-separate for multi-field sort. Example: original_receive_date:desc. Field paths take only letters, digits, underscores, and dots; anything else is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
+        'Sort expression — a field path optionally suffixed with :asc or :desc (any letter case; :ascending and :descending are also accepted, and every direction is sent as asc or desc); comma-separate for multi-field sort. Example: original_receive_date:desc. Field paths take only letters, digits, underscores, and dots; any other character or direction is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
       ),
     limit: z
       .number()
@@ -90,6 +116,9 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       .default(10)
       .describe(`Maximum number of records to return (1-1000, default 10). ${PAGE_BUDGET_NOTE}`),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
+    fields: fieldSelection()
+      .optional()
+      .describe(fieldsDescription(IDENTITY_KEYS, ['original_receive_date', 'animal.species'])),
     stage: stageInput,
     canvas_id: CanvasIdSchema.optional().describe(
       'Canvas ID returned by a prior stage=true call to this tool or another openFDA search tool (openfda_search_* or openfda_lookup_ndc). Passing one stages this search onto that canvas (same effect as stage=true) so result sets accumulate for cross-table joins. Omit to stage onto a fresh canvas.',
@@ -112,6 +141,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
         'Animal adverse event records. Key fields: unique_aer_id_number, original_receive_date, serious_ae, animal (species, gender, breed, age, weight), drug[] (brand_name, active_ingredients, route, dose, administered_by), reaction[] (veddra_term_name, number_of_animals_affected), outcome[] (medical_status), primary_reporter, type_of_information.',
       ),
     ...pageBudgetOutputShape,
+    ...projectionOutputShape,
     ...canvasOutputShape,
   }),
 
@@ -125,7 +155,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       .string()
       .optional()
       .describe(
-        'Canvas staging disclosure when the call staged, the byte-budget disclosure and the routes to the withheld records when the inline page was bounded, and guidance when results are empty or paging overshot — how to broaden filters or adjust the query.',
+        'Canvas staging disclosure when the call staged, the fields projection and any requested path no record carries, the byte-budget disclosure when the inline page was bounded or one record exceeds it (with the routes to the withheld records and the largest fields of the oversized record), and guidance when results are empty or paging overshot — how to broaden filters or adjust the query.',
       ),
   },
 
@@ -173,14 +203,18 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
     assertSkipWithinCeiling(input.skip, ctx);
     assertSearchDelimitersBalanced(input.search, ctx);
 
+    const maskedFieldNote = MASKED_FIELDS.some((field) => input.search?.includes(field))
+      ? ` ${MASKED_FIELD_GUIDANCE}`
+      : '';
     const emptyNotice = (skip: number, total: number, totalUnverified?: boolean) =>
       emptyResultMessage(
         skip,
         total,
-        `No animal adverse event reports matched${input.search ? ` search: ${input.search}` : ''}. Try broader filters — use animal.species, drug.brand_name, or reaction.veddra_term_name fields. ${formatFieldHint('animalandveterinary/event')}`,
+        `No animal adverse event reports matched${input.search ? ` search: ${input.search}` : ''}. Try broader filters — use animal.species, drug.active_ingredients.name, or reaction.veddra_term_name fields.${maskedFieldNote} ${formatFieldHint('animalandveterinary/event')}`,
         totalUnverified,
       );
 
+    const projection = recordProjection(input.fields, IDENTITY_KEYS);
     const canvas = getCanvas();
     const staging = input.stage || input.canvas_id !== undefined;
     if (staging && !canvas) {
@@ -199,6 +233,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
         schema: ANIMAL_EVENTS_CANVAS_SCHEMA,
         limit: input.limit,
         skip: input.skip,
+        projection,
         ctx,
       });
       const staged = canvasResult(spill);
@@ -207,6 +242,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       ctx.enrich.notice(
         [
           spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
+          projectionNotice(staged),
           pageBudgetNotice(staged),
           stagingNotice(spill),
         ]
@@ -228,7 +264,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       ctx,
     );
 
-    const page = boundedPage(response);
+    const page = boundedPage(response, projection);
 
     ctx.log.info('Animal adverse event search completed', {
       total: response.meta.total,
@@ -242,6 +278,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       page.results.length === 0
         ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
         : undefined,
+      projectionNotice(page),
       pageBudgetNotice(page),
     ].filter(Boolean);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
@@ -250,38 +287,22 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
   },
 
   format: (result) => {
-    if (result.results.length === 0 && result.meta.total === 0) {
-      return [
-        {
-          type: 'text' as const,
-          text: noMatchNote(
-            'No animal adverse event reports found.',
-            result.meta.skip,
-            result.meta.totalUnverified,
-          ),
-        },
-      ];
-    }
-
-    const lines: string[] = [
-      `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Data updated: ${result.meta.lastUpdated}\n`,
-    ];
-
-    const budget = pageBudgetLine(result);
-    if (budget) lines.push(`${budget}\n`);
-
-    const staging = canvasStagingLine(result.meta.total, result);
-    if (staging) lines.push(`${staging}\n`);
-
+    const lines = searchLead(result);
     if (result.results.length === 0) {
-      lines.push(emptyPageNote(result.meta.total, result.meta.skip, result));
+      lines.push(emptyPageBody(result, 'No animal adverse event reports found.'));
       return [{ type: 'text' as const, text: lines.join('\n') }];
     }
 
     for (const r of result.results) {
-      lines.push(`### Report ${r.unique_aer_id_number ?? 'N/A'}`);
+      if (result.projected_fields) {
+        lines.push(...projectedRecordLines(r, IDENTITY_KEYS), '');
+        continue;
+      }
+      lines.push(singleLine(`### Report ${r.unique_aer_id_number ?? 'N/A'}`));
       lines.push(
-        `**Received:** ${r.original_receive_date ?? 'N/A'} | **Serious:** ${r.serious_ae === 'true' ? 'Yes' : r.serious_ae === 'false' ? 'No' : (r.serious_ae ?? 'N/A')}`,
+        singleLine(
+          `**Received:** ${r.original_receive_date ?? 'N/A'} | **Serious:** ${r.serious_ae === 'true' ? 'Yes' : r.serious_ae === 'false' ? 'No' : (r.serious_ae ?? 'N/A')}`,
+        ),
       );
 
       // Animal details
@@ -297,7 +318,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
         ]
           .filter(Boolean)
           .join(', ');
-        if (speciesBreed) lines.push(`**Animal:** ${speciesBreed}`);
+        if (speciesBreed) lines.push(singleLine(`**Animal:** ${speciesBreed}`));
 
         const age = animal.age as Record<string, unknown> | undefined;
         const weight = animal.weight as Record<string, unknown> | undefined;
@@ -311,7 +332,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
         ]
           .filter(Boolean)
           .join(' | ');
-        if (animalDetails) lines.push(`  ${animalDetails}`);
+        if (animalDetails) lines.push(`  ${lineContent(animalDetails)}`);
         // Breed detail, age/weight qualifiers, physiological status, sex code.
         lines.push(...formatRemainingFields(animal, new Set(['species', 'gender'])));
       }
@@ -323,7 +344,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
           .map((rx) => rx.veddra_term_name)
           .filter(Boolean)
           .join(', ');
-        if (reactionNames) lines.push(`**Reactions:** ${reactionNames}`);
+        if (reactionNames) lines.push(singleLine(`**Reactions:** ${reactionNames}`));
         for (const rx of reactions) {
           lines.push(...formatRemainingFields(rx, new Set(['veddra_term_name'])));
         }
@@ -339,17 +360,38 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
             .map((i) => i.name)
             .filter(Boolean)
             .join(', ');
-          const brandName = (d.brand_name as string) ?? ingredientNames ?? 'Unknown';
-          const routeDose = [
-            d.route ? `via ${d.route}` : null,
-            d.administered_by ? `by ${d.administered_by}` : null,
+          const masked = d.brand_name === MASKED;
+          const name =
+            (masked ? undefined : (d.brand_name as string)) || ingredientNames || 'Unknown';
+          const qualifiers = [
+            masked ? `brand masked: ${MASKED}` : null,
+            [
+              d.route ? `via ${d.route}` : null,
+              d.administered_by ? `by ${d.administered_by}` : null,
+            ]
+              .filter(Boolean)
+              .join(', '),
           ]
             .filter(Boolean)
-            .join(', ');
-          lines.push(`- ${brandName}${routeDose ? ` (${routeDose})` : ''}`);
-          // Ingredient doses, lot number, dosage form, manufacturer, ATC code.
+            .join('; ');
+          lines.push(`- ${lineContent(`${name}${qualifiers ? ` (${qualifiers})` : ''}`)}`);
+          // Ingredient doses, lot number, dosage form, manufacturer, ATC code — a
+          // masked manufacturer name labelled the way the brand is, never shown as a firm.
+          const maker = d.manufacturer as Record<string, unknown> | undefined;
+          const remaining =
+            maker?.name === MASKED
+              ? {
+                  ...d,
+                  manufacturer: [`name masked: ${MASKED}`, renderValue({ ...maker, name: null })]
+                    .filter(Boolean)
+                    .join('; '),
+                }
+              : d;
           lines.push(
-            ...formatRemainingFields(d, new Set(['brand_name', 'route', 'administered_by'])),
+            ...formatRemainingFields(
+              remaining,
+              new Set(['brand_name', 'route', 'administered_by']),
+            ),
           );
         }
       }
@@ -361,16 +403,16 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
           .map((o) => o.medical_status)
           .filter(Boolean)
           .join(', ');
-        if (outcomeStatuses) lines.push(`**Outcome:** ${outcomeStatuses}`);
+        if (outcomeStatuses) lines.push(singleLine(`**Outcome:** ${outcomeStatuses}`));
         for (const o of outcomes) {
           lines.push(...formatRemainingFields(o, new Set(['medical_status'])));
         }
       }
 
       // Reporter and type
-      if (r.primary_reporter) lines.push(`**Reporter:** ${r.primary_reporter}`);
-      if (r.type_of_information) lines.push(`**Type:** ${r.type_of_information}`);
-      if (r.foreign_or_domestic) lines.push(`**Origin:** ${r.foreign_or_domestic}`);
+      if (r.primary_reporter) lines.push(singleLine(`**Reporter:** ${r.primary_reporter}`));
+      if (r.type_of_information) lines.push(singleLine(`**Type:** ${r.type_of_information}`));
+      if (r.foreign_or_domestic) lines.push(singleLine(`**Origin:** ${r.foreign_or_domestic}`));
 
       // Render remaining top-level fields — the serious_ae code, receiver,
       // secondary reporter, treatment context, health assessment, counts.
@@ -391,7 +433,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       ]
         .filter(Boolean)
         .join(', ');
-      if (numberInfo) lines.push(`**Animals:** ${numberInfo}`);
+      if (numberInfo) lines.push(singleLine(`**Animals:** ${numberInfo}`));
       rendered.add('number_of_animals_treated');
       rendered.add('number_of_animals_affected');
 

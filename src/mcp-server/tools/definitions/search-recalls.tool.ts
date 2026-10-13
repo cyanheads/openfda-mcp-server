@@ -11,15 +11,18 @@ import { CanvasIdSchema, type ColumnSchema } from '@cyanheads/mcp-ts-core/canvas
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
-  canvasStagingLine,
-  emptyPageNote,
+  emptyPageBody,
   emptyResultMessage,
   formatRemainingFields,
-  noMatchNote,
+  projectedRecordLines,
+  searchLead,
+  singleLine,
 } from '@/mcp-server/tools/format-utils.js';
 import {
   assertSearchDelimitersBalanced,
   assertSkipWithinCeiling,
+  fieldSelection,
+  fieldsDescription,
   malformedSearchError,
   nonBlankString,
   SEARCH_BALANCE_NOTE,
@@ -44,36 +47,59 @@ import {
   boundedPage,
   META_LIMIT_DESCRIPTION,
   PAGE_BUDGET_NOTE,
-  pageBudgetLine,
   pageBudgetNotice,
   pageBudgetOutputShape,
 } from '@/services/openfda/page-budget.js';
+import {
+  projectionNotice,
+  projectionOutputShape,
+  recordProjection,
+} from '@/services/openfda/record-projection.js';
 
 /**
- * Canvas table projection for enforcement records (every category). Scalars are
- * VARCHAR (CAST in SQL for math); the openfda block is a JSON column. All
+ * Keys that tell one record apart, kept on every `fields`-projected record:
+ * `recall_number` on enforcement reports, `product_res_number` on device/recall
+ * records.
+ */
+const IDENTITY_KEYS = ['recall_number', 'product_res_number'] as const;
+
+/**
+ * Canvas table projection for enforcement records (every category) — every
+ * top-level field the drug, device, and food enforcement endpoints return,
+ * verified against live records. openFDA cuts `code_info` at 32,600 characters
+ * and continues the lot list in `more_code_info`, so both stage verbatim and
+ * `code_info || coalesce(more_code_info, '')` recovers the whole list. Scalars
+ * are VARCHAR (CAST in SQL for math); the openfda block is a JSON column. All
  * nullable — records are sparse. The canvas ignores fields outside the schema,
  * so each endpoint shape stages against its own column set.
  */
 const ENFORCEMENT_CANVAS_SCHEMA: ColumnSchema[] = [
-  { name: 'recall_number', type: 'VARCHAR', nullable: true },
-  { name: 'event_id', type: 'VARCHAR', nullable: true },
-  { name: 'status', type: 'VARCHAR', nullable: true },
-  { name: 'classification', type: 'VARCHAR', nullable: true },
-  { name: 'product_type', type: 'VARCHAR', nullable: true },
-  { name: 'recalling_firm', type: 'VARCHAR', nullable: true },
-  { name: 'product_description', type: 'VARCHAR', nullable: true },
-  { name: 'reason_for_recall', type: 'VARCHAR', nullable: true },
-  { name: 'voluntary_mandated', type: 'VARCHAR', nullable: true },
-  { name: 'distribution_pattern', type: 'VARCHAR', nullable: true },
-  { name: 'product_quantity', type: 'VARCHAR', nullable: true },
-  { name: 'recall_initiation_date', type: 'VARCHAR', nullable: true },
-  { name: 'report_date', type: 'VARCHAR', nullable: true },
-  { name: 'state', type: 'VARCHAR', nullable: true },
-  { name: 'country', type: 'VARCHAR', nullable: true },
-  { name: 'city', type: 'VARCHAR', nullable: true },
-  { name: 'product_code', type: 'VARCHAR', nullable: true },
-  { name: 'res_event_number', type: 'VARCHAR', nullable: true },
+  ...[
+    'recall_number',
+    'event_id',
+    'status',
+    'classification',
+    'product_type',
+    'recalling_firm',
+    'product_description',
+    'reason_for_recall',
+    'voluntary_mandated',
+    'initial_firm_notification',
+    'distribution_pattern',
+    'product_quantity',
+    'code_info',
+    'more_code_info',
+    'recall_initiation_date',
+    'report_date',
+    'center_classification_date',
+    'termination_date',
+    'state',
+    'country',
+    'city',
+    'address_1',
+    'address_2',
+    'postal_code',
+  ].map((name): ColumnSchema => ({ name, type: 'VARCHAR', nullable: true })),
   { name: 'openfda', type: 'JSON', nullable: true },
 ];
 
@@ -139,7 +165,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
     sort: sortExpression()
       .optional()
       .describe(
-        'Sort expression — a field path optionally suffixed with :asc or :desc; comma-separate for multi-field sort (e.g. report_date:desc,status.exact:asc). Field paths take only letters, digits, underscores, and dots; anything else is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
+        'Sort expression — a field path optionally suffixed with :asc or :desc (any letter case; :ascending and :descending are also accepted, and every direction is sent as asc or desc); comma-separate for multi-field sort (e.g. report_date:desc,status.exact:asc). Field paths take only letters, digits, underscores, and dots; any other character or direction is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
       ),
     limit: z
       .number()
@@ -150,6 +176,9 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
         `Maximum number of records to return (1-1000, default 10). ${PAGE_BUDGET_NOTE} Device records are the largest here — a device enforcement or recall record runs several kilobytes where a drug or food enforcement record is around one.`,
       ),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
+    fields: fieldSelection()
+      .optional()
+      .describe(fieldsDescription(IDENTITY_KEYS, ['recalling_firm', 'reason_for_recall'])),
     stage: stageInput,
     canvas_id: CanvasIdSchema.optional().describe(
       'Canvas ID returned by a prior stage=true call to this tool or another openFDA search tool (openfda_search_* or openfda_lookup_ndc). Passing one stages this search onto that canvas (same effect as stage=true) so result sets accumulate for cross-table joins. Omit to stage onto a fresh canvas.',
@@ -172,6 +201,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
         'Enforcement or recall records. Enforcement records (every category) carry recall_number, classification, status, voluntary_mandated, recalling_firm, product_description, reason_for_recall, distribution_pattern, report_date. Device recall records name identity product_res_number and status recall_status, add res_event_number and root_cause_description, share the firm, product, reason, and distribution fields, and carry no recall hazard classification.',
       ),
     ...pageBudgetOutputShape,
+    ...projectionOutputShape,
     ...canvasOutputShape,
   }),
 
@@ -185,7 +215,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       .string()
       .optional()
       .describe(
-        'Canvas staging disclosure when the call staged, the byte-budget disclosure and the routes to the withheld records when the inline page was bounded, and guidance when results are empty — how to broaden filters or correct field names.',
+        'Canvas staging disclosure when the call staged, the fields projection and any requested path no record carries, the byte-budget disclosure when the inline page was bounded or one record exceeds it (with the routes to the withheld records and the largest fields of the oversized record), and guidance when results are empty — how to broaden filters or correct field names.',
       ),
   },
 
@@ -257,6 +287,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
         totalUnverified,
       );
 
+    const projection = recordProjection(input.fields, IDENTITY_KEYS);
     const canvas = getCanvas();
     const staging = input.stage || input.canvas_id !== undefined;
     if (staging && !canvas) {
@@ -276,6 +307,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
           endpointValue === 'recall' ? DEVICE_RECALL_CANVAS_SCHEMA : ENFORCEMENT_CANVAS_SCHEMA,
         limit: input.limit,
         skip: input.skip,
+        projection,
         ctx,
       });
       const staged = canvasResult(spill);
@@ -284,6 +316,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       ctx.enrich.notice(
         [
           spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
+          projectionNotice(staged),
           pageBudgetNotice(staged),
           stagingNotice(spill),
         ]
@@ -305,7 +338,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       ctx,
     );
 
-    const page = boundedPage(response);
+    const page = boundedPage(response, projection);
 
     ctx.log.info('Recall search completed', {
       category: input.category,
@@ -321,6 +354,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       page.results.length === 0
         ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
         : undefined,
+      projectionNotice(page),
       pageBudgetNotice(page),
     ].filter(Boolean);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
@@ -329,28 +363,10 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
   },
 
   format: (result) => {
-    if (result.results.length === 0 && result.meta.total === 0) {
-      return [
-        {
-          type: 'text' as const,
-          text: noMatchNote('No results found.', result.meta.skip, result.meta.totalUnverified),
-        },
-      ];
-    }
-
-    const header = `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Last updated: ${result.meta.lastUpdated}\n`;
-    const budget = pageBudgetLine(result);
-    const budgetHint = budget ? `${budget}\n\n` : '';
-    const staging = canvasStagingLine(result.meta.total, result);
-    const canvasHint = staging ? `${staging}\n\n` : '';
-
+    const lead = searchLead(result);
     if (result.results.length === 0) {
-      return [
-        {
-          type: 'text' as const,
-          text: `${header}\n${budgetHint}${canvasHint}${emptyPageNote(result.meta.total, result.meta.skip, result)}`,
-        },
-      ];
+      lead.push(emptyPageBody(result, 'No results found.'));
+      return [{ type: 'text' as const, text: lead.join('\n') }];
     }
 
     /**
@@ -380,21 +396,22 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
     ]);
 
     const records = result.results.map((r) => {
+      if (result.projected_fields) return projectedRecordLines(r, IDENTITY_KEYS).join('\n');
       // device/recall — detected structurally, since format() never sees the endpoint input.
       const deviceRecall = r.product_res_number != null;
-      const lines = deviceRecall
-        ? [`**Recall #${r.product_res_number}**`]
-        : [`**Recall #${r.recall_number ?? 'N/A'}** — ${r.classification ?? 'Unclassified'}`];
-      lines.push(
+      const lines = [
+        deviceRecall
+          ? `**Recall #${r.product_res_number}**`
+          : `**Recall #${r.recall_number ?? 'N/A'}** — ${r.classification ?? 'Unclassified'}`,
         `Firm: ${r.recalling_firm ?? 'N/A'}`,
         `Product: ${(r.product_description as string | undefined) || 'N/A'}`,
         `Reason: ${(r.reason_for_recall as string | undefined) || 'N/A'}`,
         deviceRecall
           ? `Status: ${r.recall_status ?? 'N/A'}`
           : `Status: ${r.status ?? 'N/A'} | ${r.voluntary_mandated ?? 'N/A'}`,
-      );
+      ].map(singleLine);
       if (r.distribution_pattern) {
-        lines.push(`Distribution: ${r.distribution_pattern}`);
+        lines.push(singleLine(`Distribution: ${r.distribution_pattern}`));
       }
       lines.push(
         ...formatRemainingFields(r, deviceRecall ? renderedDeviceRecall : renderedEnforcement),
@@ -402,8 +419,6 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       return lines.join('\n');
     });
 
-    const body = records.join('\n\n---\n\n');
-
-    return [{ type: 'text' as const, text: `${header}\n${budgetHint}${canvasHint}${body}` }];
+    return [{ type: 'text' as const, text: [...lead, records.join('\n\n---\n\n')].join('\n') }];
   },
 });

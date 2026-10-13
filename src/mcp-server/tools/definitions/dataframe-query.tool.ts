@@ -12,7 +12,7 @@ import {
   SQL_GATE_REASONS,
 } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
-import { formatCell } from '@/mcp-server/tools/format-utils.js';
+import { escapeTableCell, formatCell } from '@/mcp-server/tools/format-utils.js';
 import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 
@@ -30,13 +30,14 @@ const SQL_REJECTION_DETAIL: Record<string, string> = {
   [SQL_GATE_REASONS.planOperatorNotAllowed]:
     'the query plan uses an operation the read-only gate blocks (writes, file reads, or utility statements)',
   [SQL_GATE_REASONS.deniedFunction]:
-    'the query calls a table function that reads outside the canvas',
+    'the query calls a function the read-only gate blocks (file readers, engine-setting reads, or SQL run from a string)',
   [SQL_GATE_REASONS.deniedFunctionInPlan]:
     'the query plan calls a table function that reads outside the canvas',
   [SQL_GATE_REASONS.systemCatalogAccess]:
     'system catalog tables are not queryable through this tool',
   [DUCKDB_ERROR_REASONS.sqlParseError]: 'the statement could not be parsed as SQL',
-  [DUCKDB_ERROR_REASONS.sqlReadOnly]: 'the statement is not read-only',
+  [DUCKDB_ERROR_REASONS.sqlReadOnly]:
+    'the statement is not read-only, or names a file where a staged table belongs',
 };
 
 /**
@@ -213,7 +214,7 @@ export const dataframeQueryTool = tool('openfda_dataframe_query', {
       // a key from the first row that a later row carries.
       const headers = [...new Set(result.rows.flatMap((row) => Object.keys(row)))];
       if (headers.length > 0) {
-        lines.push(`| ${headers.join(' | ')} |`);
+        lines.push(`| ${headers.map(escapeTableCell).join(' | ')} |`);
         lines.push(`| ${headers.map(() => '---').join(' | ')} |`);
         for (const row of result.rows) {
           lines.push(`| ${headers.map((h) => formatCell(row[h])).join(' | ')} |`);

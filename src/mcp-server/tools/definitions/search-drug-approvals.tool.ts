@@ -11,15 +11,19 @@ import { CanvasIdSchema, type ColumnSchema } from '@cyanheads/mcp-ts-core/canvas
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
-  canvasStagingLine,
-  emptyPageNote,
+  emptyPageBody,
   emptyResultMessage,
   formatRemainingFields,
-  noMatchNote,
+  lineContent,
+  projectedRecordLines,
+  searchLead,
+  singleLine,
 } from '@/mcp-server/tools/format-utils.js';
 import {
   assertSearchDelimitersBalanced,
   assertSkipWithinCeiling,
+  fieldSelection,
+  fieldsDescription,
   malformedSearchError,
   nonBlankString,
   SEARCH_BALANCE_NOTE,
@@ -44,10 +48,20 @@ import {
   boundedPage,
   META_LIMIT_DESCRIPTION,
   PAGE_BUDGET_NOTE,
-  pageBudgetLine,
   pageBudgetNotice,
   pageBudgetOutputShape,
 } from '@/services/openfda/page-budget.js';
+import {
+  projectionNotice,
+  projectionOutputShape,
+  recordProjection,
+} from '@/services/openfda/record-projection.js';
+
+/**
+ * Keys that tell one record apart, kept on every `fields`-projected record:
+ * `application_number` — the NDA, ANDA, or BLA number.
+ */
+const IDENTITY_KEYS = ['application_number'] as const;
 
 /**
  * Canvas table projection for Drugs@FDA application records. The analytical
@@ -77,7 +91,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
     sort: sortExpression()
       .optional()
       .describe(
-        'Sort expression — a field path optionally suffixed with :asc or :desc; comma-separate for multi-field sort. Example: submissions.submission_status_date:desc. Field paths take only letters, digits, underscores, and dots; anything else is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
+        'Sort expression — a field path optionally suffixed with :asc or :desc (any letter case; :ascending and :descending are also accepted, and every direction is sent as asc or desc); comma-separate for multi-field sort. Example: submissions.submission_status_date:desc. Field paths take only letters, digits, underscores, and dots; any other character or direction is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
       ),
     limit: z
       .number()
@@ -88,6 +102,11 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
         `Maximum number of records to return (1-1000, default 10). ${PAGE_BUDGET_NOTE} A record carries its application's whole submission history, so a long-running application is an order of magnitude larger than a recent one.`,
       ),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
+    fields: fieldSelection()
+      .optional()
+      .describe(
+        fieldsDescription(IDENTITY_KEYS, ['sponsor_name', 'submissions.submission_status_date']),
+      ),
     stage: stageInput,
     canvas_id: CanvasIdSchema.optional().describe(
       'Canvas ID returned by a prior stage=true call to this tool or another openFDA search tool (openfda_search_* or openfda_lookup_ndc). Passing one stages this search onto that canvas (same effect as stage=true) so result sets accumulate for cross-table joins. Omit to stage onto a fresh canvas.',
@@ -110,6 +129,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
         'Drug application records — application_number, sponsor_name, openfda block (brand_name, generic_name, route, product_type, substance_name), products[] (active_ingredients, dosage_form, marketing_status), submissions[] (submission_type, submission_status, submission_status_date, review_priority).',
       ),
     ...pageBudgetOutputShape,
+    ...projectionOutputShape,
     ...canvasOutputShape,
   }),
 
@@ -123,7 +143,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       .string()
       .optional()
       .describe(
-        'Canvas staging disclosure when the call staged, the byte-budget disclosure and the routes to the withheld records when the inline page was bounded, and guidance when results are empty — how to broaden filters or correct field names.',
+        'Canvas staging disclosure when the call staged, the fields projection and any requested path no record carries, the byte-budget disclosure when the inline page was bounded or one record exceeds it (with the routes to the withheld records and the largest fields of the oversized record), and guidance when results are empty — how to broaden filters or correct field names.',
       ),
   },
 
@@ -179,6 +199,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
         totalUnverified,
       );
 
+    const projection = recordProjection(input.fields, IDENTITY_KEYS);
     const canvas = getCanvas();
     const staging = input.stage || input.canvas_id !== undefined;
     if (staging && !canvas) {
@@ -197,6 +218,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
         schema: DRUG_APPROVALS_CANVAS_SCHEMA,
         limit: input.limit,
         skip: input.skip,
+        projection,
         ctx,
       });
       const staged = canvasResult(spill);
@@ -205,6 +227,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       ctx.enrich.notice(
         [
           spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
+          projectionNotice(staged),
           pageBudgetNotice(staged),
           stagingNotice(spill),
         ]
@@ -227,7 +250,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       ctx,
     );
 
-    const page = boundedPage(response);
+    const page = boundedPage(response, projection);
 
     ctx.log.info('Drug approval search completed', {
       search: input.search,
@@ -242,6 +265,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       page.results.length === 0
         ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
         : undefined,
+      projectionNotice(page),
       pageBudgetNotice(page),
     ].filter(Boolean);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
@@ -250,31 +274,9 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
   },
 
   format: (result) => {
-    if (result.results.length === 0 && result.meta.total === 0) {
-      return [
-        {
-          type: 'text' as const,
-          text: noMatchNote(
-            'No drug approvals found.',
-            result.meta.skip,
-            result.meta.totalUnverified,
-          ),
-        },
-      ];
-    }
-
-    const lines: string[] = [
-      `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Data updated: ${result.meta.lastUpdated}\n`,
-    ];
-
-    const budget = pageBudgetLine(result);
-    if (budget) lines.push(`${budget}\n`);
-
-    const staging = canvasStagingLine(result.meta.total, result);
-    if (staging) lines.push(`${staging}\n`);
-
+    const lines = searchLead(result);
     if (result.results.length === 0) {
-      lines.push(emptyPageNote(result.meta.total, result.meta.skip, result));
+      lines.push(emptyPageBody(result, 'No drug approvals found.'));
       return [{ type: 'text' as const, text: lines.join('\n') }];
     }
 
@@ -287,20 +289,27 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
     ]);
 
     for (const r of result.results) {
+      if (result.projected_fields) {
+        lines.push(...projectedRecordLines(r, IDENTITY_KEYS), '');
+        continue;
+      }
       const openfda = r.openfda ?? {};
       const brandName = (openfda.brand_name ?? [])[0] ?? '';
       const genericName = (openfda.generic_name ?? [])[0] ?? '';
       const title = brandName || genericName || r.application_number || 'Unknown';
 
-      lines.push(`### ${title}`);
+      lines.push(singleLine(`### ${title}`));
       lines.push(
-        `**Application:** ${r.application_number ?? 'N/A'} | **Sponsor:** ${r.sponsor_name ?? 'N/A'}`,
+        singleLine(
+          `**Application:** ${r.application_number ?? 'N/A'} | **Sponsor:** ${r.sponsor_name ?? 'N/A'}`,
+        ),
       );
       if (brandName && genericName)
-        lines.push(`**Brand:** ${brandName} | **Generic:** ${genericName}`);
-      if (openfda.route) lines.push(`**Route:** ${(openfda.route as string[]).join(', ')}`);
+        lines.push(singleLine(`**Brand:** ${brandName} | **Generic:** ${genericName}`));
+      if (openfda.route)
+        lines.push(singleLine(`**Route:** ${(openfda.route as string[]).join(', ')}`));
       if (openfda.product_type)
-        lines.push(`**Type:** ${(openfda.product_type as string[]).join(', ')}`);
+        lines.push(singleLine(`**Type:** ${(openfda.product_type as string[]).join(', ')}`));
 
       // Remaining openfda fields — brand_name/generic_name included, since the
       // lines above only ever show entry 0 of each — plus manufacturer_name,
@@ -322,7 +331,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
             p.route,
             p.marketing_status,
           ].filter(Boolean);
-          lines.push(`- ${parts.join(' | ')}`);
+          lines.push(`- ${lineContent(parts.join(' | '))}`);
           // Product number, reference-drug/standard flags, TE code.
           lines.push(
             ...formatRemainingFields(
@@ -350,7 +359,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
             s.submission_status_date,
             s.review_priority ? `(${s.review_priority})` : null,
           ].filter(Boolean);
-          lines.push(`- ${parts.join(' | ')}`);
+          lines.push(`- ${lineContent(parts.join(' | '))}`);
           // application_docs[] (names + URLs), submission class code, public notes.
           lines.push(
             ...formatRemainingFields(

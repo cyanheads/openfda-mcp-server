@@ -117,6 +117,38 @@ describe('openfda_dataframe_query', () => {
     expect(text).toContain('0 rows');
     expect(text).toContain('No rows returned');
   });
+
+  // #67 — every value keeps its own cell and row in content[]; structuredContent is untouched.
+  it('escapes header and data cells so each value renders in its own cell and row', async () => {
+    const rows = [
+      {
+        recall_number: 'F-0061-2017',
+        literal: '<E>',
+        'a|b': 'a|b',
+        lines: 'x\ny',
+        j: { k: 'x|y' },
+      },
+    ];
+    await setCanvasMock({
+      acquire: vi.fn().mockResolvedValue({
+        canvasId: 'cv_abc1234',
+        query: vi.fn().mockResolvedValue({ rows, rowCount: 1 }),
+      }),
+    });
+
+    const result = await runToolContract(dataframeQueryTool, {
+      canvas_id: 'cv_abc1234',
+      query: 'SELECT * FROM spilled_x',
+    });
+
+    expect((result.structuredContent as unknown as { rows: unknown }).rows).toEqual(rows);
+    const text = (result.content[0] as { text: string }).text;
+    expect(text.split('\n').slice(2)).toEqual([
+      '| recall_number | literal | a\\|b | lines | j |',
+      '| --- | --- | --- | --- | --- |',
+      '| F-0061-2017 | \\<E> | a\\|b | x<br>y | {"k":"x\\|y"} |',
+    ]);
+  });
 });
 
 describe('openfda_dataframe_query — row cap disclosure (#29)', () => {

@@ -4,7 +4,7 @@
  * @module tests/mcp-server/tools/definitions/get-drug-label.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
@@ -85,9 +85,9 @@ function evenlyTieredLabel(): Record<string, unknown> {
   };
 }
 
-/** Serialized size of the returned records, measured the way the handler measures it. */
+/** Serialized UTF-8 size of the returned records, measured the way the handler measures it. */
 function recordBytes(results: unknown): number {
-  return JSON.stringify({ results }).length;
+  return Buffer.byteLength(JSON.stringify({ results }), 'utf8');
 }
 
 describe('openfda_get_drug_label', () => {
@@ -550,6 +550,127 @@ describe('openfda_get_drug_label', () => {
     });
   });
 
+  /**
+   * Label text is often non-ASCII (`é`, `µg`, `≥`), where a JavaScript string's
+   * length undercounts the bytes it occupies on the wire — `é` is one UTF-16 unit
+   * and two UTF-8 bytes.
+   */
+  describe('sizes are UTF-8 bytes of the serialized JSON', () => {
+    const accented = (n: number) => 'é'.repeat(n);
+    const utf8 = (value: unknown) => Buffer.byteLength(JSON.stringify(value), 'utf8');
+
+    it('sizes each outline section in UTF-8 bytes, on both surfaces', async () => {
+      const record = {
+        openfda: { brand_name: ['Warfarin'] },
+        set_id: 'set-u',
+        clinical_studies: ['C'.repeat(30_000)],
+        warnings_and_cautions: [accented(5_000)],
+      };
+      mockQuery.mockResolvedValue({
+        meta: { total: 1, skip: 0, limit: 1, lastUpdated: '2026-01-01' },
+        results: [record],
+      });
+
+      const result = await runToolContract(getDrugLabelTool, {
+        search: 'openfda.generic_name:"warfarin"',
+        limit: 1,
+      });
+
+      const bytes = utf8(record.warnings_and_cautions);
+      expect(bytes).toBe(10_004);
+      const outline = (result.structuredContent as { outline: { bytes: number; name: string }[] })
+        .outline;
+      expect(outline.find((s) => s.name === 'warnings_and_cautions')?.bytes).toBe(bytes);
+      expect(textOf(result.content as never)).toContain(
+        `- \`warnings_and_cautions\` — ${bytes} bytes`,
+      );
+    });
+
+    it('discloses a selection whose UTF-8 size clears the budget though its string length does not', async () => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 1, skip: 0, limit: 1, lastUpdated: '2026-01-01' },
+        results: [
+          {
+            openfda: { brand_name: ['Warfarin'] },
+            set_id: 'set-u',
+            warnings_and_cautions: [accented(15_000)],
+          },
+        ],
+      });
+
+      const result = await getDrugLabelTool.handler(
+        getDrugLabelTool.input.parse({
+          search: 'openfda.generic_name:"warfarin"',
+          limit: 1,
+          sections: ['warnings_and_cautions'],
+        }),
+        ctx,
+      );
+
+      const bytes = recordBytes(result.results);
+      expect(JSON.stringify({ results: result.results }).length).toBeLessThan(BUDGET);
+      expect(bytes).toBeGreaterThan(BUDGET);
+      expect(String(getEnrichment(ctx).notice)).toContain(`Selection is ${bytes} bytes`);
+    });
+
+    it('never offers a worked example that only fits the budget by string length', async () => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 1, skip: 0, limit: 1, lastUpdated: '2026-01-01' },
+        results: [
+          {
+            openfda: { brand_name: ['Warfarin'] },
+            set_id: 'set-u',
+            clinical_studies: ['C'.repeat(40_000)],
+            warnings_and_cautions: [accented(14_000)],
+            indications_and_usage: ['I'.repeat(5_000)],
+          },
+        ],
+      });
+
+      await getDrugLabelTool.handler(
+        getDrugLabelTool.input.parse({ search: 'openfda.generic_name:"warfarin"', limit: 1 }),
+        ctx,
+      );
+      const notice = String(getEnrichment(ctx).notice);
+      const name = notice.match(/sections:\["([^"]+)"\]/)?.[1];
+      const quoted = Number(notice.match(/returns (\d+) bytes/)?.[1]);
+      expect(name).toBe('indications_and_usage');
+
+      const followed = await getDrugLabelTool.handler(
+        getDrugLabelTool.input.parse({
+          search: 'openfda.generic_name:"warfarin"',
+          limit: 1,
+          sections: [name ?? ''],
+        }),
+        createMockContext({ errors: getDrugLabelTool.errors }),
+      );
+      expect(recordBytes(followed.results)).toBe(quoted);
+      expect(quoted).toBeLessThanOrEqual(BUDGET);
+    });
+
+    it('keeps an ASCII page at the same figures string length gave', async () => {
+      const record = {
+        openfda: { brand_name: ['Warfarin'] },
+        set_id: 'set-a',
+        clinical_studies: ['C'.repeat(30_000)],
+        warnings_and_cautions: ['W'.repeat(5_000)],
+      };
+      mockQuery.mockResolvedValue({
+        meta: { total: 1, skip: 0, limit: 1, lastUpdated: '2026-01-01' },
+        results: [record],
+      });
+
+      const result = await getDrugLabelTool.handler(
+        getDrugLabelTool.input.parse({ search: 'openfda.generic_name:"warfarin"', limit: 1 }),
+        ctx,
+      );
+
+      expect(result.outline?.find((s) => s.name === 'warnings_and_cautions')?.bytes).toBe(
+        JSON.stringify(record.warnings_and_cautions).length,
+      );
+    });
+  });
+
   describe('format()', () => {
     it('renders label sections', () => {
       const content = getDrugLabelTool.format!({
@@ -679,7 +800,7 @@ describe('openfda_get_drug_label', () => {
 
         expect(result.kind).toBe('outline');
         const entry = result.outline?.find((s) => s.name === 'dosage_and_administration_table');
-        expect(entry?.bytes).toBe(JSON.stringify([WARFARIN_DOSING]).length);
+        expect(entry?.bytes).toBe(Buffer.byteLength(JSON.stringify([WARFARIN_DOSING]), 'utf8'));
       });
 
       it('renders every string of a multi-table section, blank-line separated', () => {

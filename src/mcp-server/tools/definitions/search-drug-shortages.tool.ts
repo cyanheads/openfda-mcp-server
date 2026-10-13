@@ -11,15 +11,18 @@ import { CanvasIdSchema, type ColumnSchema } from '@cyanheads/mcp-ts-core/canvas
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
-  canvasStagingLine,
-  emptyPageNote,
+  emptyPageBody,
   emptyResultMessage,
   formatRemainingFields,
-  noMatchNote,
+  projectedRecordLines,
+  searchLead,
+  singleLine,
 } from '@/mcp-server/tools/format-utils.js';
 import {
   assertSearchDelimitersBalanced,
   assertSkipWithinCeiling,
+  fieldSelection,
+  fieldsDescription,
   malformedSearchError,
   nonBlankString,
   SEARCH_BALANCE_NOTE,
@@ -44,10 +47,20 @@ import {
   boundedPage,
   META_LIMIT_DESCRIPTION,
   PAGE_BUDGET_NOTE,
-  pageBudgetLine,
   pageBudgetNotice,
   pageBudgetOutputShape,
 } from '@/services/openfda/page-budget.js';
+import {
+  projectionNotice,
+  projectionOutputShape,
+  recordProjection,
+} from '@/services/openfda/record-projection.js';
+
+/**
+ * Keys that tell one record apart, kept on every `fields`-projected record:
+ * `package_ndc`.
+ */
+const IDENTITY_KEYS = ['package_ndc'] as const;
 
 /**
  * Canvas table projection for drug shortage records. Scalars are VARCHAR (CAST
@@ -83,7 +96,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
     sort: sortExpression()
       .optional()
       .describe(
-        'Sort expression — a field path optionally suffixed with :asc or :desc; comma-separate for multi-field sort. Example: update_date:desc. Field paths take only letters, digits, underscores, and dots; anything else is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
+        'Sort expression — a field path optionally suffixed with :asc or :desc (any letter case; :ascending and :descending are also accepted, and every direction is sent as asc or desc); comma-separate for multi-field sort. Example: update_date:desc. Field paths take only letters, digits, underscores, and dots; any other character or direction is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
       ),
     limit: z
       .number()
@@ -92,6 +105,9 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       .default(10)
       .describe(`Maximum number of records to return (1-1000, default 10). ${PAGE_BUDGET_NOTE}`),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
+    fields: fieldSelection()
+      .optional()
+      .describe(fieldsDescription(IDENTITY_KEYS, ['generic_name', 'status'])),
     stage: stageInput,
     canvas_id: CanvasIdSchema.optional().describe(
       'Canvas ID returned by a prior stage=true call to this tool or another openFDA search tool (openfda_search_* or openfda_lookup_ndc). Passing one stages this search onto that canvas (same effect as stage=true) so result sets accumulate for cross-table joins. Omit to stage onto a fresh canvas.',
@@ -111,9 +127,10 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
     results: z
       .array(z.record(z.string(), z.any()))
       .describe(
-        'Drug shortage records. Key fields: generic_name, status ("Current"/"Resolved"), availability, therapeutic_category, dosage_form, presentation, package_ndc, company_name, contact_info, initial_posting_date, update_date, update_type. openfda block contains brand_name, product_ndc, rxcui, spl_set_id for cross-linking.',
+        'Drug shortage records. Key fields: generic_name, status ("Current", "To Be Discontinued", or "Resolved"), availability, therapeutic_category, dosage_form, presentation, package_ndc, company_name, contact_info, initial_posting_date, update_date, update_type. openfda block contains brand_name, product_ndc, rxcui, spl_set_id for cross-linking.',
       ),
     ...pageBudgetOutputShape,
+    ...projectionOutputShape,
     ...canvasOutputShape,
   }),
 
@@ -127,7 +144,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       .string()
       .optional()
       .describe(
-        'Canvas staging disclosure when the call staged, the byte-budget disclosure and the routes to the withheld records when the inline page was bounded, and guidance when results are empty — how to broaden filters or correct field names.',
+        'Canvas staging disclosure when the call staged, the fields projection and any requested path no record carries, the byte-budget disclosure when the inline page was bounded or one record exceeds it (with the routes to the withheld records and the largest fields of the oversized record), and guidance when results are empty — how to broaden filters or correct field names.',
       ),
   },
 
@@ -183,6 +200,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
         totalUnverified,
       );
 
+    const projection = recordProjection(input.fields, IDENTITY_KEYS);
     const canvas = getCanvas();
     const staging = input.stage || input.canvas_id !== undefined;
     if (staging && !canvas) {
@@ -201,6 +219,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
         schema: DRUG_SHORTAGES_CANVAS_SCHEMA,
         limit: input.limit,
         skip: input.skip,
+        projection,
         ctx,
       });
       const staged = canvasResult(spill);
@@ -209,6 +228,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       ctx.enrich.notice(
         [
           spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
+          projectionNotice(staged),
           pageBudgetNotice(staged),
           stagingNotice(spill),
         ]
@@ -230,7 +250,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       ctx,
     );
 
-    const page = boundedPage(response);
+    const page = boundedPage(response, projection);
 
     ctx.log.info('Drug shortage search completed', {
       search: input.search,
@@ -245,6 +265,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       page.results.length === 0
         ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
         : undefined,
+      projectionNotice(page),
       pageBudgetNotice(page),
     ].filter(Boolean);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
@@ -253,31 +274,9 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
   },
 
   format: (result) => {
-    if (result.results.length === 0 && result.meta.total === 0) {
-      return [
-        {
-          type: 'text' as const,
-          text: noMatchNote(
-            'No drug shortage records found.',
-            result.meta.skip,
-            result.meta.totalUnverified,
-          ),
-        },
-      ];
-    }
-
-    const lines: string[] = [
-      `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Data updated: ${result.meta.lastUpdated}\n`,
-    ];
-
-    const budget = pageBudgetLine(result);
-    if (budget) lines.push(`${budget}\n`);
-
-    const staging = canvasStagingLine(result.meta.total, result);
-    if (staging) lines.push(`${staging}\n`);
-
+    const lines = searchLead(result);
     if (result.results.length === 0) {
-      lines.push(emptyPageNote(result.meta.total, result.meta.skip, result));
+      lines.push(emptyPageBody(result, 'No drug shortage records found.'));
       return [{ type: 'text' as const, text: lines.join('\n') }];
     }
 
@@ -297,17 +296,22 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
     ]);
 
     for (const r of result.results) {
+      if (result.projected_fields) {
+        lines.push(...projectedRecordLines(r, IDENTITY_KEYS), '');
+        continue;
+      }
       const name = (r.generic_name as string | undefined) ?? 'Unknown';
       const status = (r.status as string | undefined) ?? 'N/A';
-      lines.push(`### ${name}`);
-      lines.push(`**Status:** ${status}`);
+      lines.push(singleLine(`### ${name}`));
+      lines.push(singleLine(`**Status:** ${status}`));
 
-      if (r.availability) lines.push(`**Availability:** ${r.availability as string}`);
-      if (r.therapeutic_category) lines.push(`**Therapeutic category:** ${r.therapeutic_category}`);
-      if (r.dosage_form) lines.push(`**Dosage form:** ${r.dosage_form}`);
-      if (r.presentation) lines.push(`**Presentation:** ${r.presentation}`);
-      if (r.company_name) lines.push(`**Manufacturer:** ${r.company_name}`);
-      if (r.contact_info) lines.push(`**Contact:** ${r.contact_info as string}`);
+      if (r.availability) lines.push(singleLine(`**Availability:** ${r.availability as string}`));
+      if (r.therapeutic_category)
+        lines.push(singleLine(`**Therapeutic category:** ${r.therapeutic_category}`));
+      if (r.dosage_form) lines.push(singleLine(`**Dosage form:** ${r.dosage_form}`));
+      if (r.presentation) lines.push(singleLine(`**Presentation:** ${r.presentation}`));
+      if (r.company_name) lines.push(singleLine(`**Manufacturer:** ${r.company_name}`));
+      if (r.contact_info) lines.push(singleLine(`**Contact:** ${r.contact_info as string}`));
 
       const dates = [
         r.initial_posting_date ? `first posted ${r.initial_posting_date}` : null,
@@ -316,7 +320,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       ]
         .filter(Boolean)
         .join(' | ');
-      if (dates) lines.push(`**Timeline:** ${dates}`);
+      if (dates) lines.push(singleLine(`**Timeline:** ${dates}`));
 
       // OpenFDA cross-links (brand name, NDC, RxCUI for chaining)
       const openfda = r.openfda as Record<string, unknown> | undefined;
@@ -331,7 +335,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
         ]
           .filter(Boolean)
           .join(' | ');
-        if (crossLinks) lines.push(`**OpenFDA:** ${crossLinks}`);
+        if (crossLinks) lines.push(singleLine(`**OpenFDA:** ${crossLinks}`));
         // Remaining openfda leaves — the full NDC/RxCUI lists, spl ids, substance,
         // product type, route, UNII, application number.
         lines.push(...formatRemainingFields(openfda, new Set(['brand_name'])));

@@ -6,8 +6,11 @@
  * @module tests/mcp-server/tools/definitions/input-validation
  */
 
+import { spawnSync } from 'node:child_process';
 import { z } from '@cyanheads/mcp-ts-core';
-import { describe, expect, it } from 'vitest';
+import { createFetchMock, runToolContract } from '@cyanheads/mcp-ts-core/testing';
+import type { AnyToolDefinition } from '@cyanheads/mcp-ts-core/tools';
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { countValuesTool } from '@/mcp-server/tools/definitions/count-values.tool.js';
 import { dataframeDescribeTool } from '@/mcp-server/tools/definitions/dataframe-describe.tool.js';
 import { dataframeQueryTool } from '@/mcp-server/tools/definitions/dataframe-query.tool.js';
@@ -21,6 +24,9 @@ import { searchDrugApprovalsTool } from '@/mcp-server/tools/definitions/search-d
 import { searchDrugShortagesTool } from '@/mcp-server/tools/definitions/search-drug-shortages.tool.js';
 import { searchRecallsTool } from '@/mcp-server/tools/definitions/search-recalls.tool.js';
 import { searchTobaccoReportsTool } from '@/mcp-server/tools/definitions/search-tobacco-reports.tool.js';
+import { getFieldGroups } from '@/mcp-server/tools/field-catalog.js';
+import { setCanvas } from '@/services/canvas/canvas-accessor.js';
+import { initOpenFdaService } from '@/services/openfda/openfda-service.js';
 
 // ── openfda_count_values ────────────────────────────────────────────────────────────
 
@@ -623,52 +629,108 @@ describe('canvas_id inputs take the minted canvas-id shape', () => {
   });
 });
 
-// ── sort grammar (#38) ────────────────────────────────────────────────────────
+// ── pattern timing ────────────────────────────────────────────────────────────
+
+/**
+ * The runtimes a caller-text pattern is timed on. The engine is the variable:
+ * vitest runs this file on Node, while the server runs on Bun, whose
+ * JavaScriptCore backtracks differently — a pattern that repeats a parenthesized
+ * group stays linear on V8 and grows several-hundredfold on JavaScriptCore.
+ */
+const TIMING_RUNTIMES = [
+  ['Bun', 'bun'],
+  ['Node', 'node'],
+] as const;
+
+/**
+ * Per-call thread CPU time, in microseconds, of `new RegExp(pattern).test(input)`
+ * for each input, measured in a child `runtime` process: each input runs until
+ * 20 ms of CPU accrue, and the fastest of five such samples is kept, so a busy
+ * machine can neither fake a pass nor a fail.
+ */
+function regexCpuMicros(runtime: string, pattern: string, inputs: string[]): number[] {
+  const script = `
+    const { pattern, inputs } = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+    const rx = new RegExp(pattern);
+    const perCall = (input) => {
+      let best = Infinity;
+      for (let sample = 0; sample < 5; sample++) {
+        const start = process.threadCpuUsage();
+        let calls = 0;
+        let used;
+        do {
+          rx.test(input);
+          calls += 1;
+          used = process.threadCpuUsage(start);
+        } while (used.user + used.system < 20000);
+        best = Math.min(best, (used.user + used.system) / calls);
+      }
+      return best;
+    };
+    process.stdout.write(JSON.stringify(inputs.map(perCall)));`;
+  const run = spawnSync(runtime, ['-e', script], {
+    input: JSON.stringify({ pattern, inputs }),
+    encoding: 'utf8',
+  });
+  if (run.status !== 0) {
+    throw new Error(`${runtime} timing run failed: ${run.error?.message ?? run.stderr}`);
+  }
+  return JSON.parse(run.stdout) as number[];
+}
+
+// ── sort grammar (#38, #64) ───────────────────────────────────────────────────
 
 /**
  * `sort` was `nonBlankString()` — any non-blank value reached api.fda.gov and a
  * malformed one came back as an Elasticsearch mapping error. The schema now
- * carries openFDA's accepted shape as a `pattern`.
+ * carries the accepted shape as a `pattern`.
  *
- * Every ACCEPTED value below returns HTTP 200 from api.fda.gov (each against an
- * endpoint that carries its field) and every REJECTED one is refused upstream
- * (400 "Sorting allowed by non-analyzed fields only" / "Sort not supported", or
- * 500 `query_shard_exception`). The accepted set is what makes this a narrowing
- * rather than a break: openFDA validates only the field path — it splits a
- * segment on its last colon — so an unrecognized direction token (`:ascending`,
- * `:"desc"`) answers 200 and must keep passing, and it trims spaces around a
- * segment, so a space after a comma sorts identically to the space-free form.
- * A space *inside* a field path is not trimmed and stays rejected.
+ * openFDA honours only a lowercase `asc` or `desc`, or no direction (ascending).
+ * Any other direction token — `DESC`, `Desc`, `ascending`, `"desc"`, an empty
+ * `field:` — answers HTTP 200 with that sort key dropped, on every sortable
+ * endpoint, so it is never forwarded as sent. A direction whose meaning is
+ * certain (`asc`/`desc`/`ascending`/`descending` in any letter case) is
+ * normalized to `asc` or `desc` by the schema; anything else is rejected.
+ *
+ * Every ACCEPTED value returns HTTP 200 from api.fda.gov with the requested
+ * ordering, and every REJECTED one is either refused upstream (400 "Sorting
+ * allowed by non-analyzed fields only" / "Sort not supported", or 500
+ * `query_shard_exception`) or silently drops its sort key. openFDA trims spaces
+ * around a segment, so a space after a comma sorts identically to the
+ * space-free form; a space *inside* a segment is not trimmed and stays rejected.
+ * The whole value is also trimmed of any whitespace — tab, line break, no-break
+ * space — so that may surround it, but nowhere else.
  */
-describe('sort accepts openFDA’s grammar and rejects only what openFDA rejects', () => {
+describe('sort accepts the directions openFDA honours and rejects the rest', () => {
   /** Every tool carrying a caller-supplied `sort`, with a minimal valid base input. */
-  const SORT_TOOLS: Array<
-    [string, { parse: (value: unknown) => unknown }, Record<string, unknown>]
-  > = [
-    ['openfda_search_adverse_events', searchAdverseEventsTool.input, { category: 'drug' }],
-    ['openfda_search_recalls', searchRecallsTool.input, { category: 'drug' }],
-    ['openfda_get_drug_label', getDrugLabelTool.input, { search: 'aspirin' }],
-    ['openfda_lookup_ndc', lookupNdcTool.input, { search: 'aspirin' }],
-    ['openfda_search_drug_approvals', searchDrugApprovalsTool.input, {}],
-    ['openfda_search_drug_shortages', searchDrugShortagesTool.input, {}],
-    ['openfda_search_device_clearances', searchDeviceClearancesTool.input, { pathway: '510k' }],
-    ['openfda_search_animal_events', searchAnimalEventsTool.input, {}],
-    ['openfda_search_tobacco_reports', searchTobaccoReportsTool.input, {}],
+  const SORT_DEFINITIONS: Array<[AnyToolDefinition, Record<string, unknown>]> = [
+    [searchAdverseEventsTool, { category: 'drug' }],
+    [searchRecallsTool, { category: 'drug' }],
+    [getDrugLabelTool, { search: 'aspirin' }],
+    [lookupNdcTool, { search: 'aspirin' }],
+    [searchDrugApprovalsTool, {}],
+    [searchDrugShortagesTool, {}],
+    [searchDeviceClearancesTool, { pathway: '510k' }],
+    [searchAnimalEventsTool, {}],
+    [searchTobaccoReportsTool, {}],
   ];
+  const SORT_TOOLS = SORT_DEFINITIONS.map(
+    ([definition, base]) =>
+      [definition.name, definition.input as { parse: (value: unknown) => unknown }, base] as const,
+  );
 
+  /** Accepted and forwarded byte-identical on every tool — each already in the form openFDA honours. */
   const ACCEPTED = [
     'report_date:desc', // the documented form
-    'report_date', // bare field path — 200 upstream
+    'report_date', // bare field path — ascending upstream
     'report_date:desc,status.exact:asc', // multi-field sort — 200 upstream
     'submissions.submission_status_date:desc', // deep dotted path
     'openfda.brand_name.exact:asc', // .exact subfield
-    'report_date:DESC', // uppercase direction — 200 upstream
-    'report_date:ascending', // unrecognized direction — 200 upstream, so not ours to reject
-    'report_date:"desc"', // quoted direction — 200 upstream
-    'classification.exact:desc, report_date:asc', // space after the comma — 200 upstream, ordering honoured
-    '  report_date:asc  ', // openFDA trims spaces around the whole value
+    'classification.exact:desc, report_date:asc', // space after the comma — ordering honoured
+    '  report_date:desc  ', // openFDA trims spaces around the whole value
   ];
 
+  /** Refused upstream, and rejected on every tool. */
   const REJECTED = [
     'report_date :asc', // 500: a space inside a field path is not trimmed — "report_date "
     'report_date-desc', // 400: field path "report_date-desc"
@@ -683,8 +745,66 @@ describe('sort accepts openFDA’s grammar and rejects only what openFDA rejects
     ':desc', // 400: empty field path
   ];
 
+  /*
+   * The direction rules and the whitespace trim, tabled once on one tool: every
+   * tool builds `sort` from the same schema factory, and the lists above already
+   * check each tool's wiring of it. Each tool's forwarding of a normalized
+   * direction is checked at the HTTP boundary below.
+   */
+
+  /** Also accepted and forwarded byte-identical. */
+  const ACCEPTED_SHARED = [
+    'report_date:asc',
+    'classification.exact:desc,report_date:asc',
+    'report_date:desc ,status.exact:asc', // space before the comma — trimmed like one after it
+    'report_date:desc\t', // openFDA trims any whitespace off the whole value, not only spaces
+    'report_date:desc\r\n',
+    '\treport_date ',
+    '　classification.exact:desc, report_date:asc\n',
+  ];
+
+  /** Accepted, with each direction rewritten to the lowercase `asc`/`desc` openFDA honours. */
+  const NORMALIZED: Array<[string, string]> = [
+    ['report_date:ASC', 'report_date:asc'],
+    ['report_date:DESC', 'report_date:desc'],
+    ['report_date:Desc', 'report_date:desc'],
+    ['report_date:ascending', 'report_date:asc'],
+    ['report_date:DESCENDING', 'report_date:desc'],
+    ['report_date:Ascending', 'report_date:asc'],
+    [
+      'classification.exact:desc,report_date:ascending',
+      'classification.exact:desc,report_date:asc',
+    ],
+    // Only the directions change: field paths keep their case, spaces stay where sent.
+    ['Report_Date:DESC , Status.Exact:Asc ', 'Report_Date:desc , Status.Exact:asc '],
+    ['report_date:DESC\t', 'report_date:desc\t'],
+    ['\nreport_date:Ascending ', '\nreport_date:asc '],
+  ];
+
+  /** Also rejected: refused upstream, or answered with the sort key silently dropped. */
+  const REJECTED_SHARED = [
+    'report_date:"desc"', // 200, sort key dropped — a quoted direction is not a direction
+    'report_date:foo', // 200, sort key dropped
+    'report_date:', // 200, sort key dropped — an empty direction
+    'report_date:asce', // 200, sort key dropped — a prefix of ascending is not a direction
+    'report_date:descend',
+    'report_date: desc', // a space between the colon and the direction
+    'classification.exact:desc,report_date:foo', // 200 with the second key silently dropped
+    'report_date..x:desc', // empty path component
+    '.report_date', // leading dot
+    'report_date.:desc', // trailing dot
+    '   ', // whitespace only
+    '\t\n', // whitespace only
+    'report_date:desc\t,status.exact:asc', // 400: only spaces are trimmed beside a comma
+    'report_date:\tdesc', // 400: whitespace inside a segment
+    'report_date :desc', // 400
+    'report_date:desc,\n', // an empty last segment behind a line break
+    'report_date:desc\u0085', // 400: NEL is not whitespace to openFDA's trim
+    'report_date:desc​', // 400: nor is a zero-width space
+  ];
+
   for (const [label, schema, base] of SORT_TOOLS) {
-    it.each(ACCEPTED)(`${label}.sort accepts %j`, (value) => {
+    it.each(ACCEPTED)(`${label}.sort accepts %j unchanged`, (value) => {
       expect((schema.parse({ ...base, sort: value }) as { sort: string }).sort).toBe(value);
     });
 
@@ -692,6 +812,41 @@ describe('sort accepts openFDA’s grammar and rejects only what openFDA rejects
       expect(() => schema.parse({ ...base, sort: value })).toThrow();
     });
   }
+
+  describe('on the shared sort schema', () => {
+    const parseSort = (value: string) =>
+      searchRecallsTool.input.parse({ category: 'drug', sort: value }).sort;
+
+    it.each(ACCEPTED_SHARED)('accepts %j unchanged', (value) => {
+      expect(parseSort(value)).toBe(value);
+    });
+
+    it.each(NORMALIZED)('accepts %j as %j', (value, normalized) => {
+      expect(parseSort(value)).toBe(normalized);
+    });
+
+    it.each(REJECTED_SHARED)('rejects %j', (value) => {
+      expect(() => parseSort(value)).toThrow();
+    });
+  });
+
+  it('describes the accepted directions on every tool', () => {
+    for (const [label, schema] of SORT_TOOLS) {
+      const description = z.toJSONSchema(schema as never).properties?.sort;
+      if (typeof description !== 'object') throw new Error(`${label}: sort is not advertised`);
+      expect(description.description, label).toMatch(/:asc or :desc \(any letter case/);
+      expect(description.description, label).toMatch(/ascending and :descending/);
+    }
+  });
+
+  it('names the accepted directions in the rejection', () => {
+    const result = searchRecallsTool.input.safeParse({ category: 'drug', sort: 'report_date:foo' });
+    expect(result.success).toBe(false);
+    const message = result.error?.issues.map((issue) => issue.message).join('\n') ?? '';
+    expect(message).toMatch(/:asc or :desc/);
+    expect(message).toMatch(/any letter case/);
+    expect(message).toMatch(/ascending and descending/);
+  });
 
   // The shape reaches the advertised inputSchema, not only the rejection: a client
   // reading tools/list can self-correct before spending a call.
@@ -703,9 +858,381 @@ describe('sort accepts openFDA’s grammar and rejects only what openFDA rejects
     expect(sort.minLength).toBe(1);
 
     // The advertised pattern is the enforced one — a client applying it locally
-    // reaches the same verdict the server does.
+    // reaches the same verdict the server does, the normalized spellings included.
     const advertised = new RegExp(pattern as string);
-    for (const value of ACCEPTED) expect(advertised.test(value)).toBe(true);
-    for (const value of REJECTED) expect(advertised.test(value)).toBe(false);
+    for (const value of [...ACCEPTED, ...ACCEPTED_SHARED]) {
+      expect(advertised.test(value)).toBe(true);
+    }
+    for (const [value, normalized] of NORMALIZED) {
+      expect(advertised.test(value)).toBe(true);
+      expect(advertised.test(normalized)).toBe(true);
+    }
+    for (const value of [...REJECTED, ...REJECTED_SHARED]) {
+      expect(advertised.test(value)).toBe(false);
+    }
+  });
+
+  /**
+   * The advertised pattern is written as lookaheads over one character class so
+   * it stays linear on Bun (see the timing test below). This pins it to the plain
+   * grammar it replaces — `^\s*SEG( *, *SEG)*\s*$`, a segment being a dotted path
+   * plus an optional direction — over every string of up to five tokens drawn
+   * from paths, separators, spaces, directions, near-misses, and foreign
+   * characters, and again from tokens that place whitespace other than a space.
+   */
+  it('admits exactly the strings the plain sort grammar admits', () => {
+    const path = '[A-Za-z0-9_]+(?:\\.[A-Za-z0-9_]+)*';
+    const segment = `${path}(?::(?:asc|desc|ascending|descending))?`;
+    const grammar = new RegExp(`^\\s*${segment}(?: *, *${segment})*\\s*$`, 'i');
+    const sort = z.toJSONSchema(searchRecallsTool.input).properties?.sort;
+    if (typeof sort !== 'object') throw new Error('sort is not advertised as a schema');
+    const advertised = new RegExp(sort.pattern as string);
+
+    const tokens = [
+      'a',
+      'B_1',
+      '.',
+      ':',
+      ',',
+      ' ',
+      'desc',
+      'ASC',
+      'Descending',
+      'ascend',
+      '"',
+      '-',
+    ];
+    const whitespaceTokens = ['a', ':desc', ',', ' ', '.', '\t', '\n', ' '];
+    const mismatches: string[] = [];
+    let checked = 0;
+    const walk = (value: string, depth: number, from: string[]): void => {
+      checked += 1;
+      if (grammar.test(value) !== advertised.test(value)) mismatches.push(value);
+      if (depth === 0) return;
+      for (const token of from) walk(value + token, depth - 1, from);
+    };
+    walk('', 5, tokens);
+    walk('', 5, whitespaceTokens);
+
+    expect(checked).toBeGreaterThan(200_000);
+    expect(mismatches).toEqual([]);
+  });
+
+  /**
+   * The sort pattern runs over caller-sized text, so it is timed on its worst
+   * inputs — repeated segments, separators, and whitespace with an invalid tail —
+   * across a 64× span, on each runtime the server supports.
+   */
+  const SORT_WORST_CASES: Array<[string, (n: number) => string]> = [
+    ['a long field path with an invalid tail', (n) => `${'a'.repeat(n - 1)}!`],
+    ['repeated path components with an invalid tail', (n) => `${'a.'.repeat(n / 2 - 1)}a!`],
+    ['repeated segments with an invalid tail', (n) => `${'a,'.repeat(n / 2 - 1)}a!`],
+    [
+      'repeated directed segments with an invalid tail',
+      (n) => `${'a:desc,'.repeat(Math.floor(n / 7) - 1)}a!`,
+    ],
+    ['spaced separators with an invalid tail', (n) => `${'a , '.repeat(n / 4 - 1)}a!`],
+    ['a run of spaces inside a segment', (n) => `a${' '.repeat(n - 2)}!`],
+    ['a run of spaces before a line break and an invalid tail', (n) => `a${' '.repeat(n - 3)}\n!`],
+    ['a run of leading tabs with an invalid tail', (n) => `${'\t'.repeat(n - 2)}a!`],
+    ['a direction followed by mixed whitespace', (n) => `a:desc${' \t'.repeat(n / 2 - 4)}!`],
+  ];
+
+  describe.each(TIMING_RUNTIMES)('on %s', (_engine, runtime) => {
+    let micros: number[] = [];
+
+    beforeAll(() => {
+      const sort = z.toJSONSchema(searchRecallsTool.input).properties?.sort;
+      if (typeof sort !== 'object') throw new Error('sort is not advertised as a schema');
+      const inputs = SORT_WORST_CASES.flatMap(([, build]) => [build(5_000), build(320_000)]);
+      micros = regexCpuMicros(runtime, sort.pattern as string, inputs);
+    }, 120_000);
+
+    it.each(SORT_WORST_CASES.map(([name, build], i) => [name, build, i] as const))(
+      'the sort pattern stays linear on %s',
+      (_name, build, i) => {
+        expect(
+          searchRecallsTool.input.safeParse({ category: 'drug', sort: build(5_000) }).success,
+        ).toBe(false);
+        const [t5k = Number.NaN, t320k = Number.NaN] = micros.slice(2 * i, 2 * i + 2);
+        expect(t320k / t5k).toBeLessThan(256);
+        expect(t320k).toBeLessThan(500_000);
+      },
+    );
+  });
+
+  /**
+   * The normalized value is what reaches openFDA: each tool's request carries the
+   * lowercase direction, through the production argument path and the real
+   * service, with only the HTTP boundary stubbed.
+   */
+  describe('forwards the normalized direction upstream', () => {
+    const http = createFetchMock();
+
+    beforeAll(() => {
+      initOpenFdaService();
+    });
+
+    beforeEach(() => {
+      http.reset();
+      http.route({
+        match: (request) => new URL(request.url).origin === 'https://api.fda.gov',
+        respond: () =>
+          Response.json({
+            meta: { results: { skip: 0, limit: 1, total: 0 }, last_updated: '2026-07-30' },
+            results: [],
+          }),
+      });
+      http.install();
+    });
+
+    afterEach(() => {
+      http.restore();
+    });
+
+    it.each(
+      SORT_DEFINITIONS.map(([definition, base]) => [definition.name, definition, base] as const),
+    )('%s sends the lowercase directions', async (_name, definition, base) => {
+      const result = await runToolContract(definition, {
+        ...base,
+        sort: 'classification.exact:Ascending, report_date:DESC',
+      });
+
+      expect(result.isError).toBeFalsy();
+      const sorts = http.calls.map((call) => new URL(call.request.url).searchParams.get('sort'));
+      expect(sorts[0]).toBe('classification.exact:asc, report_date:desc');
+      for (const sort of sorts) {
+        if (sort !== null) expect(sort).toBe('classification.exact:asc, report_date:desc');
+      }
+    });
+
+    it('rejects an unhonoured direction before any request', async () => {
+      const result = await runToolContract(searchRecallsTool, {
+        category: 'drug',
+        sort: 'report_date:foo',
+      });
+
+      expect(result.isError).toBe(true);
+      expect(http.calls).toHaveLength(0);
+    });
+
+    /**
+     * A staged call reads a probe page and then drains the match in further pages;
+     * every one of those requests must carry the normalized direction, or the
+     * staged table is ordered differently from the inline page beside it.
+     */
+    describe('on the staged path', () => {
+      const MATCHED = 150;
+
+      beforeEach(() => {
+        http.reset();
+        http.route({
+          match: (request) => new URL(request.url).origin === 'https://api.fda.gov',
+          respond: (request) => {
+            const params = new URL(request.url).searchParams;
+            const skip = Number(params.get('skip') ?? 0);
+            const limit = Number(params.get('limit') ?? 1);
+            const count = Math.max(0, Math.min(limit, MATCHED - skip));
+            return Response.json({
+              meta: { results: { skip, limit, total: MATCHED }, last_updated: '2026-07-30' },
+              results: Array.from({ length: count }, (_, i) => ({
+                recall_number: `R-${skip + i}`,
+              })),
+            });
+          },
+        });
+        // A canvas whose table drains the real staging source, so every drain page is requested.
+        setCanvas({
+          acquire: async () => ({
+            canvasId: 'cv_sortnorm',
+            isNew: true,
+            registerTable: async (name: string, source: AsyncIterable<unknown>) => {
+              let rowCount = 0;
+              for await (const _row of source) rowCount++;
+              return { tableName: name, rowCount, columns: [] };
+            },
+          }),
+        } as never);
+      });
+
+      afterEach(() => {
+        setCanvas(undefined);
+      });
+
+      it.each([
+        [searchRecallsTool.name, searchRecallsTool, { category: 'drug', sort: 'report_date:DESC' }],
+        [
+          searchAdverseEventsTool.name,
+          searchAdverseEventsTool,
+          { category: 'drug', sort: 'receivedate:DESC' },
+        ],
+      ] as const)(
+        '%s sends the lowercase direction on every drain request',
+        async (_name, definition, input) => {
+          const result = await runToolContract(definition as AnyToolDefinition, {
+            ...input,
+            stage: true,
+          });
+
+          expect(result.isError).toBeFalsy();
+          expect((result.structuredContent as { staged_rows?: number }).staged_rows).toBe(MATCHED);
+          const requests = http.calls.map((call) => new URL(call.request.url).searchParams);
+          // The probe page, then the drain past it.
+          expect(requests.map((params) => params.get('skip'))).toEqual(['0', '100']);
+          const expected = input.sort.replace(':DESC', ':desc');
+          for (const params of requests) expect(params.get('sort')).toBe(expected);
+        },
+      );
+    });
+  });
+});
+
+describe('fields takes dotted record paths and rejects anything else (#66)', () => {
+  /** Every multi-row search tool, with a minimal valid base input. */
+  const FIELDS_TOOLS: Array<
+    [string, { parse: (value: unknown) => unknown }, Record<string, unknown>]
+  > = [
+    ['openfda_search_adverse_events', searchAdverseEventsTool.input, { category: 'drug' }],
+    ['openfda_search_recalls', searchRecallsTool.input, { category: 'drug' }],
+    ['openfda_lookup_ndc', lookupNdcTool.input, { search: 'aspirin' }],
+    ['openfda_search_drug_approvals', searchDrugApprovalsTool.input, {}],
+    ['openfda_search_drug_shortages', searchDrugShortagesTool.input, {}],
+    ['openfda_search_device_clearances', searchDeviceClearancesTool.input, { pathway: '510k' }],
+    ['openfda_search_animal_events', searchAnimalEventsTool.input, {}],
+    ['openfda_search_tobacco_reports', searchTobaccoReportsTool.input, {}],
+  ];
+
+  const ACCEPTED = [
+    ['receivedate'],
+    ['patient.drug.medicinalproduct', 'patient.reaction'],
+    ['openfda.brand_name.exact'], // well-formed; named on the notice if no record carries it
+    ['code_info', 'code_info'], // duplicates are harmless
+    ['A_1.b2.C_3'],
+    [], // form clients send an empty list for an unset array
+  ];
+
+  const REJECTED = [
+    'patient drug',
+    'patient..drug',
+    '.patient',
+    'patient.',
+    'patient-drug',
+    'patient.drug[0]',
+    'patient.drug.*',
+    '',
+    ' receivedate',
+  ];
+
+  // Every tool builds `fields` from one schema factory: the grammar is tabled once.
+  describe('on the shared fields schema', () => {
+    const parseFields = (fields: unknown) =>
+      searchRecallsTool.input.parse({ category: 'drug', fields }).fields;
+
+    it.each(ACCEPTED.map((value) => [value] as const))('accepts %j', (value) => {
+      expect(parseFields(value)).toEqual(value);
+    });
+
+    it.each(REJECTED)('rejects the entry %j', (value) => {
+      expect(() => parseFields(['receivedate', value])).toThrow();
+    });
+  });
+
+  it.each(FIELDS_TOOLS)(
+    '%s.fields is optional, takes a dotted path, and rejects a malformed one',
+    (_label, schema, base) => {
+      expect((schema.parse(base) as { fields?: unknown }).fields).toBeUndefined();
+      const fields = ['patient.drug.medicinalproduct', 'patient.reaction'];
+      expect((schema.parse({ ...base, fields }) as { fields: string[] }).fields).toEqual(fields);
+      expect(() => schema.parse({ ...base, fields: ['receivedate', 'patient..drug'] })).toThrow();
+    },
+  );
+
+  it('advertises the path shape on every entry, uncapped, and points at openfda_describe_fields', () => {
+    for (const [label, schema] of FIELDS_TOOLS) {
+      const fields = z.toJSONSchema(schema as never).properties?.fields;
+      if (
+        typeof fields !== 'object' ||
+        typeof fields.items !== 'object' ||
+        Array.isArray(fields.items)
+      )
+        throw new Error(`${label}: fields is not advertised as an array schema`);
+      const advertised = new RegExp(fields.items.pattern as string);
+      for (const value of ACCEPTED.flat()) expect(advertised.test(value)).toBe(true);
+      for (const value of REJECTED) expect(advertised.test(value)).toBe(false);
+      expect(fields.maxItems).toBeUndefined();
+      expect(fields.description).toContain('openfda_describe_fields');
+    }
+  });
+
+  it("names example paths every one of the tool's endpoints catalogs", () => {
+    const endpoints: Record<string, string[]> = {
+      openfda_search_adverse_events: ['drug/event'],
+      openfda_search_recalls: [
+        'drug/enforcement',
+        'food/enforcement',
+        'device/enforcement',
+        'device/recall',
+      ],
+      openfda_lookup_ndc: ['drug/ndc'],
+      openfda_search_drug_approvals: ['drug/drugsfda'],
+      openfda_search_drug_shortages: ['drug/shortages'],
+      openfda_search_device_clearances: ['device/510k', 'device/pma'],
+      openfda_search_animal_events: ['animalandveterinary/event'],
+      openfda_search_tobacco_reports: ['tobacco/problem'],
+    };
+    for (const [label, schema] of FIELDS_TOOLS) {
+      const fields = z.toJSONSchema(schema as never).properties?.fields;
+      const description = String(typeof fields === 'object' ? fields.description : '');
+      const example = JSON.parse(description.match(/e\.g\. (\[[^\]]*\])/)?.[1] ?? '[]') as string[];
+      expect(example.length, label).toBeGreaterThan(0);
+      // describe_fields lists the searchable subset, not every key a record carries.
+      expect(description).not.toContain("lists an endpoint's paths");
+      for (const endpoint of endpoints[label] ?? []) {
+        const cataloged = (getFieldGroups(endpoint) ?? []).flatMap((g) =>
+          g.fields.map((f) => f.path),
+        );
+        for (const path of example) expect(cataloged, `${label} ${endpoint}`).toContain(path);
+      }
+    }
+  });
+
+  /**
+   * The path pattern runs over caller-sized text, so it is timed on its worst
+   * inputs — a long run with no valid end, and repeated separators — across a 64×
+   * span, on each runtime the server supports.
+   */
+  const PATH_WORST_CASES: Array<[string, (n: number) => string]> = [
+    ['a long segment with an invalid tail', (n) => `${'a'.repeat(n - 1)}!`],
+    ['repeated segments with an invalid tail', (n) => `${'a.'.repeat(n / 2 - 1)}a!`],
+    ['repeated separators ending on a dot', (n) => 'a.'.repeat(n / 2)],
+    ['doubled dots', (n) => `a${'..'.repeat(n / 2 - 1)}a`],
+  ];
+
+  describe.each(TIMING_RUNTIMES)('on %s', (_engine, runtime) => {
+    let micros: number[] = [];
+
+    beforeAll(() => {
+      const fields = z.toJSONSchema(searchRecallsTool.input).properties?.fields;
+      if (
+        typeof fields !== 'object' ||
+        typeof fields.items !== 'object' ||
+        Array.isArray(fields.items)
+      )
+        throw new Error('fields is not advertised as an array schema');
+      const inputs = PATH_WORST_CASES.flatMap(([, build]) => [build(5_000), build(320_000)]);
+      micros = regexCpuMicros(runtime, fields.items.pattern as string, inputs);
+    }, 120_000);
+
+    it.each(PATH_WORST_CASES.map(([name, build], i) => [name, build, i] as const))(
+      'the path pattern stays linear on %s',
+      (_name, build, i) => {
+        expect(
+          searchRecallsTool.input.safeParse({ category: 'drug', fields: [build(5_000)] }).success,
+        ).toBe(false);
+        const [t5k = Number.NaN, t320k = Number.NaN] = micros.slice(2 * i, 2 * i + 2);
+        expect(t320k / t5k).toBeLessThan(256);
+        expect(t320k).toBeLessThan(500_000);
+      },
+    );
   });
 });

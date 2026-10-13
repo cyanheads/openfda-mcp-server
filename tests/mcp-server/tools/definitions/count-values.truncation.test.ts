@@ -202,4 +202,57 @@ describe('openfda_count_values — truncation from the look-ahead row', () => {
     expect(text).toContain('No count results.');
     expect(text).toMatch(/nothing matched/i);
   });
+
+  // #67 — a term holding a line break or a pipe stays one row, one cell.
+  it('renders each term in its own cell and row', async () => {
+    const terms = [
+      { term: 'FLORASTOR', count: 40 },
+      { term: 'FLORASTOR (SACCHAROMYCES\nBOULARDII LYOPHILISED)', count: 17 },
+      { term: 'A|B <E>', count: 3 },
+    ];
+    http.route({
+      match: () => true,
+      respond: () => Response.json({ meta: { last_updated: '2026-09-18' }, results: terms }),
+    });
+
+    const result = await runToolContract(countValuesTool, {
+      endpoint: 'food/event',
+      count: 'products.name_brand.exact',
+      search: 'products.name_brand:"FLORASTOR"',
+      limit: 10,
+    });
+
+    const structured = result.structuredContent as unknown as CountStructured;
+    expect(structured.results).toEqual(terms);
+    const rows = textOfResult(result)
+      .split('\n')
+      .filter((line) => /^\| \d/.test(line));
+    expect(rows).toEqual([
+      '| 1 | FLORASTOR | 40 |',
+      '| 2 | FLORASTOR (SACCHAROMYCES<br>BOULARDII LYOPHILISED) | 17 |',
+      '| 3 | A\\|B \\<E> | 3 |',
+    ]);
+  });
+
+  // #68 — an empty tally renders the dataset date structuredContent carries.
+  it('renders the dataset date ahead of an empty tally', async () => {
+    http.route(
+      { match: () => true, once: true, respond: tally(1) },
+      { match: () => true, respond: NO_MATCHES },
+    );
+    await runToolContract(countValuesTool, { endpoint: 'drug/event', count: 'serious' });
+
+    const result = await runToolContract(countValuesTool, {
+      endpoint: 'drug/event',
+      count: 'serious',
+      search: 'patient.drug.medicinalproduct:"zzznotadrugzzz"',
+    });
+
+    const structured = result.structuredContent as unknown as { meta: { lastUpdated: string } };
+    expect(structured.meta.lastUpdated).toBe('2026-09-18');
+    const text = textOfResult(result);
+    const date = text.indexOf('Data updated: 2026-09-18');
+    expect(date).toBeGreaterThan(-1);
+    expect(date).toBeLessThan(text.indexOf('No count results.'));
+  });
 });

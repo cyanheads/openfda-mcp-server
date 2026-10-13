@@ -55,6 +55,12 @@ const TOTAL = (total: number) => () =>
     meta: { results: { skip: 0, limit: 0, total }, last_updated: '2026-09-17' },
     results: [],
   });
+/** A 200 page holding nothing — records the dataset date the way a warm process has it. */
+const EMPTY_PAGE = (lastUpdated: string) => () =>
+  Response.json({
+    meta: { results: { skip: 0, limit: 2, total: 0 }, last_updated: lastUpdated },
+    results: [],
+  });
 const UNAVAILABLE = () =>
   new Response('<html><body>503 Service Temporarily Unavailable</body></html>', { status: 503 });
 
@@ -71,6 +77,7 @@ function textOfResult(result: Awaited<ReturnType<typeof runToolContract>>): stri
 }
 
 interface SearchStructured {
+  kind?: string;
   meta: { total: number; skip: number; totalUnverified?: boolean };
   notice?: string;
   results?: unknown[];
@@ -183,6 +190,63 @@ describe.each(PAGINATED_TOOLS.map(([tool, input]) => [tool.name, tool, input] as
 
       expect(http.calls).toHaveLength(1);
       expect(textOfResult(result)).toMatch(/^No .*found\.$/m);
+    });
+
+    // #68 — a no-match renders the metadata structuredContent carries, ahead of the miss.
+    it('renders the dataset date, skip, and limit ahead of the no-match line', async () => {
+      http.route(
+        { match: () => true, once: true, respond: EMPTY_PAGE('2026-07-31') },
+        { match: () => true, respond: NO_MATCHES },
+      );
+      await runToolContract(tool, { ...baseInput, limit: 2 });
+
+      const result = await runToolContract(tool, { ...baseInput, limit: 2 });
+
+      const structured = result.structuredContent as unknown as SearchStructured;
+      expect(structured.meta).toMatchObject({
+        total: 0,
+        skip: 0,
+        limit: 2,
+        lastUpdated: '2026-07-31',
+      });
+      const text = textOfResult(result);
+      const header = text.split('\n')[0]!;
+      expect(header).toContain('**0 total results**');
+      expect(header).toContain('skip: 0');
+      expect(header).toContain('limit: 2');
+      expect(header).toContain('Data updated: 2026-07-31');
+      if (structured.kind) expect(header).toContain(`kind: ${structured.kind}`);
+      const noMatch = text.search(/^No .*found\.$/m);
+      expect(noMatch).toBeGreaterThan(text.indexOf('Data updated: 2026-07-31'));
+      /** The notice renders unchanged in the trailer after the no-match line. */
+      expect(text.indexOf(`> ${structured.notice}`)).toBeGreaterThan(noMatch);
+    });
+
+    it('renders an unknown dataset date as structuredContent carries it on a cold process', async () => {
+      initOpenFdaService();
+      http.route({ match: () => true, respond: NO_MATCHES });
+
+      const result = await runToolContract(tool, { ...baseInput, limit: 2 });
+
+      const structured = result.structuredContent as unknown as SearchStructured;
+      expect(structured.meta).toMatchObject({ lastUpdated: 'unknown' });
+      const text = textOfResult(result);
+      expect(text.split('\n')[0]).toContain('Data updated: unknown');
+      expect(text).toMatch(/^No .*found\.$/m);
+    });
+
+    it('keeps the qualified no-match wording after the header when the total is unverified', async () => {
+      http.route(
+        { match: isPage, respond: NO_MATCHES },
+        { match: isRecovery, respond: UNAVAILABLE },
+      );
+
+      const result = await runToolContract(tool, { ...baseInput, limit: 1, skip: 39 });
+
+      const text = textOfResult(result);
+      const header = text.split('\n')[0]!;
+      expect(header).toMatch(/^\*\*0 total results\*\* \(returned: 0, skip: 39, limit: 1\b/);
+      expect(text.indexOf('either nothing matched')).toBeGreaterThan(header.length);
     });
   },
 );

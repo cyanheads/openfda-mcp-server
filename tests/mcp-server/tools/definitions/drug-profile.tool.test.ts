@@ -5,8 +5,13 @@ import {
   serviceUnavailable,
   unauthorized,
 } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  createFetchMock,
+  createMockContext,
+  getEnrichment,
+  runToolContract,
+} from '@cyanheads/mcp-ts-core/testing';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
   getOpenFdaService: vi.fn(),
@@ -27,8 +32,12 @@ const meta = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-/** A fully-populated upstream, keyed by endpoint + count expression. */
-function fullUpstream(endpoint: string, params: { count?: string }) {
+/**
+ * A fully-populated upstream, keyed by endpoint + count expression. The
+ * `drug/event` match total (2007) deliberately exceeds the sum of the `serious`
+ * buckets (2000): seven reports carry no `serious` value, as real ones do.
+ */
+function fullUpstream(endpoint: string, params: { count?: string; limit?: number }) {
   if (endpoint === 'drug/label') {
     return {
       meta: meta({ total: 1 }),
@@ -66,6 +75,9 @@ function fullUpstream(endpoint: string, params: { count?: string }) {
         { term: '2', count: 1500 },
       ],
     };
+  }
+  if (endpoint === 'drug/event' && params.count === undefined && params.limit === 0) {
+    return { meta: meta({ total: 2007, limit: 0 }), results: [] };
   }
   if (endpoint === 'drug/enforcement') {
     return {
@@ -129,9 +141,13 @@ describe('openfda_drug_profile', () => {
     expect(result.identity.rxcui).toBe('860975');
     expect(result.identity.spl_set_id).toBe('spl-abc-123');
     expect(result.label?.indications).toContain('glycemic');
-    expect(result.adverse_events?.total).toBe(2000);
+    // The match total, not the serious-bucket sum (2000): reports with no
+    // seriousness recorded count toward total only (#63).
+    expect(result.adverse_events?.total).toBe(2007);
     expect(result.adverse_events?.seriousCount).toBe(500);
     expect(result.adverse_events?.topReactions[0]).toEqual({ term: 'NAUSEA', count: 1200 });
+    const text = textOf(drugProfileTool.format!(result));
+    expect(text).toContain('**Total reports:** 2007 | **Serious count:** 500');
     expect(result.recalls).toHaveLength(1);
     expect(result.recalls[0]!.classification).toBe('Class II');
     expect(result.recalls[0]!.date).toBe('20240110');
@@ -162,10 +178,20 @@ describe('openfda_drug_profile', () => {
     }
 
     const events = calls.filter(([endpoint]) => endpoint === 'drug/event');
-    expect(events).toHaveLength(2);
+    expect(events).toHaveLength(3);
     for (const [, params] of events) {
-      expect(params.search).toContain('Glucophage');
+      expect(params.search).toBe('patient.drug.medicinalproduct:"Glucophage"');
     }
+    // The total is a records search for the same match, asking for no records.
+    expect(events.map(([, params]) => params)).toContainEqual({
+      search: 'patient.drug.medicinalproduct:"Glucophage"',
+      limit: 0,
+    });
+
+    // The profile's own sorts stay in the lowercase form openFDA honours (#64).
+    const sortOf = (endpoint: string) => calls.find(([e]) => e === endpoint)?.[1]?.sort;
+    expect(sortOf('drug/enforcement')).toBe('report_date:desc');
+    expect(sortOf('drug/shortages')).toBe('update_date:desc');
   });
 
   it('is best-effort: a failing sub-query nulls its section without failing the call', async () => {
@@ -564,7 +590,7 @@ describe('openfda_drug_profile', () => {
       expect(notice).not.toMatch(/spelling/i);
     });
 
-    it('collapses the two adverse-event sub-queries into one degraded entry', async () => {
+    it('collapses the three adverse-event sub-queries into one degraded entry', async () => {
       mockQuery.mockImplementation(async (endpoint: string, params: { count?: string }) => {
         if (endpoint === 'drug/event') {
           throw serviceUnavailable('openFDA upstream error: shard failure', {
@@ -579,7 +605,83 @@ describe('openfda_drug_profile', () => {
         ctx,
       );
 
+      expect(mockQuery.mock.calls.filter(([endpoint]) => endpoint === 'drug/event')).toHaveLength(
+        3,
+      );
       expect(result.degraded.map((d) => d.section)).toEqual(['adverse_events']);
+      expect(result.adverse_events).toBeNull();
+    });
+
+    /**
+     * Any one adverse-event sub-query failing leaves the section unknown: no
+     * bucket sum or zero stands in for the figure that failed, and the reactions
+     * that did arrive are not reported beside a fabricated total (#63).
+     */
+    it.each([
+      ['the match total', (params: { count?: string }) => params.count === undefined],
+      ['the serious tally', (params: { count?: string }) => params.count === 'serious'],
+      [
+        'the reaction tally',
+        (params: { count?: string }) => params.count?.startsWith('patient.reaction') === true,
+      ],
+    ])('nulls adverse_events when %s fails alone', async (_name, failing) => {
+      mockQuery.mockImplementation(
+        async (endpoint: string, params: { count?: string; limit?: number }) => {
+          if (endpoint === 'drug/event' && failing(params)) {
+            throw serviceUnavailable('openFDA upstream error: shard failure', {
+              reason: 'upstream_error',
+            });
+          }
+          return fullUpstream(endpoint, params);
+        },
+      );
+
+      const result = await drugProfileTool.handler(
+        drugProfileTool.input.parse({ drug: 'metformin' }),
+        ctx,
+      );
+
+      expect(result.adverse_events).toBeNull();
+      expect(result.degraded).toEqual([
+        {
+          section: 'adverse_events',
+          reason: 'upstream_error',
+          message: expect.stringContaining('shard failure'),
+        },
+      ]);
+      // Every other section still resolves.
+      expect(result.label).not.toBeNull();
+      expect(result.recalls).toHaveLength(1);
+      expect(getEnrichment(ctx).sectionsFound).toBe(4);
+      expect(getEnrichment(ctx).notice).toMatch(
+        /Partial profile .* adverse_events \(upstream_error\)/,
+      );
+
+      const text = textOf(drugProfileTool.format!(result));
+      expect(text).toContain('No adverse-event data.');
+      expect(text).not.toContain('**Total reports:**');
+      expect(text).toContain('## Degraded (1 section)');
+    });
+
+    it('propagates cancellation of the match total rather than reporting the section degraded', async () => {
+      mockQuery.mockImplementation(
+        async (endpoint: string, params: { count?: string; limit?: number }) => {
+          if (endpoint === 'drug/event' && params.count === undefined) {
+            throw new McpError(JsonRpcErrorCode.InternalError, 'Request was aborted.', {
+              errorSource: 'FetchAborted',
+            });
+          }
+          return fullUpstream(endpoint, params);
+        },
+      );
+
+      const err = (await Promise.resolve(
+        drugProfileTool.handler(drugProfileTool.input.parse({ drug: 'metformin' }), ctx),
+      ).catch((e: unknown) => e)) as McpError;
+
+      expect(err).toBeInstanceOf(McpError);
+      expect(err.message).toMatch(/aborted/i);
+      expect(getEnrichment(ctx).notice).toBeUndefined();
     });
 
     it('never blames spelling when every section failed upstream', async () => {
@@ -613,6 +715,206 @@ describe('openfda_drug_profile', () => {
 
       expect(result.degraded).toEqual([]);
       expect(textOf(drugProfileTool.format!(result))).not.toContain('## Degraded');
+    });
+  });
+});
+
+/**
+ * The adverse-event total against the real OpenFdaService, with only the HTTP
+ * boundary stubbed: the outgoing `limit=0` request, the total it carries into
+ * both response surfaces, and openFDA's no-match 404 (#63).
+ */
+describe('openfda_drug_profile adverse-event total at the HTTP boundary', () => {
+  const http = createFetchMock();
+  const NO_MATCHES = () =>
+    Response.json({ error: { code: 'NOT_FOUND', message: 'No matches found!' } }, { status: 404 });
+  const page = (results: unknown[], total: number) =>
+    Response.json({
+      meta: { results: { skip: 0, limit: results.length, total }, last_updated: '2026-07-30' },
+      results,
+    });
+  const paramsOf = (req: Request) => new URL(req.url).searchParams;
+  const isEvent = (req: Request) => new URL(req.url).pathname === '/drug/event.json';
+  const eventRequests = () => http.calls.map((call) => call.request).filter(isEvent);
+
+  beforeAll(async () => {
+    const actual = await vi.importActual<typeof import('@/services/openfda/openfda-service.js')>(
+      '@/services/openfda/openfda-service.js',
+    );
+    actual.initOpenFdaService();
+    vi.mocked(getOpenFdaService).mockImplementation(actual.getOpenFdaService);
+  });
+
+  beforeEach(() => {
+    http.reset();
+    http.install();
+  });
+
+  afterEach(() => {
+    http.restore();
+  });
+
+  it('reads total from a limit=0 search for the same match, on both surfaces', async () => {
+    http.route(
+      {
+        match: (req) => isEvent(req) && paramsOf(req).get('count') === 'serious',
+        respond: () =>
+          page(
+            [
+              { term: 1, count: 293498 },
+              { term: 2, count: 139294 },
+            ],
+            0,
+          ),
+      },
+      {
+        match: (req) => isEvent(req) && paramsOf(req).has('count'),
+        respond: () => page([{ term: 'NAUSEA', count: 31210 }], 0),
+      },
+      { match: isEvent, respond: () => page([], 432898) },
+      { match: () => true, respond: NO_MATCHES },
+    );
+
+    const result = await runToolContract(drugProfileTool, { drug: 'metformin' });
+
+    expect(result.isError).toBeFalsy();
+    const totalRequests = eventRequests()
+      .map(paramsOf)
+      .filter((params) => !params.has('count'));
+    expect(totalRequests).toHaveLength(1);
+    expect(totalRequests[0]!.get('search')).toBe('patient.drug.medicinalproduct:"metformin"');
+    expect(totalRequests[0]!.get('limit')).toBe('0');
+    expect(totalRequests[0]!.has('sort')).toBe(false);
+
+    const structured = result.structuredContent as {
+      adverse_events: { total: number; seriousCount: number } | null;
+      degraded: unknown[];
+    };
+    expect(structured.adverse_events).toMatchObject({ total: 432898, seriousCount: 293498 });
+    expect(structured.degraded).toEqual([]);
+    const text = result.content
+      .filter((block) => block.type === 'text')
+      .map((block) => block.text)
+      .join('\n');
+    expect(text).toContain('**Total reports:** 432898 | **Serious count:** 293498');
+  });
+
+  it('leaves adverse_events null and nothing degraded when drug/event matches nothing', async () => {
+    http.route({ match: () => true, respond: NO_MATCHES });
+
+    const result = await runToolContract(drugProfileTool, { drug: 'zzqxnotadrug' });
+
+    expect(result.isError).toBeFalsy();
+    expect(eventRequests()).toHaveLength(3);
+    const structured = result.structuredContent as {
+      adverse_events: unknown;
+      degraded: unknown[];
+    };
+    expect(structured.adverse_events).toBeNull();
+    expect(structured.degraded).toEqual([]);
+  });
+
+  /**
+   * A caller that cancels while a sub-query sleeps between retries. `withRetry`
+   * rejects the backoff with the signal's own reason — no `McpError` — so a check
+   * keyed on the error's shape files the cancellation as one more degraded
+   * section and completes the call. Driven through the real service and the real
+   * `withRetry`, on fake timers so the backoff is held open until the abort lands.
+   */
+  describe('cancellation during a retry backoff', () => {
+    const pathOf = (req: Request) => new URL(req.url).pathname;
+    const SERVER_ERROR = () =>
+      Response.json({ error: { code: 'SERVER_ERROR', message: 'shard failure' } }, { status: 500 });
+    const LABEL = () =>
+      page(
+        [{ set_id: 's-1', openfda: { generic_name: ['metformin'], brand_name: ['Glucophage'] } }],
+        1,
+      );
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** Identity resolution and every sub-query of the fan-out after it. */
+    const SUB_QUERIES: Array<[string, (req: Request) => boolean]> = [
+      ['the drug/label identity lookup', (req) => pathOf(req) === '/drug/label.json'],
+      ['the adverse-event match total', (req) => isEvent(req) && !paramsOf(req).has('count')],
+      [
+        'the reactions count',
+        (req) =>
+          isEvent(req) && paramsOf(req).get('count') === 'patient.reaction.reactionmeddrapt.exact',
+      ],
+      ['the seriousness count', (req) => isEvent(req) && paramsOf(req).get('count') === 'serious'],
+      ['the recall search', (req) => pathOf(req) === '/drug/enforcement.json'],
+      ['the approval search', (req) => pathOf(req) === '/drug/drugsfda.json'],
+      ['the shortage search', (req) => pathOf(req) === '/drug/shortages.json'],
+    ];
+
+    it.each(SUB_QUERIES)(
+      'reports the call cancelled when the cancel lands while %s backs off',
+      async (_label, failing) => {
+        vi.useFakeTimers();
+        http.route(
+          { match: failing, respond: SERVER_ERROR },
+          { match: (req) => pathOf(req) === '/drug/label.json', respond: LABEL },
+          { match: () => true, respond: NO_MATCHES },
+        );
+        const controller = new AbortController();
+        const pending = runToolContract(
+          drugProfileTool,
+          { drug: 'metformin' },
+          { context: { signal: controller.signal } },
+        );
+
+        // Settle every request without moving the clock, so the failed one sits in its backoff.
+        const failed = () => http.calls.filter((call) => failing(call.request));
+        for (let i = 0; i < 200 && failed().length === 0; i++) await vi.advanceTimersByTimeAsync(0);
+        for (let i = 0; i < 50; i++) await vi.advanceTimersByTimeAsync(0);
+        expect(failed()).toHaveLength(1);
+        const requestsBeforeCancel = http.calls.length;
+
+        controller.abort();
+        const result = await pending;
+
+        expect(result.isError).toBe(true);
+        expect((result.structuredContent as { error: { code: number } }).error.code).toBe(
+          JsonRpcErrorCode.RequestCancelled,
+        );
+        // The retry never fired, and nothing further went upstream once the caller left.
+        expect(failed()).toHaveLength(1);
+        expect(http.calls).toHaveLength(requestsBeforeCancel);
+      },
+    );
+
+    it('stops before the fan-out when the cancel lands while the drug/ndc fallback backs off', async () => {
+      vi.useFakeTimers();
+      http.route(
+        { match: (req) => pathOf(req) === '/drug/ndc.json', respond: SERVER_ERROR },
+        { match: () => true, respond: NO_MATCHES },
+      );
+      const controller = new AbortController();
+      const pending = runToolContract(
+        drugProfileTool,
+        { drug: 'metformin' },
+        { context: { signal: controller.signal } },
+      );
+
+      const ndc = () => http.calls.filter((call) => pathOf(call.request) === '/drug/ndc.json');
+      for (let i = 0; i < 200 && ndc().length === 0; i++) await vi.advanceTimersByTimeAsync(0);
+      for (let i = 0; i < 50; i++) await vi.advanceTimersByTimeAsync(0);
+      expect(ndc()).toHaveLength(1);
+
+      controller.abort();
+      const result = await pending;
+
+      expect((result.structuredContent as { error: { code: number } }).error.code).toBe(
+        JsonRpcErrorCode.RequestCancelled,
+      );
+      // Only the label lookup and the one ndc attempt went upstream.
+      expect(http.calls.map((call) => pathOf(call.request))).toEqual([
+        '/drug/label.json',
+        '/drug/ndc.json',
+      ]);
     });
   });
 });

@@ -223,13 +223,15 @@ describe('openfda_count_values', () => {
     expect(text).toContain('2 terms');
   });
 
-  it('formats empty results without message', () => {
+  it('formats empty results with the dataset date ahead of the empty-tally line (#68)', () => {
     const content = countValuesTool.format!({
-      meta: { lastUpdated: '' },
+      meta: { lastUpdated: '2026-07-31' },
       results: [],
     });
 
-    expect(textOf(content)).toBe('No count results.');
+    expect(textOf(content)).toBe(
+      '**0 terms** (total occurrences: 0) | Data updated: 2026-07-31\n\nNo count results.',
+    );
   });
 
   // Issue #34 — a non-aggregatable count expression is a fixable query error, so it

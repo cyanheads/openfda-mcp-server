@@ -128,13 +128,15 @@ describe('openfda_search_adverse_events', () => {
     expect(text).toContain('Female');
   });
 
-  it('formats empty results', () => {
+  it('formats empty results with the metadata header ahead of the no-match line (#68)', () => {
     const content = searchAdverseEventsTool.format!({
-      meta: { total: 0, skip: 0, limit: 10, lastUpdated: '' },
+      meta: { total: 0, skip: 0, limit: 10, lastUpdated: '2026-07-31' },
       results: [],
     });
 
-    expect(textOf(content)).toBe('No results found.');
+    expect(textOf(content)).toBe(
+      '**0 total results** (returned: 0, skip: 0, limit: 10) | Data updated: 2026-07-31\n\nNo results found.',
+    );
   });
 
   it('renders a device report through the device arm, not the drug arm (#24)', () => {

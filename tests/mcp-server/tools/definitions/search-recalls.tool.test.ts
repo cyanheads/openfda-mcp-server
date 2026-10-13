@@ -184,7 +184,7 @@ describe('openfda_search_recalls', () => {
   describe('format() by record shape (#46)', () => {
     const META = { total: 1, skip: 0, limit: 10, lastUpdated: '2026-07-01' };
     const HEADER =
-      '**1 total results** (returned: 1, skip: 0, limit: 10) | Last updated: 2026-07-01\n';
+      '**1 total results** (returned: 1, skip: 0, limit: 10) | Data updated: 2026-07-01\n';
 
     /**
      * Enforcement records share one field set across drug, food, and device —

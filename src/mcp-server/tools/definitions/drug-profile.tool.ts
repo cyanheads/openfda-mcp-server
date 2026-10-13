@@ -9,7 +9,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
-import { truncate } from '@/mcp-server/tools/format-utils.js';
+import { lineContent, singleLine, truncate } from '@/mcp-server/tools/format-utils.js';
 import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
@@ -61,10 +61,15 @@ interface SectionFailure {
   section: Section;
 }
 
-/** Collects every sub-query failure of one profile run, plus the first global one to rethrow. */
+/**
+ * Collects every sub-query failure of one profile run, plus the first global one
+ * to rethrow, and holds the caller's signal that decides whether a failure is the
+ * caller cancelling.
+ */
 interface FailureSink {
   failures: SectionFailure[];
   fatal?: unknown;
+  signal: AbortSignal;
 }
 
 /**
@@ -199,6 +204,11 @@ function deriveMarketingStatus(app: Record<string, unknown>): string | null {
  * captured in `fatal` — the handler rethrows it after the round rather than
  * rejecting mid-flight, so a second concurrent fatal never becomes an unhandled
  * rejection.
+ *
+ * Any failure once the caller's signal has fired is the cancellation, whatever
+ * shape it arrives in: a cancel landing while `withRetry` sleeps between attempts
+ * rejects with the signal's own reason, which carries no `McpError` code for
+ * `fatalReason` to recognize.
  */
 async function settle<T>(
   section: Section,
@@ -208,7 +218,7 @@ async function settle<T>(
   try {
     return await fn();
   } catch (error) {
-    const fatal = fatalReason(error);
+    const fatal = sink.signal.aborted ? 'cancelled' : fatalReason(error);
     if (fatal !== null) sink.fatal ??= error;
     sink.failures.push({
       section,
@@ -280,7 +290,7 @@ export const drugProfileTool = tool('openfda_drug_profile', {
         fanOutKey: z
           .string()
           .describe(
-            'Canonical key the structured sub-queries (recall/enforcement, Drugs@FDA approval, shortage) ran against — the resolved generic name, falling back to a brand name, then the input term. The adverse-event sub-query instead keys off the raw input term to match heterogeneous reporter-entered values.',
+            'Canonical key the structured sub-queries (recall/enforcement, Drugs@FDA approval, shortage) ran against — the resolved generic name, falling back to a brand name, then the input term. The adverse-event sub-queries instead key off the raw input term to match heterogeneous reporter-entered values.',
           ),
       })
       .describe('Request metadata.'),
@@ -318,8 +328,16 @@ export const drugProfileTool = tool('openfda_drug_profile', {
       .describe('Label highlights from drug/label, or null when no label matched.'),
     adverse_events: z
       .object({
-        total: z.number().describe('Approximate total adverse-event reports naming this drug.'),
-        seriousCount: z.number().describe('Reports flagged serious (serious=1).'),
+        total: z
+          .number()
+          .describe(
+            'Adverse-event reports naming this drug — every matching report, including those with no seriousness recorded; equals openfda_search_adverse_events meta.total for the same medicinalproduct search.',
+          ),
+        seriousCount: z
+          .number()
+          .describe(
+            'Reports flagged serious (serious=1). total − seriousCount covers both non-serious reports and those with no seriousness recorded.',
+          ),
         topReactions: z
           .array(
             z
@@ -355,7 +373,10 @@ export const drugProfileTool = tool('openfda_drug_profile', {
       .describe('Drugs@FDA approval summary, or null when no application matched.'),
     shortage: z
       .object({
-        status: z.string().nullable().describe('Shortage status (Current/Resolved).'),
+        status: z
+          .string()
+          .nullable()
+          .describe('Shortage status (Current, To Be Discontinued, or Resolved).'),
         availability: z.string().nullable().describe('Availability note (truncated).'),
       })
       .nullable()
@@ -419,7 +440,7 @@ export const drugProfileTool = tool('openfda_drug_profile', {
     // new sub-query cannot reintroduce the defect by interpolating `term` raw.
     const termPhrase = phrase(term);
 
-    const sink: FailureSink = { failures: [] };
+    const sink: FailureSink = { failures: [], signal: ctx.signal };
 
     /* 1. Resolve identity once — drug/label first (richest, doubles as the label section), drug/ndc fallback. */
     let resolvedVia: 'label' | 'ndc' | 'none' = 'none';
@@ -462,6 +483,7 @@ export const drugProfileTool = tool('openfda_drug_profile', {
           ),
         sink,
       );
+      if (sink.fatal) throw sink.fatal;
       if (ndcResolve && ndcResolve.results.length > 0) {
         const records = ndcResolve.results as Record<string, unknown>[];
         const best =
@@ -489,62 +511,62 @@ export const drugProfileTool = tool('openfda_drug_profile', {
     const resolvedKey = identity.generic_name ?? identity.brand_names[0] ?? term;
     const key = hasSearchableCharacter(resolvedKey) ? resolvedKey.trim() : term;
     const keyPhrase = phrase(key);
-    const [reactionsRes, seriousRes, recallsRes, approvalRes, shortageRes] = await Promise.all([
-      settle(
-        'adverse_events',
-        () =>
-          svc.query(
-            'drug/event',
-            {
-              search: `patient.drug.medicinalproduct:"${termPhrase}"`,
-              count: 'patient.reaction.reactionmeddrapt.exact',
-              limit: 5,
-            },
-            ctx,
-          ),
-        sink,
-      ),
-      settle(
-        'adverse_events',
-        () =>
-          svc.query(
-            'drug/event',
-            { search: `patient.drug.medicinalproduct:"${termPhrase}"`, count: 'serious' },
-            ctx,
-          ),
-        sink,
-      ),
-      settle(
-        'recalls',
-        () =>
-          svc.query(
-            'drug/enforcement',
-            { search: `openfda.generic_name:"${keyPhrase}"`, sort: 'report_date:desc', limit: 5 },
-            ctx,
-          ),
-        sink,
-      ),
-      settle(
-        'approval',
-        () =>
-          svc.query(
-            'drug/drugsfda',
-            { search: `openfda.generic_name:"${keyPhrase}"`, limit: 5 },
-            ctx,
-          ),
-        sink,
-      ),
-      settle(
-        'shortage',
-        () =>
-          svc.query(
-            'drug/shortages',
-            { search: `generic_name:"${keyPhrase}"`, sort: 'update_date:desc', limit: 1 },
-            ctx,
-          ),
-        sink,
-      ),
-    ]);
+    const eventSearch = `patient.drug.medicinalproduct:"${termPhrase}"`;
+    const [eventTotalRes, reactionsRes, seriousRes, recallsRes, approvalRes, shortageRes] =
+      await Promise.all([
+        // The match total. A count response carries no total, and summing the
+        // `serious` buckets would drop every report with no seriousness recorded.
+        settle(
+          'adverse_events',
+          () => svc.query('drug/event', { search: eventSearch, limit: 0 }, ctx),
+          sink,
+        ),
+        settle(
+          'adverse_events',
+          () =>
+            svc.query(
+              'drug/event',
+              { search: eventSearch, count: 'patient.reaction.reactionmeddrapt.exact', limit: 5 },
+              ctx,
+            ),
+          sink,
+        ),
+        settle(
+          'adverse_events',
+          () => svc.query('drug/event', { search: eventSearch, count: 'serious' }, ctx),
+          sink,
+        ),
+        settle(
+          'recalls',
+          () =>
+            svc.query(
+              'drug/enforcement',
+              { search: `openfda.generic_name:"${keyPhrase}"`, sort: 'report_date:desc', limit: 5 },
+              ctx,
+            ),
+          sink,
+        ),
+        settle(
+          'approval',
+          () =>
+            svc.query(
+              'drug/drugsfda',
+              { search: `openfda.generic_name:"${keyPhrase}"`, limit: 5 },
+              ctx,
+            ),
+          sink,
+        ),
+        settle(
+          'shortage',
+          () =>
+            svc.query(
+              'drug/shortages',
+              { search: `generic_name:"${keyPhrase}"`, sort: 'update_date:desc', limit: 1 },
+              ctx,
+            ),
+          sink,
+        ),
+      ]);
 
     // Auth/config failures and cancellation stay accessible to the caller rather
     // than collapsing into an empty best-effort profile.
@@ -569,14 +591,19 @@ export const drugProfileTool = tool('openfda_drug_profile', {
       seriousCount: number;
       topReactions: Array<{ term: string; count: number }>;
     } | null = null;
-    if (reactionsRes) {
+    // All three sub-queries or nothing: a failed one leaves the section unknown
+    // (listed in `degraded`) rather than reported beside an invented figure.
+    if (eventTotalRes && reactionsRes && seriousRes) {
       const topReactions = reactionsRes.results.map((r) => ({
         term: String((r as Record<string, unknown>).term),
         count: Number((r as Record<string, unknown>).count ?? 0),
       }));
-      const buckets = (seriousRes?.results ?? []) as Array<Record<string, unknown>>;
-      const total = buckets.reduce((sum, b) => sum + Number(b.count ?? 0), 0);
-      const seriousCount = Number(buckets.find((b) => String(b.term) === '1')?.count ?? 0);
+      const total = eventTotalRes.meta.total;
+      const seriousBucket = (seriousRes.results as Array<Record<string, unknown>>).find(
+        (b) => String(b.term) === '1',
+      );
+      // A matched set with no serious=1 bucket has no serious reports.
+      const seriousCount = Number(seriousBucket?.count ?? 0);
       if (topReactions.length > 0 || total > 0) {
         adverse_events = { total, seriousCount, topReactions };
       }
@@ -626,7 +653,7 @@ export const drugProfileTool = tool('openfda_drug_profile', {
       shortage,
     ].filter((s) => s != null).length;
 
-    // One entry per section, not per sub-query — the two adverse-event calls share a section.
+    // One entry per section, not per sub-query — the three adverse-event calls share a section.
     const degraded = [...new Map(sink.failures.map((f) => [f.section, f])).values()];
 
     ctx.log.info('Drug profile completed', {
@@ -669,8 +696,8 @@ export const drugProfileTool = tool('openfda_drug_profile', {
   format: (result) => {
     const { identity, label, adverse_events, recalls, approval, shortage, degraded, meta } = result;
     const lines: string[] = [
-      `# Drug profile: ${meta.drug}`,
-      `_Resolved via: ${meta.resolvedVia} · fan-out key: ${meta.fanOutKey}_`,
+      singleLine(`# Drug profile: ${meta.drug}`),
+      singleLine(`_Resolved via: ${meta.resolvedVia} · fan-out key: ${meta.fanOutKey}_`),
       '',
     ];
 
@@ -679,25 +706,33 @@ export const drugProfileTool = tool('openfda_drug_profile', {
     if (degraded.length > 0) {
       lines.push(`## Degraded (${degraded.length} section${degraded.length === 1 ? '' : 's'})`);
       lines.push('These sub-queries failed upstream — the data below is unknown, not absent:');
-      for (const d of degraded) lines.push(`- **${d.section}** — ${d.reason}: ${d.message}`);
+      for (const d of degraded) {
+        lines.push(singleLine(`- **${d.section}** — ${d.reason}: ${d.message}`));
+      }
       lines.push('');
     }
 
     lines.push('## Identity');
     lines.push(
-      `**Brand names:** ${identity.brand_names.length ? identity.brand_names.join(', ') : 'n/a'}`,
+      ...[
+        `**Brand names:** ${identity.brand_names.length ? identity.brand_names.join(', ') : 'n/a'}`,
+        `**Generic name:** ${identity.generic_name ?? 'n/a'}`,
+        `**Product NDC:** ${identity.product_ndc ?? 'n/a'}`,
+        `**RxCUI:** ${identity.rxcui ?? 'n/a'}`,
+        `**SPL set ID:** ${identity.spl_set_id ?? 'n/a'}`,
+      ].map(singleLine),
     );
-    lines.push(`**Generic name:** ${identity.generic_name ?? 'n/a'}`);
-    lines.push(`**Product NDC:** ${identity.product_ndc ?? 'n/a'}`);
-    lines.push(`**RxCUI:** ${identity.rxcui ?? 'n/a'}`);
-    lines.push(`**SPL set ID:** ${identity.spl_set_id ?? 'n/a'}`);
     lines.push('');
 
     lines.push('## Label');
     if (label) {
-      lines.push(`**Indications:** ${label.indications ?? 'n/a'}`);
-      lines.push(`**Warnings:** ${label.warnings ?? 'n/a'}`);
-      lines.push(`**Dosage:** ${label.dosage ?? 'n/a'}`);
+      lines.push(
+        ...[
+          `**Indications:** ${label.indications ?? 'n/a'}`,
+          `**Warnings:** ${label.warnings ?? 'n/a'}`,
+          `**Dosage:** ${label.dosage ?? 'n/a'}`,
+        ].map(singleLine),
+      );
     } else {
       lines.push('No label on file.');
     }
@@ -710,7 +745,9 @@ export const drugProfileTool = tool('openfda_drug_profile', {
       );
       lines.push('**Top reactions** (term — count):');
       if (adverse_events.topReactions.length) {
-        for (const r of adverse_events.topReactions) lines.push(`- ${r.term}: ${r.count}`);
+        for (const r of adverse_events.topReactions) {
+          lines.push(`- ${lineContent(`${r.term}: ${r.count}`)}`);
+        }
       } else {
         lines.push('- none');
       }
@@ -723,9 +760,11 @@ export const drugProfileTool = tool('openfda_drug_profile', {
     if (recalls.length) {
       for (const r of recalls) {
         lines.push(
-          `- **Classification:** ${r.classification ?? 'n/a'} · **Recalling firm:** ${r.recalling_firm ?? 'n/a'} · **Date:** ${r.date ?? 'n/a'}`,
+          singleLine(
+            `- **Classification:** ${r.classification ?? 'n/a'} · **Recalling firm:** ${r.recalling_firm ?? 'n/a'} · **Date:** ${r.date ?? 'n/a'}`,
+          ),
         );
-        lines.push(`  **Reason:** ${r.reason ?? 'n/a'}`);
+        lines.push(singleLine(`  **Reason:** ${r.reason ?? 'n/a'}`));
       }
     } else {
       lines.push('No recalls on record.');
@@ -735,7 +774,9 @@ export const drugProfileTool = tool('openfda_drug_profile', {
     lines.push('## Approval');
     if (approval) {
       lines.push(
-        `**Application number:** ${approval.applicationNumber ?? 'n/a'} | **Sponsor:** ${approval.sponsor ?? 'n/a'} | **Marketing status:** ${approval.marketingStatus ?? 'n/a'}`,
+        singleLine(
+          `**Application number:** ${approval.applicationNumber ?? 'n/a'} | **Sponsor:** ${approval.sponsor ?? 'n/a'} | **Marketing status:** ${approval.marketingStatus ?? 'n/a'}`,
+        ),
       );
     } else {
       lines.push('No Drugs@FDA approval found.');
@@ -744,8 +785,8 @@ export const drugProfileTool = tool('openfda_drug_profile', {
 
     lines.push('## Shortage');
     if (shortage) {
-      lines.push(`**Status:** ${shortage.status ?? 'n/a'}`);
-      lines.push(`**Availability:** ${shortage.availability ?? 'n/a'}`);
+      lines.push(singleLine(`**Status:** ${shortage.status ?? 'n/a'}`));
+      lines.push(singleLine(`**Availability:** ${shortage.availability ?? 'n/a'}`));
     } else {
       lines.push('Not currently listed in the shortage database.');
     }

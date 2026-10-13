@@ -6,6 +6,7 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { escapeTableCell, singleLine } from '@/mcp-server/tools/format-utils.js';
 import {
   assertSearchDelimitersBalanced,
   malformedSearchError,
@@ -203,19 +204,16 @@ export const countValuesTool = tool('openfda_count_values', {
   },
 
   format: (result) => {
+    const totalCount = result.results.reduce((sum, r) => sum + r.count, 0);
+    const header = `${singleLine(`**${result.results.length} terms** (total occurrences: ${totalCount}) | Data updated: ${result.meta.lastUpdated}`)}\n`;
     if (result.results.length === 0) {
-      return [{ type: 'text' as const, text: 'No count results.' }];
+      return [{ type: 'text' as const, text: `${header}\nNo count results.` }];
     }
 
-    const totalCount = result.results.reduce((sum, r) => sum + r.count, 0);
-    const lines: string[] = [
-      `**${result.results.length} terms** (total occurrences: ${totalCount}) | Data updated: ${result.meta.lastUpdated}\n`,
-      '| # | Term | Count |',
-      '|---|------|-------|',
-    ];
+    const lines: string[] = [header, '| # | Term | Count |', '|---|------|-------|'];
 
     for (const [i, r] of result.results.entries()) {
-      lines.push(`| ${i + 1} | ${r.term} | ${r.count} |`);
+      lines.push(`| ${i + 1} | ${escapeTableCell(r.term)} | ${r.count} |`);
     }
 
     return [{ type: 'text' as const, text: lines.join('\n') }];

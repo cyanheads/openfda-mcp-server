@@ -11,15 +11,19 @@ import { CanvasIdSchema, type ColumnSchema } from '@cyanheads/mcp-ts-core/canvas
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
-  canvasStagingLine,
-  emptyPageNote,
+  emptyPageBody,
   emptyResultMessage,
   formatRemainingFields,
-  noMatchNote,
+  lineContent,
+  projectedRecordLines,
+  searchLead,
+  singleLine,
 } from '@/mcp-server/tools/format-utils.js';
 import {
   assertSearchDelimitersBalanced,
   assertSkipWithinCeiling,
+  fieldSelection,
+  fieldsDescription,
   malformedSearchError,
   nonBlankString,
   SEARCH_BALANCE_NOTE,
@@ -44,10 +48,20 @@ import {
   boundedPage,
   META_LIMIT_DESCRIPTION,
   PAGE_BUDGET_NOTE,
-  pageBudgetLine,
   pageBudgetNotice,
   pageBudgetOutputShape,
 } from '@/services/openfda/page-budget.js';
+import {
+  projectionNotice,
+  projectionOutputShape,
+  recordProjection,
+} from '@/services/openfda/record-projection.js';
+
+/**
+ * Keys that tell one record apart, kept on every `fields`-projected record:
+ * `report_id`.
+ */
+const IDENTITY_KEYS = ['report_id'] as const;
 
 /**
  * Canvas table projection for tobacco problem reports. Count fields are stored as
@@ -79,7 +93,7 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
     sort: sortExpression()
       .optional()
       .describe(
-        'Sort expression — a field path optionally suffixed with :asc or :desc; comma-separate for multi-field sort. Example: date_submitted:desc. Field paths take only letters, digits, underscores, and dots; anything else is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
+        'Sort expression — a field path optionally suffixed with :asc or :desc (any letter case; :ascending and :descending are also accepted, and every direction is sent as asc or desc); comma-separate for multi-field sort. Example: date_submitted:desc. Field paths take only letters, digits, underscores, and dots; any other character or direction is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
       ),
     limit: z
       .number()
@@ -88,6 +102,9 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
       .default(10)
       .describe(`Maximum number of records to return (1-1000, default 10). ${PAGE_BUDGET_NOTE}`),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
+    fields: fieldSelection()
+      .optional()
+      .describe(fieldsDescription(IDENTITY_KEYS, ['date_submitted', 'reported_health_problems'])),
     stage: stageInput,
     canvas_id: CanvasIdSchema.optional().describe(
       'Canvas ID returned by a prior stage=true call to this tool or another openFDA search tool (openfda_search_* or openfda_lookup_ndc). Passing one stages this search onto that canvas (same effect as stage=true) so result sets accumulate for cross-table joins. Omit to stage onto a fresh canvas.',
@@ -110,6 +127,7 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
         'Tobacco problem report records. Key fields: report_id, date_submitted, tobacco_products[] (product type description), reported_health_problems[] (health effects), reported_product_problems[] (device/product defects), number_tobacco_products, number_health_problems, number_product_problems, nonuser_affected.',
       ),
     ...pageBudgetOutputShape,
+    ...projectionOutputShape,
     ...canvasOutputShape,
   }),
 
@@ -123,7 +141,7 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
       .string()
       .optional()
       .describe(
-        'Canvas staging disclosure when the call staged, the byte-budget disclosure and the routes to the withheld records when the inline page was bounded, and guidance when results are empty or paging overshot — how to broaden filters or adjust the query.',
+        'Canvas staging disclosure when the call staged, the fields projection and any requested path no record carries, the byte-budget disclosure when the inline page was bounded or one record exceeds it (with the routes to the withheld records and the largest fields of the oversized record), and guidance when results are empty or paging overshot — how to broaden filters or adjust the query.',
       ),
   },
 
@@ -179,6 +197,7 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
         totalUnverified,
       );
 
+    const projection = recordProjection(input.fields, IDENTITY_KEYS);
     const canvas = getCanvas();
     const staging = input.stage || input.canvas_id !== undefined;
     if (staging && !canvas) {
@@ -197,6 +216,7 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
         schema: TOBACCO_REPORTS_CANVAS_SCHEMA,
         limit: input.limit,
         skip: input.skip,
+        projection,
         ctx,
       });
       const staged = canvasResult(spill);
@@ -205,6 +225,7 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
       ctx.enrich.notice(
         [
           spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
+          projectionNotice(staged),
           pageBudgetNotice(staged),
           stagingNotice(spill),
         ]
@@ -226,7 +247,7 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
       ctx,
     );
 
-    const page = boundedPage(response);
+    const page = boundedPage(response, projection);
 
     ctx.log.info('Tobacco problem report search completed', {
       total: response.meta.total,
@@ -240,6 +261,7 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
       page.results.length === 0
         ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
         : undefined,
+      projectionNotice(page),
       pageBudgetNotice(page),
     ].filter(Boolean);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
@@ -248,31 +270,9 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
   },
 
   format: (result) => {
-    if (result.results.length === 0 && result.meta.total === 0) {
-      return [
-        {
-          type: 'text' as const,
-          text: noMatchNote(
-            'No tobacco problem reports found.',
-            result.meta.skip,
-            result.meta.totalUnverified,
-          ),
-        },
-      ];
-    }
-
-    const lines: string[] = [
-      `**${result.meta.total} total results** (returned: ${result.results.length}, skip: ${result.meta.skip}, limit: ${result.meta.limit}) | Data updated: ${result.meta.lastUpdated}\n`,
-    ];
-
-    const budget = pageBudgetLine(result);
-    if (budget) lines.push(`${budget}\n`);
-
-    const staging = canvasStagingLine(result.meta.total, result);
-    if (staging) lines.push(`${staging}\n`);
-
+    const lines = searchLead(result);
     if (result.results.length === 0) {
-      lines.push(emptyPageNote(result.meta.total, result.meta.skip, result));
+      lines.push(emptyPageBody(result, 'No tobacco problem reports found.'));
       return [{ type: 'text' as const, text: lines.join('\n') }];
     }
 
@@ -289,9 +289,15 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
     ]);
 
     for (const r of result.results) {
-      lines.push(`### Report ${r.report_id ?? 'N/A'}`);
+      if (result.projected_fields) {
+        lines.push(...projectedRecordLines(r, IDENTITY_KEYS), '');
+        continue;
+      }
+      lines.push(singleLine(`### Report ${r.report_id ?? 'N/A'}`));
       lines.push(
-        `**Submitted:** ${r.date_submitted ?? 'N/A'} | **Non-user affected:** ${r.nonuser_affected ?? 'N/A'}`,
+        singleLine(
+          `**Submitted:** ${r.date_submitted ?? 'N/A'} | **Non-user affected:** ${r.nonuser_affected ?? 'N/A'}`,
+        ),
       );
 
       // Product types
@@ -299,14 +305,14 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
       if (products.length > 0) {
         lines.push('**Products:**');
         for (const p of products) {
-          lines.push(`- ${p}`);
+          lines.push(`- ${lineContent(String(p))}`);
         }
       }
 
       // Health problems
       const healthProblems = (r.reported_health_problems as string[] | undefined) ?? [];
       if (healthProblems.length > 0) {
-        lines.push(`**Health problems:** ${healthProblems.join(', ')}`);
+        lines.push(singleLine(`**Health problems:** ${healthProblems.join(', ')}`));
       }
 
       // Product problems — rendered in full, including openFDA's
@@ -314,7 +320,7 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
       // list structuredContent does.
       const productProblems = (r.reported_product_problems as string[] | undefined) ?? [];
       if (productProblems.length > 0) {
-        lines.push(`**Product problems:** ${productProblems.join(', ')}`);
+        lines.push(singleLine(`**Product problems:** ${productProblems.join(', ')}`));
       }
 
       // Counts — a zero is reported data, not an absent field.
@@ -327,7 +333,7 @@ export const searchTobaccoReportsTool = tool('openfda_search_tobacco_reports', {
       ]
         .filter(Boolean)
         .join(', ');
-      if (counts) lines.push(`**Counts:** ${counts}`);
+      if (counts) lines.push(singleLine(`**Counts:** ${counts}`));
 
       lines.push(...formatRemainingFields(r, rendered));
       lines.push('');
