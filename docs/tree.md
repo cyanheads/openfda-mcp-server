@@ -1,6 +1,6 @@
 # openfda-mcp-server - Directory Structure
 
-Generated on: 2026-10-04 06:10:14
+Generated on: 2026-10-13 00:13:43
 
 ```text
 openfda-mcp-server/
@@ -184,6 +184,7 @@ openfda-mcp-server/
 │   │       ├── canvas-spill.ts
 │   │       ├── openfda-service.ts
 │   │       ├── page-budget.ts
+│   │       ├── record-projection.ts
 │   │       └── types.ts
 │   └── index.ts
 ├── tests/
@@ -192,7 +193,8 @@ openfda-mcp-server/
 │   ├── fixtures/
 │   │   └── spl-tables.ts
 │   ├── helpers/
-│   │   └── content.ts
+│   │   ├── content.ts
+│   │   └── cpu-timing.ts
 │   ├── mcp-server/
 │   │   └── tools/
 │   │       ├── definitions/
@@ -243,7 +245,9 @@ openfda-mcp-server/
 │           ├── canvas-spill.test.ts
 │           ├── openfda-service-security.test.ts
 │           ├── openfda-service.side-requests.test.ts
-│           └── openfda-service.test.ts
+│           ├── openfda-service.test.ts
+│           ├── page-budget.test.ts
+│           └── record-projection.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitattributes

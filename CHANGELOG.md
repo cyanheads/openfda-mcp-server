@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.8.1](changelog/0.8.x/0.8.1.md) — 2026-10-12
+
+Adds `fields` projection to the search tools and names the largest fields of any over-budget page, normalizes `sort` directions, escapes Markdown in `content[]`, stages every enforcement field, and corrects field notes, the drug_profile adverse-event total, and masked animal-event brands.
+
 ## [0.8.0](changelog/0.8.x/0.8.0.md) — 2026-10-03
 
 Adds openfda_dataframe_drop, opt-in through OPENFDA_DATAFRAME_DROP_ENABLED, and moves to mcp-ts-core 0.13.11: error responses now end with a request ID and no longer carry stack traces or request context.
