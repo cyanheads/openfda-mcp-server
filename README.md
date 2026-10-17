@@ -29,7 +29,7 @@
 
 ## Overview
 
-FDA data on drugs, food, devices, and recalls from the openFDA public API. Search adverse events, recalls, drug approvals, and device clearances; look up NDC codes and drug labels; aggregate field counts across any endpoint. Runs as a stdio process, a local Streamable HTTP server, or the public hosted endpoint above.
+FDA data on drugs, food, devices, and recalls from the openFDA public API. Search adverse events, recalls, drug approvals, and device clearances; look up NDC codes and drug labels; aggregate field counts across any endpoint.
 
 ### Tools
 
@@ -167,19 +167,18 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 
 openFDA-specific:
 
-- One client for all 20 openFDA endpoints: 429 and 5xx responses retry with exponential backoff, a 404 is an empty result, and a 400 becomes an actionable `query_error`. No API key is needed (1K requests/day); a free `OPENFDA_API_KEY` raises that to 120K/day
-- Queries are `field:value` over dotted paths that differ per endpoint, joined by AND/OR, with phrases in double quotes; `openfda_describe_fields` lists the paths. A query with an unbalanced quote, parenthesis, or range bracket, or a trailing backslash, fails as `malformed_search` before any request
-- Paging: `limit` up to 1000 and `skip` up to openFDA's 25,000-record ceiling (`pagination_limit_reached` past it). Search pages are also held to a 24,000-byte serialized budget, so an oversized page returns fewer records than requested, but never zero. A single record over the budget comes back whole, with its largest fields named
-- Field selection: `fields` on any `openfda_search_*` tool or `openfda_lookup_ndc` projects each record to the dotted paths you name (`patient.drug.medicinalproduct`) plus its identity key, before the page is measured — the way to read a 4 MB device recall or a 100 KB drug report inline
-- Optional DataCanvas staging (`CANVAS_PROVIDER_TYPE=duckdb`): `stage: true` or a `canvas_id` on any `openfda_search_*` tool or `openfda_lookup_ndc` drains the matched set into a DuckDB table, up to a size budget reported by `staged_rows` and `truncated`
-- Optional local bulk mirror (`OPENFDA_MIRROR_ENABLED=true`): a self-refreshing SQLite copy of four drug datasets that answers exact-key lookups without spending API budget, with live fallback
+- One client for all 20 openFDA endpoints, with retry on 429 and 5xx. No API key is needed (1K requests/day); a free `OPENFDA_API_KEY` raises that to 120K/day
+- Queries are `field:value` over dotted paths joined by AND/OR; `openfda_describe_fields` lists the paths, and a malformed query fails as `malformed_search` before any request
+- Paging: `limit` up to 1000 and `skip` up to openFDA's 25,000-record ceiling (`pagination_limit_reached` past it); each page is held to a 24,000-byte budget
+- `fields` on any `openfda_search_*` tool or `openfda_lookup_ndc` trims each record to the dotted paths you name, so large records fit inline
+- Optional DataCanvas staging (`CANVAS_PROVIDER_TYPE=duckdb`) with `stage: true` or a `canvas_id`, and an optional local bulk mirror (`OPENFDA_MIRROR_ENABLED=true`) that answers exact-key lookups without spending API budget
 
 Agent-friendly output:
 
-- Disclosed bounds: `page_omitted` / `page_bytes` / `page_largest_fields`, `projected_fields`, the label `outline`, and `staged_rows` report every cut and every over-budget page on both `content[]` and `structuredContent`, with the routes to the rest
-- Typed failure contracts: callers branch on `error.data.reason` (`rate_limited`, `query_error`, `not_aggregatable`, `pagination_limit_reached`, `canvas_disabled`, ...) instead of parsing messages
-- Unknown vs. absent: `openfda_drug_profile` returns `null` for a section with no FDA record and lists a section whose sub-query failed in `degraded[]`
-- Empty-result guidance: a no-match search returns a notice pointing at `openfda_describe_fields` and broader terms; a page past the end reports the real match count
+- Disclosed bounds: `page_omitted`, `page_bytes`, `page_largest_fields`, `projected_fields`, the label `outline`, and `staged_rows` report every cut
+- Typed failures: callers branch on `error.data.reason` (`rate_limited`, `query_error`, `not_aggregatable`, ...) instead of parsing messages
+- Unknown vs. absent: `openfda_drug_profile` returns `null` for a section with no FDA record and lists failed sections in `degraded[]`
+- Empty-result guidance: a no-match search points at `openfda_describe_fields` and broader terms
 
 ## Getting started
 
@@ -318,13 +317,9 @@ See [`.env.example`](./.env.example) for the full list of optional overrides.
 
 ### Local bulk mirror
 
-With `OPENFDA_MIRROR_ENABLED=true` the server keeps a local SQLite copy of four openFDA bulk dumps (`drug/label`, `drug/ndc`, `drug/enforcement`, `drug/drugsfda`) and answers eligible lookups from it. openFDA ranks results in Elasticsearch, which a local corpus can't reproduce, so a query is answered locally only when all of these hold, and goes to the API otherwise:
+With `OPENFDA_MIRROR_ENABLED=true` the server keeps a local SQLite copy of four openFDA bulk dumps (`drug/label`, `drug/ndc`, `drug/enforcement`, `drug/drugsfda`). Only exact lookups are answered locally: a single quoted `field:"value"` term on `id`, `set_id`, `product_id`, `product_ndc`, `recall_number`, `event_id`, or `application_number`, with no `count` or `sort`, `skip` 0, and one matching record. Everything else goes to the API.
 
-- the search is a single quoted `field:"value"` term on `id`, `set_id`, `product_id`, `product_ndc`, `recall_number`, `event_id`, or `application_number`, with a whole identifier in its canonical spelling and case
-- there is no `count` and no `sort`, and `skip` is 0
-- the value matches exactly one record, so the mirrored answer is the API's answer
-
-The initial harvest runs out-of-band, never at startup:
+The initial harvest runs separately, never at startup:
 
 ```sh
 bun run mirror:init                  # all four datasets
@@ -334,7 +329,7 @@ bun run mirror:verify                # integrity check + row counts
 bun run mirror:refresh               # re-harvest datasets whose dump has advanced
 ```
 
-openFDA has no incremental feed for these datasets, so a refresh re-reads the whole dump, tombstones records the new export drops, and resumes where it stopped after an interruption. Set `OPENFDA_MIRROR_REFRESH_CRON` to run it in-process on the HTTP transport; on stdio, run `bun run mirror:refresh` from the host. A mirrored response's `meta.lastUpdated` is the served dump's stamp, which can differ from the live API's.
+A refresh re-reads the whole dump. Set `OPENFDA_MIRROR_REFRESH_CRON` to run it in-process on the HTTP transport; on stdio, run `bun run mirror:refresh` from the host. A mirrored response's `meta.lastUpdated` is the served dump's stamp, which can differ from the live API's.
 
 On Node, install the optional `better-sqlite3` peer dependency (Bun uses its built-in `bun:sqlite`). `OPENFDA_MIRROR_REFRESH_CRON` also needs the optional `node-cron` peer dependency; without it the server fails at startup.
 
