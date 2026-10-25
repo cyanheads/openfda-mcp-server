@@ -1,6 +1,6 @@
 # openfda-mcp-server - Directory Structure
 
-Generated on: 2026-10-25 09:21:15
+Generated on: 2026-10-25 09:31:11
 
 ```text
 openfda-mcp-server/
@@ -248,6 +248,7 @@ openfda-mcp-server/
 │   │       ├── openfda-service.test.ts
 │   │       ├── page-budget.test.ts
 │   │       └── record-projection.test.ts
+│   ├── index-env.test.ts
 │   └── index.test.ts
 ├── .dockerignore
 ├── .env.example
