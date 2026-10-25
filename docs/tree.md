@@ -1,6 +1,6 @@
 # openfda-mcp-server - Directory Structure
 
-Generated on: 2026-10-13 00:13:43
+Generated on: 2026-10-25 09:21:15
 
 ```text
 openfda-mcp-server/
@@ -232,22 +232,23 @@ openfda-mcp-server/
 │   │       ├── field-catalog.test.ts
 │   │       ├── format-utils.test.ts
 │   │       └── spl-table.test.ts
-│   └── services/
-│       └── openfda/
-│           ├── mirror/
-│           │   ├── bulk-stream.test.ts
-│           │   ├── datasets.test.ts
-│           │   ├── harvester.test.ts
-│           │   ├── mirror-fixture.ts
-│           │   ├── query.test.ts
-│           │   ├── refresh-schedule.test.ts
-│           │   └── routing.test.ts
-│           ├── canvas-spill.test.ts
-│           ├── openfda-service-security.test.ts
-│           ├── openfda-service.side-requests.test.ts
-│           ├── openfda-service.test.ts
-│           ├── page-budget.test.ts
-│           └── record-projection.test.ts
+│   ├── services/
+│   │   └── openfda/
+│   │       ├── mirror/
+│   │       │   ├── bulk-stream.test.ts
+│   │       │   ├── datasets.test.ts
+│   │       │   ├── harvester.test.ts
+│   │       │   ├── mirror-fixture.ts
+│   │       │   ├── query.test.ts
+│   │       │   ├── refresh-schedule.test.ts
+│   │       │   └── routing.test.ts
+│   │       ├── canvas-spill.test.ts
+│   │       ├── openfda-service-security.test.ts
+│   │       ├── openfda-service.side-requests.test.ts
+│   │       ├── openfda-service.test.ts
+│   │       ├── page-budget.test.ts
+│   │       └── record-projection.test.ts
+│   └── index.test.ts
 ├── .dockerignore
 ├── .env.example
 ├── .gitattributes
