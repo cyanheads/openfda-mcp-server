@@ -43,7 +43,7 @@ const dataframeDropDefinition = tool('openfda_dataframe_drop', {
     {
       reason: 'canvas_disabled',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'DataCanvas is disabled — CANVAS_PROVIDER_TYPE is unset.',
+      when: 'DataCanvas is disabled — CANVAS_PROVIDER_TYPE=none.',
       recovery:
         'Set CANVAS_PROVIDER_TYPE=duckdb to enable DataCanvas, or skip the drop, since nothing is staged without it.',
     },

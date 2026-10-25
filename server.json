@@ -29,10 +29,10 @@
         },
         {
           "name": "CANVAS_PROVIDER_TYPE",
-          "description": "Set to 'duckdb' to enable DataCanvas staging: stage=true or a canvas_id on an openfda_search_* tool or openfda_lookup_ndc stages the matched records as a SQL table, and the openfda_dataframe_* tools are listed. The DuckDB binding ships with the server.",
+          "description": "DataCanvas staging, on by default: stage=true or a canvas_id on an openfda_search_* tool or openfda_lookup_ndc stages the matched records as a SQL table for the openfda_dataframe_* tools. The DuckDB binding ships with the server. Set to 'none' to disable.",
           "format": "string",
           "isRequired": false,
-          "default": "none"
+          "default": "duckdb"
         },
         {
           "name": "OPENFDA_DATAFRAME_DROP_ENABLED",
@@ -143,10 +143,10 @@
         },
         {
           "name": "CANVAS_PROVIDER_TYPE",
-          "description": "Set to 'duckdb' to enable DataCanvas staging: stage=true or a canvas_id on an openfda_search_* tool or openfda_lookup_ndc stages the matched records as a SQL table, and the openfda_dataframe_* tools are listed. The DuckDB binding ships with the server.",
+          "description": "DataCanvas staging, on by default: stage=true or a canvas_id on an openfda_search_* tool or openfda_lookup_ndc stages the matched records as a SQL table for the openfda_dataframe_* tools. The DuckDB binding ships with the server. Set to 'none' to disable.",
           "format": "string",
           "isRequired": false,
-          "default": "none"
+          "default": "duckdb"
         },
         {
           "name": "OPENFDA_DATAFRAME_DROP_ENABLED",

@@ -331,7 +331,7 @@ Each of the eight multi-row search tools takes an optional `fields`: dotted reco
 
 ## DataCanvas staging (analytical SQL)
 
-**Opt-in twice over.** The deployment enables the surface with `CANVAS_PROVIDER_TYPE=duckdb` (requires the optional `@duckdb/node-api` dependency; unavailable on the Workers runtime, where it fails closed at init), and the caller asks for staging per call. Without both, a search issues exactly one upstream request and returns one page — identical to a deployment with no canvas at all.
+**Gated twice over.** The deployment provides the surface with `CANVAS_PROVIDER_TYPE=duckdb`, the default (requires the `@duckdb/node-api` dependency; unavailable on the Workers runtime, where it fails closed at init), and the caller asks for staging per call. Without both, a search issues exactly one upstream request and returns one page — identical to a deployment with no canvas at all.
 
 Every multi-row search tool — `openfda_search_adverse_events`, `_recalls`, `_drug_approvals`, `_device_clearances`, `_animal_events`, `_drug_shortages`, `_tobacco_reports`, and `openfda_lookup_ndc` — carries:
 
@@ -523,7 +523,7 @@ openFDA returns JSON error objects with `code`, `message`, and sometimes `detail
 |---|---|---|
 | `OPENFDA_API_KEY` | No | Free API key from [open.fda.gov](https://open.fda.gov/apis/authentication/). Increases daily limit from 1K to 120K requests. Passed as `api_key` query parameter. |
 | `OPENFDA_BASE_URL` | No | Base URL override. Default: `https://api.fda.gov`. Useful for testing against a proxy or mock server. |
-| `CANVAS_PROVIDER_TYPE` | No | Set to `duckdb` to enable [DataCanvas staging](#datacanvas-staging-analytical-sql) — analytical SQL over result sets staged with `stage: true` and queried via `openfda_dataframe_query`. Default `none` (disabled). Requires the optional `@duckdb/node-api` dependency; unsupported on Cloudflare Workers. |
+| `CANVAS_PROVIDER_TYPE` | No | [DataCanvas staging](#datacanvas-staging-analytical-sql) — analytical SQL over result sets staged with `stage: true` and queried via `openfda_dataframe_query`. Default `duckdb`; `none` disables it. Requires the `@duckdb/node-api` dependency; unsupported on Cloudflare Workers. |
 | `OPENFDA_DATAFRAME_DROP_ENABLED` | No | Set to `true` to make `openfda_dataframe_drop` callable. Default `false` (listed as disabled). Meaningful only with `CANVAS_PROVIDER_TYPE=duckdb`. |
 | `OPENFDA_MIRROR_ENABLED` | No | Set to `true` to enable the [local bulk mirror](#local-bulk-mirror). Default `false`. Requires an out-of-band `bun run mirror:init` before it serves anything; on Node, the optional `better-sqlite3` peer dependency. Unsupported on Cloudflare Workers. |
 | `OPENFDA_MIRROR_PATH` | No | Directory holding one SQLite file per mirrored dataset. Default `./data/openfda-mirror`. |

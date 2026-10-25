@@ -5,10 +5,20 @@
  */
 
 import { createApp } from '@cyanheads/mcp-ts-core';
+import { normalizeEnv } from '@cyanheads/mcp-ts-core/config';
 import { allToolDefinitions } from './mcp-server/tools/definitions/index.js';
 import { setCanvas } from './services/canvas/canvas-accessor.js';
 import { closeMirrors, scheduleMirrorRefresh } from './services/openfda/mirror/index.js';
 import { initOpenFdaService } from './services/openfda/openfda-service.js';
+
+// Load .env before choosing defaults; exported deployment settings still win.
+try {
+  process.loadEnvFile();
+} catch (error) {
+  if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+}
+// DataCanvas defaults on; set CANVAS_PROVIDER_TYPE=none to disable it.
+process.env.CANVAS_PROVIDER_TYPE = normalizeEnv(process.env).CANVAS_PROVIDER_TYPE ?? 'duckdb';
 
 await createApp({
   name: 'openfda-mcp-server',

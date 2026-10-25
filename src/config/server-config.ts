@@ -13,7 +13,7 @@ const ServerConfigSchema = z.object({
     .describe('openFDA API key — increases daily request limit from 1K to 120K'),
   baseUrl: z.string().default('https://api.fda.gov').describe('openFDA API base URL'),
 
-  /* --- DataCanvas (opt-in; requires CANVAS_PROVIDER_TYPE=duckdb) --- */
+  /* --- DataCanvas (on by default; off with CANVAS_PROVIDER_TYPE=none) --- */
   dataframeDropEnabled: z
     .stringbool()
     .default(false)

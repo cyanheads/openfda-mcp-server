@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.8.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/openfda-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.3-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.8.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/openfda-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -47,8 +47,8 @@ FDA data on drugs, food, devices, and recalls from the openFDA public API. Searc
 | `openfda_search_drug_approvals` | Search the Drugs@FDA database for NDA/ANDA application approvals |
 | `openfda_search_device_clearances` | Search FDA device premarket notifications: 510(k) clearances and PMA approvals |
 | `openfda_lookup_ndc` | Look up drugs in the NDC (National Drug Code) Directory |
-| `openfda_dataframe_describe` | List tables and column schemas staged on a DataCanvas (opt-in) |
-| `openfda_dataframe_query` | Run read-only SQL over a result set staged on a DataCanvas (opt-in) |
+| `openfda_dataframe_describe` | List tables and column schemas staged on a DataCanvas |
+| `openfda_dataframe_query` | Run read-only SQL over a result set staged on a DataCanvas |
 | `openfda_dataframe_drop` | Delete one table staged on a DataCanvas (opt-in, off by default) |
 
 ## Capability reference
@@ -144,7 +144,7 @@ FDA data on drugs, food, devices, and recalls from the openFDA public API. Searc
 ### `openfda_dataframe_describe` <sub>tool</sub>
 
 - `canvas_id` from a staged search; lists each table's `name`, `kind`, full staged `row_count`, and columns with DuckDB type and nullability
-- Fails as `canvas_disabled` when `CANVAS_PROVIDER_TYPE` is unset, or `canvas_not_found` when the `canvas_id` has expired or never existed
+- Fails as `canvas_disabled` when `CANVAS_PROVIDER_TYPE=none`, or `canvas_not_found` when the `canvas_id` has expired or never existed
 
 ---
 
@@ -171,7 +171,7 @@ openFDA-specific:
 - Queries are `field:value` over dotted paths joined by AND/OR; `openfda_describe_fields` lists the paths, and a malformed query fails as `malformed_search` before any request
 - Paging: `limit` up to 1000 and `skip` up to openFDA's 25,000-record ceiling (`pagination_limit_reached` past it); each page is held to a 24,000-byte budget
 - `fields` on any `openfda_search_*` tool or `openfda_lookup_ndc` trims each record to the dotted paths you name, so large records fit inline
-- Optional DataCanvas staging (`CANVAS_PROVIDER_TYPE=duckdb`) with `stage: true` or a `canvas_id`, and an optional local bulk mirror (`OPENFDA_MIRROR_ENABLED=true`) that answers exact-key lookups without spending API budget
+- DataCanvas staging (on by default; `CANVAS_PROVIDER_TYPE=none` turns it off) with `stage: true` or a `canvas_id`, and an optional local bulk mirror (`OPENFDA_MIRROR_ENABLED=true`) that answers exact-key lookups without spending API budget
 
 Agent-friendly output:
 
@@ -302,7 +302,7 @@ cp .env.example .env
 | `OPENFDA_MIRROR_FALLBACK_LIVE` | Fall back to the live API when the mirror is cold, missing the record, or failing. | `true` |
 | `OPENFDA_MIRROR_REFRESH_TIMEOUT_MS` | Wall-clock budget for one refresh before it is aborted, in ms. | `21600000` (6h) |
 | `OPENFDA_MIRROR_BASE_URL` | Host serving the bulk download manifest (`download.json`). | `https://api.fda.gov` |
-| `CANVAS_PROVIDER_TYPE` | Set `duckdb` to enable DataCanvas staging and the `openfda_dataframe_*` tools. | `none` |
+| `CANVAS_PROVIDER_TYPE` | DataCanvas staging and SQL. `none` disables them; dataframe tools remain listed and return `canvas_disabled`. | `duckdb` |
 | `OPENFDA_DATAFRAME_DROP_ENABLED` | Enable `openfda_dataframe_drop`, which deletes a staged table. Needs `CANVAS_PROVIDER_TYPE=duckdb`. | `false` |
 | `MCP_TRANSPORT_TYPE` | Transport: `stdio` or `http`. | `stdio` |
 | `MCP_HTTP_PORT` | HTTP server port. | `3010` |
@@ -314,6 +314,8 @@ cp .env.example .env
 | `OTEL_ENABLED` | Enable [OpenTelemetry](https://github.com/cyanheads/mcp-ts-core/tree/main/docs/telemetry). | `false` |
 
 See [`.env.example`](./.env.example) for the full list of optional overrides.
+
+The Claude Desktop MCPB bundle disables DataCanvas because it excludes platform-specific DuckDB bindings. Use npm or Docker for staging and SQL.
 
 ### Local bulk mirror
 

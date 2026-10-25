@@ -60,7 +60,7 @@ export const dataframeDescribeTool = tool('openfda_dataframe_describe', {
     {
       reason: 'canvas_disabled',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'DataCanvas is disabled — CANVAS_PROVIDER_TYPE is unset.',
+      when: 'DataCanvas is disabled — CANVAS_PROVIDER_TYPE=none.',
       recovery:
         'Set CANVAS_PROVIDER_TYPE=duckdb to enable DataCanvas SQL, or use an openFDA search tool directly (its inline results need no canvas).',
     },
