@@ -4,6 +4,7 @@
 /.agents/
 /framework-skills/
 /.cache/
+/data/
 /coverage/
 /tests/
 /src/
