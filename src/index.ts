@@ -33,6 +33,7 @@ await createApp({
     'Use the openfda_* tools to query the openFDA public API for drugs, food, devices, and animal/veterinary products: search adverse events, drug approvals, device clearances, and recalls; look up NDC codes; fetch drug labels; aggregate field counts. Queries use dotted field paths joined by AND/OR with double-quoted phrases (e.g. `openfda.brand_name:"aspirin"`); cross-product fields use the `openfda.*` prefix.',
   // Public catalog — serve full landing inventory without requiring auth
   landing: { requireAuth: false },
+  skills: 'skills',
   async setup(core) {
     initOpenFdaService();
     // Optional DataCanvas (CANVAS_PROVIDER_TYPE=duckdb) — undefined when disabled.
