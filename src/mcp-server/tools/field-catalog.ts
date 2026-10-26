@@ -6,6 +6,13 @@
  * @module mcp-server/tools/field-catalog
  */
 
+import {
+  ADMINISTRATION_ROUTES,
+  codeList,
+  PATIENT_AGE_GROUPS,
+  REACTION_OUTCOMES,
+} from '@/mcp-server/tools/drug-event-codes.js';
+
 /**
  * How openFDA aggregates a field in a `count` query, verified by probing
  * `count=<path>` and `count=<path>.exact` against the live API:
@@ -82,7 +89,7 @@ const FIELD_CATALOG: Record<string, FieldGroup[]> = {
           path: 'patient.patientagegroup',
           type: 'string',
           countable: 'bare',
-          note: 'Age group code: 1 = neonate, 2 = infant, 3 = child, 4 = adolescent, 5 = adult, 6 = elderly',
+          note: `Age group code: ${codeList(PATIENT_AGE_GROUPS)}`,
         },
         { path: 'patient.patientweight', type: 'float', countable: 'bare', note: 'Weight in kg' },
       ],
@@ -100,7 +107,7 @@ const FIELD_CATALOG: Record<string, FieldGroup[]> = {
           path: 'patient.reaction.reactionoutcome',
           type: 'string',
           countable: 'bare',
-          note: 'Outcome code: 1 = recovered/resolved, 2 = recovering/resolving, 3 = not recovered/not resolved, 4 = recovered/resolved with sequelae, 5 = fatal, 6 = unknown',
+          note: `Outcome code: ${codeList(REACTION_OUTCOMES)}`,
         },
       ],
     },
@@ -129,7 +136,7 @@ const FIELD_CATALOG: Record<string, FieldGroup[]> = {
           path: 'patient.drug.drugadministrationroute',
           type: 'string',
           countable: 'exact',
-          note: 'Route of administration as a 3-digit code, not a name ("ORAL" matches nothing) — e.g. 048 = oral, 058 = subcutaneous, 042 = intravenous, 061 = topical, 030 = intramuscular, 065 = unknown',
+          note: `Route of administration as a 3-digit code, not a name ("ORAL" matches nothing) — e.g. ${codeList(ADMINISTRATION_ROUTES, ['048', '058', '042', '061', '030', '065'])}`,
         },
         {
           path: 'patient.drug.openfda.brand_name',
@@ -228,7 +235,7 @@ const FIELD_CATALOG: Record<string, FieldGroup[]> = {
           path: 'set_id',
           type: 'string',
           countable: 'bare',
-          note: 'SPL set ID (stable across revisions)',
+          note: 'SPL set ID, one per product label; openFDA holds its current revision only',
         },
         {
           path: 'effective_time',

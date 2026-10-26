@@ -17,6 +17,7 @@ import {
 } from '@cyanheads/mcp-ts-core/utils';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
+  codeLiteral,
   emptyPageBody,
   emptyResultMessage,
   humanizeField,
@@ -28,8 +29,10 @@ import {
   assertSkipWithinCeiling,
   malformedSearchError,
   nonBlankString,
-  SEARCH_BALANCE_NOTE,
+  phrasePlusHint,
+  SEARCH_SYNTAX_NOTE,
   SKIP_DESCRIPTION,
+  searchExpression,
   sortExpression,
   totalUnverifiedField,
 } from '@/mcp-server/tools/schema-utils.js';
@@ -44,8 +47,8 @@ const ENDPOINT = 'drug/label';
 
 /**
  * Label identity kept through a `sections` projection. Without these the caller
- * cannot tell which product a returned section belongs to, or re-request the
- * same revision.
+ * cannot tell which product a returned section belongs to, or re-request its
+ * label by set_id.
  */
 const LABEL_METADATA_KEYS = ['openfda', 'set_id', 'id', 'effective_time', 'version'];
 
@@ -97,7 +100,8 @@ function extractLabelSections(doc: { results: Record<string, unknown>[] }): Sect
  * mistyped name is indistinguishable from a label that genuinely lacks the
  * section: both return the same metadata-only record. The available names are
  * listed only when nothing matched, since that is the case with no other way
- * back to a correct name.
+ * back to a correct name. The unmatched names are the caller's own text, so each
+ * rides as a {@link codeLiteral}.
  */
 function unknownSectionNotice(
   unknown: string[],
@@ -109,7 +113,7 @@ function unknownSectionNotice(
     unknown.length === requested.length
       ? ` No requested section is present, so only metadata was returned. Available on this page: ${[...available].join(', ')}.`
       : '';
-  return `Not present on this page: ${unknown.join(', ')}.${listing}`;
+  return `Not present on this page: ${unknown.map(codeLiteral).join(', ')}.${listing}`;
 }
 
 /**
@@ -195,8 +199,8 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
   annotations: { readOnlyHint: true },
 
   input: z.object({
-    search: nonBlankString().describe(
-      `Query targeting label fields. Examples: openfda.brand_name:"aspirin", openfda.generic_name:"metformin", openfda.manufacturer_name:"pfizer". For a specific revision, pass set_id with the SPL UUID returned in earlier results. ${SEARCH_BALANCE_NOTE}`,
+    search: searchExpression().describe(
+      `Query targeting label fields. Examples: openfda.brand_name:"aspirin", openfda.generic_name:"metformin", openfda.manufacturer_name:"pfizer". To fetch one product's label, pass set_id with the SPL UUID returned in earlier results; it returns the label's current revision only, since openFDA does not serve earlier ones. ${SEARCH_SYNTAX_NOTE}`,
     ),
     sort: sortExpression()
       .optional()
@@ -339,10 +343,11 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
     let pageNotice: string | undefined;
     if (response.results.length === 0) {
       const fieldHint = formatFieldHint('drug/label');
+      const plusHint = phrasePlusHint(input.search, response.meta.total);
       pageNotice = emptyResultMessage(
         response.meta.skip,
         response.meta.total,
-        `No labels matched${input.search ? ` search: ${input.search}` : ''}. Try broader terms or check field names (e.g. openfda.brand_name, openfda.generic_name, openfda.manufacturer_name). ${fieldHint}`,
+        `No labels matched search: ${codeLiteral(input.search)}. Try broader terms or check field names (e.g. openfda.brand_name, openfda.generic_name, openfda.manufacturer_name). ${fieldHint}${plusHint ? ` ${plusHint}` : ''}`,
         response.meta.totalUnverified,
       );
     } else if (response.meta.skip + response.results.length < response.meta.total) {

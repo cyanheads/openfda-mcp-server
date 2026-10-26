@@ -29,12 +29,6 @@ export interface OpenFdaResponse<T = Record<string, unknown>> {
   results: T[];
 }
 
-/** Term-count pair returned by openFDA count queries. */
-export interface OpenFdaCountResult {
-  count: number;
-  term: string;
-}
-
 /** Query parameters shared by all openFDA endpoints. */
 export interface OpenFdaQueryParams {
   count?: string | undefined;

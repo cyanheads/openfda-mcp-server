@@ -1087,6 +1087,102 @@ describe('sort accepts the directions openFDA honours and rejects the rest', () 
   });
 });
 
+// ── search `+` separators on the staged path (#75) ──────────────────────────────
+
+/**
+ * The schema's normalized `search` is what a staged call sends: the probe page
+ * and every drain page past it carry the spaced string, through the production
+ * argument path and the real service, with only the HTTP boundary stubbed. A
+ * staged search that matches nothing gets the same phrase-plus hint as the
+ * inline page. `stage: true` and `canvas_id` take the same path.
+ */
+describe('search reaches the staged path normalized (#75)', () => {
+  const http = createFetchMock();
+  let matched = 0;
+
+  beforeAll(() => {
+    initOpenFdaService();
+  });
+
+  beforeEach(() => {
+    http.reset();
+    http.route({
+      match: (request) => new URL(request.url).origin === 'https://api.fda.gov',
+      respond: (request) => {
+        const params = new URL(request.url).searchParams;
+        const skip = Number(params.get('skip') ?? 0);
+        const limit = Number(params.get('limit') ?? 1);
+        const count = Math.max(0, Math.min(limit, matched - skip));
+        return Response.json({
+          meta: { results: { skip, limit, total: matched }, last_updated: '2026-10-26' },
+          results: Array.from({ length: count }, (_, i) => ({ recall_number: `R-${skip + i}` })),
+        });
+      },
+    });
+    http.install();
+    // A canvas whose table drains the real staging source, so every drain page is requested.
+    setCanvas({
+      acquire: async () => ({
+        canvasId: 'cv_plus075',
+        isNew: true,
+        registerTable: async (name: string, source: AsyncIterable<unknown>) => {
+          let rowCount = 0;
+          for await (const _row of source) rowCount++;
+          return { tableName: name, rowCount, columns: [] };
+        },
+      }),
+    } as never);
+  });
+
+  afterEach(() => {
+    http.restore();
+    setCanvas(undefined);
+  });
+
+  it.each([
+    ['stage: true', { stage: true }],
+    ['canvas_id', { canvas_id: 'cv_plus075' }],
+  ] as const)(
+    'with %s, sends the spaced search on every request and echoes it',
+    async (_mode, staging) => {
+      matched = 150;
+      const result = await runToolContract(searchRecallsTool, {
+        category: 'drug',
+        search: 'classification:"Class I"+AND+status:"Ongoing"',
+        ...staging,
+      });
+
+      expect(result.isError).toBeFalsy();
+      const structured = result.structuredContent as {
+        effectiveQuery?: string;
+        staged_rows?: number;
+      };
+      expect(structured.staged_rows).toBe(matched);
+      const requests = http.calls.map((call) => new URL(call.request.url).searchParams);
+      // The probe page, then the drain past it.
+      expect(requests.map((params) => params.get('skip'))).toEqual(['0', '100']);
+      for (const params of requests) {
+        expect(params.get('search')).toBe('(classification:"Class I" AND status:"Ongoing")');
+      }
+      expect(structured.effectiveQuery).toBe('classification:"Class I" AND status:"Ongoing"');
+    },
+  );
+
+  it('adds the phrase-plus hint when a staged search matches nothing', async () => {
+    matched = 0;
+    const result = await runToolContract(searchRecallsTool, {
+      category: 'drug',
+      search: 'classification.exact:"Class+I"',
+      stage: true,
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(String((result.structuredContent as { notice?: string }).notice)).toContain(
+      'write them with spaces: `"Class I"`.',
+    );
+  });
+});
+
 describe('fields takes dotted record paths and rejects anything else (#66)', () => {
   /** Every multi-row search tool, with a minimal valid base input. */
   const FIELDS_TOOLS: Array<

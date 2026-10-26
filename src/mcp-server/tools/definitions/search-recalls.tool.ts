@@ -11,6 +11,7 @@ import { CanvasIdSchema, type ColumnSchema } from '@cyanheads/mcp-ts-core/canvas
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
+  codeLiteral,
   emptyPageBody,
   emptyResultMessage,
   formatRemainingFields,
@@ -24,9 +25,10 @@ import {
   fieldSelection,
   fieldsDescription,
   malformedSearchError,
-  nonBlankString,
-  SEARCH_BALANCE_NOTE,
+  phrasePlusHint,
+  SEARCH_SYNTAX_NOTE,
   SKIP_DESCRIPTION,
+  searchExpression,
   sortExpression,
   totalUnverifiedField,
 } from '@/mcp-server/tools/schema-utils.js';
@@ -157,10 +159,10 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
   input: z.object({
     category: Category,
     endpoint: Endpoint,
-    search: nonBlankString()
+    search: searchExpression()
       .optional()
       .describe(
-        `openFDA search query. Examples: classification:"Class I" (also "Class II" or "Class III"), recalling_firm:"pfizer", reason_for_recall:"undeclared allergen". Omit to browse recent. ${SEARCH_BALANCE_NOTE}`,
+        `openFDA search query. Examples: classification:"Class I" (also "Class II" or "Class III"), recalling_firm:"pfizer", reason_for_recall:"undeclared allergen". Omit to browse recent. ${SEARCH_SYNTAX_NOTE}`,
       ),
     sort: sortExpression()
       .optional()
@@ -283,7 +285,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       emptyResultMessage(
         skip,
         total,
-        `No recall/enforcement records matched${input.search ? ` search: ${input.search}` : ''} in ${resolvedEndpoint}. Try broadening filters or check field names (e.g. classification, recalling_firm, reason_for_recall). ${formatFieldHint(resolvedEndpoint)}`,
+        `No recall/enforcement records matched${input.search ? ` search: ${codeLiteral(input.search)}` : ''} in ${resolvedEndpoint}. Try broadening filters or check field names (e.g. classification, recalling_firm, reason_for_recall). ${formatFieldHint(resolvedEndpoint)}`,
         totalUnverified,
       );
 
@@ -316,6 +318,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       ctx.enrich.notice(
         [
           spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
+          phrasePlusHint(input.search, spill.total),
           projectionNotice(staged),
           pageBudgetNotice(staged),
           stagingNotice(spill),
@@ -354,6 +357,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       page.results.length === 0
         ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
         : undefined,
+      phrasePlusHint(input.search, response.meta.total),
       projectionNotice(page),
       pageBudgetNotice(page),
     ].filter(Boolean);

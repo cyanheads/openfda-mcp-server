@@ -25,9 +25,10 @@ import {
   fieldSelection,
   fieldsDescription,
   malformedSearchError,
-  nonBlankString,
-  SEARCH_BALANCE_NOTE,
+  phrasePlusHint,
+  SEARCH_SYNTAX_NOTE,
   SKIP_DESCRIPTION,
+  searchExpression,
   sortExpression,
   totalUnverifiedField,
 } from '@/mcp-server/tools/schema-utils.js';
@@ -83,10 +84,10 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
   annotations: { readOnlyHint: true },
 
   input: z.object({
-    search: nonBlankString()
+    search: searchExpression()
       .optional()
       .describe(
-        `openFDA search query. Examples: openfda.brand_name:"humira", sponsor_name:"PFIZER", submissions.submission_type:"ORIG" AND submissions.review_priority:"PRIORITY". Exact quoted values can be case-sensitive on some fields — sponsor_name is stored uppercase, so use sponsor_name:"PFIZER" (a lowercase quoted value returns no matches). Omit to browse recent. ${SEARCH_BALANCE_NOTE}`,
+        `openFDA search query. Examples: openfda.brand_name:"humira", sponsor_name:"PFIZER", submissions.submission_type:"ORIG" AND submissions.review_priority:"PRIORITY". Exact quoted values can be case-sensitive on some fields — sponsor_name is stored uppercase, so use sponsor_name:"PFIZER" (a lowercase quoted value returns no matches). Omit to browse recent. ${SEARCH_SYNTAX_NOTE}`,
       ),
     sort: sortExpression()
       .optional()
@@ -227,6 +228,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       ctx.enrich.notice(
         [
           spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
+          phrasePlusHint(input.search, spill.total),
           projectionNotice(staged),
           pageBudgetNotice(staged),
           stagingNotice(spill),
@@ -265,6 +267,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       page.results.length === 0
         ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
         : undefined,
+      phrasePlusHint(input.search, response.meta.total),
       projectionNotice(page),
       pageBudgetNotice(page),
     ].filter(Boolean);

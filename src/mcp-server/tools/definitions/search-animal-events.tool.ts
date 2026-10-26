@@ -10,6 +10,7 @@ import { CanvasIdSchema, type ColumnSchema } from '@cyanheads/mcp-ts-core/canvas
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
+  codeLiteral,
   emptyPageBody,
   emptyResultMessage,
   formatRemainingFields,
@@ -25,9 +26,10 @@ import {
   fieldSelection,
   fieldsDescription,
   malformedSearchError,
-  nonBlankString,
-  SEARCH_BALANCE_NOTE,
+  phrasePlusHint,
+  SEARCH_SYNTAX_NOTE,
   SKIP_DESCRIPTION,
+  searchExpression,
   sortExpression,
   totalUnverifiedField,
 } from '@/mcp-server/tools/schema-utils.js';
@@ -99,10 +101,10 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
   annotations: { readOnlyHint: true },
 
   input: z.object({
-    search: nonBlankString()
+    search: searchExpression()
       .optional()
       .describe(
-        `openFDA search query using field:value syntax. Examples: animal.species:"Dog", drug.active_ingredients.name:"Fluralaner", reaction.veddra_term_name:"Vomiting", serious_ae:"true". Omit to browse recent reports. ${SEARCH_BALANCE_NOTE}`,
+        `openFDA search query using field:value syntax. Examples: animal.species:"Dog", drug.active_ingredients.name:"Fluralaner", reaction.veddra_term_name:"Vomiting", serious_ae:"true". Omit to browse recent reports. ${SEARCH_SYNTAX_NOTE}`,
       ),
     sort: sortExpression()
       .optional()
@@ -210,7 +212,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       emptyResultMessage(
         skip,
         total,
-        `No animal adverse event reports matched${input.search ? ` search: ${input.search}` : ''}. Try broader filters — use animal.species, drug.active_ingredients.name, or reaction.veddra_term_name fields.${maskedFieldNote} ${formatFieldHint('animalandveterinary/event')}`,
+        `No animal adverse event reports matched${input.search ? ` search: ${codeLiteral(input.search)}` : ''}. Try broader filters — use animal.species, drug.active_ingredients.name, or reaction.veddra_term_name fields.${maskedFieldNote} ${formatFieldHint('animalandveterinary/event')}`,
         totalUnverified,
       );
 
@@ -242,6 +244,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       ctx.enrich.notice(
         [
           spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
+          phrasePlusHint(input.search, spill.total),
           projectionNotice(staged),
           pageBudgetNotice(staged),
           stagingNotice(spill),
@@ -278,6 +281,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       page.results.length === 0
         ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
         : undefined,
+      phrasePlusHint(input.search, response.meta.total),
       projectionNotice(page),
       pageBudgetNotice(page),
     ].filter(Boolean);

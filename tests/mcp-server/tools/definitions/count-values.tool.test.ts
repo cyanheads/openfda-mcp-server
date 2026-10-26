@@ -1,5 +1,5 @@
 import { JsonRpcErrorCode, McpError, validationError } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
@@ -7,7 +7,9 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 }));
 
 import { countValuesTool } from '@/mcp-server/tools/definitions/count-values.tool.js';
+import { phrasePlusHint } from '@/mcp-server/tools/schema-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import { codeLiteralsIn, renderCommonMark } from '../../../helpers/commonmark.js';
 import { textOf } from '../../../helpers/content.js';
 
 const mockQuery = vi.fn();
@@ -61,6 +63,47 @@ describe('openfda_count_values', () => {
     );
 
     expect(result.results[0]!.term).toBe('2026');
+  });
+
+  // Term rows arrive ranked by openFDA; only date buckets are re-ranked (#78).
+  it('keeps term rows in the order openFDA ranked them', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { lastUpdated: '2026-01-01' },
+      results: [
+        { term: 'B', count: 5 },
+        { term: 'A', count: 5 },
+        { term: 'C', count: 9 },
+      ],
+    });
+
+    const result = await countValuesTool.handler(
+      countValuesTool.input.parse({ endpoint: 'drug/event', count: 'serious', limit: 3 }),
+      ctx,
+    );
+
+    expect(result.results.map((r) => r.term)).toEqual(['B', 'A', 'C']);
+  });
+
+  // #78 — a date field answers with `{ time, count }` rows.
+  it('maps a date bucket to its date and ranks the buckets by count', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { lastUpdated: '2026-01-01' },
+      results: [
+        { time: '20240103', count: 5 },
+        { time: '20240110', count: 8 },
+      ],
+    });
+
+    const result = await countValuesTool.handler(
+      countValuesTool.input.parse({ endpoint: 'drug/event', count: 'receivedate' }),
+      ctx,
+    );
+
+    expect(result.results).toEqual([
+      { term: '20240110', count: 8 },
+      { term: '20240103', count: 5 },
+    ]);
+    expect(getEnrichment(ctx).truncated).toBeUndefined();
   });
 
   it('populates enrichment.termCount', async () => {
@@ -306,6 +349,107 @@ describe('openfda_count_values', () => {
 
       expect(recovery).toMatch(/openfda_describe_fields/);
       expect(recovery).toMatch(/countAs/);
+    });
+  });
+
+  // #81 — caller text in a notice rides as a code literal on both surfaces.
+  describe('caller text in the empty-tally notices', () => {
+    const COUNT = 'openfda.brand_name.exact';
+    const EMPTY = { meta: { lastUpdated: '2026-10-26' }, results: [] };
+
+    /** The notice on both surfaces, and the code literals a CommonMark parse finds in the trailer. */
+    async function run(input: { count: string; search?: string }) {
+      const result = await runToolContract(countValuesTool, { endpoint: 'drug/label', ...input });
+      const notice = String((result.structuredContent as { notice?: string }).notice);
+      const html = renderCommonMark(textOf(result.content, result.content.length - 1));
+      return { notice, html, literals: codeLiteralsIn(html) };
+    }
+
+    it('quotes the field and the search when nothing matched', async () => {
+      mockQuery.mockResolvedValue(EMPTY);
+      const search = 'openfda.brand_name:*cillin*zzz*';
+      const { notice, html, literals } = await run({ count: COUNT, search });
+
+      expect(notice).toContain(
+        `\`${COUNT}\` is countable on drug/label, but nothing matched search: \`${search}\`. Broaden`,
+      );
+      expect(literals).toEqual([COUNT, search]);
+      expect(html).not.toMatch(/<em>/);
+    });
+
+    it('quotes only the field when an unscoped count is empty', async () => {
+      mockQuery.mockResolvedValue(EMPTY);
+      const { notice, literals } = await run({ count: COUNT });
+
+      expect(notice).toContain(`\`${COUNT}\` is countable on drug/label, but nothing matched. `);
+      expect(literals).toEqual([COUNT]);
+    });
+
+    it('quotes the field and the search when the matched records carry no value', async () => {
+      mockQuery.mockResolvedValue({ ...EMPTY, meta: { ...EMPTY.meta, nothingToCount: true } });
+      const search = '_missing_:openfda.generic_name';
+      const { notice, literals } = await run({ count: COUNT, search });
+
+      expect(notice).toContain(`the records matching search: \`${search}\` carry no value`);
+      expect(literals).toEqual([COUNT, search]);
+    });
+
+    it('fences a search holding a line break inside the notice quote', async () => {
+      mockQuery.mockResolvedValue(EMPTY);
+      const search = 'openfda.brand_name:"x"\nAND _exists_:openfda';
+      const { notice, html, literals } = await run({ count: COUNT, search });
+
+      expect(notice).toContain(`nothing matched search: \n\`\`\`\n${search}\n\`\`\`\n. Broaden`);
+      expect(literals).toEqual([COUNT, search]);
+      expect(html.match(/<blockquote>/g)).toHaveLength(1);
+      expect(html).toMatch(/<\/pre>\s*<p>\. Broaden[^<]*<\/p>\s*<\/blockquote>/);
+    });
+  });
+
+  // #75 — the shared search input reads URL-form separators, and an empty tally
+  // whose phrase holds a `+` says what that `+` meant.
+  describe('shared search input', () => {
+    it('sends URL-form + separators as spaces', async () => {
+      mockQuery.mockResolvedValue({
+        meta: { lastUpdated: '' },
+        results: [{ term: 'X', count: 1 }],
+      });
+      await runToolContract(countValuesTool, {
+        endpoint: 'drug/event',
+        count: 'serious',
+        search: 'occurcountry:"US"+AND+serious:"1"',
+      });
+      expect(mockQuery.mock.calls[0]?.[1]).toMatchObject({
+        search: 'occurcountry:"US" AND serious:"1"',
+      });
+    });
+
+    const PLUS_PHRASE = 'patient.reaction.reactionmeddrapt.exact:"INJECTION+SITE+PAIN"';
+
+    it('appends the phrase + hint to a no-match notice on both surfaces', async () => {
+      mockQuery.mockResolvedValue({ meta: { lastUpdated: '' }, results: [] });
+      const result = await runToolContract(countValuesTool, {
+        endpoint: 'drug/event',
+        count: 'serious',
+        search: PLUS_PHRASE,
+      });
+      const hint = phrasePlusHint(PLUS_PHRASE, 0) as string;
+      const notice = String((result.structuredContent as { notice?: string }).notice);
+      expect(notice).toMatch(/nothing matched search: .*\. Broaden/);
+      expect(notice.endsWith(` ${hint}`)).toBe(true);
+      expect(textOf(result.content, result.content.length - 1)).toContain(hint);
+    });
+
+    it('leaves the hint off when the matched records carry no value', async () => {
+      mockQuery.mockResolvedValue({ meta: { lastUpdated: '', nothingToCount: true }, results: [] });
+      const result = await runToolContract(countValuesTool, {
+        endpoint: 'drug/event',
+        count: 'serious',
+        search: PLUS_PHRASE,
+      });
+      expect(String((result.structuredContent as { notice?: string }).notice)).not.toContain(
+        'literal plus sign',
+      );
     });
   });
 });

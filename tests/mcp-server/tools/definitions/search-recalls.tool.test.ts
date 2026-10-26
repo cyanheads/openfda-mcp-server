@@ -1,5 +1,5 @@
 import { McpError } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
@@ -103,6 +103,63 @@ describe('openfda_search_recalls', () => {
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toBeDefined();
+  });
+
+  // #75 wiring: the shared search schema reads a URL-form `+` separator as a
+  // space, so the service and the echo carry the spaced string. #81: the caller's
+  // search in the empty-result notice is a code span on both surfaces.
+  describe('search wiring (#75, #81)', () => {
+    const EMPTY = {
+      meta: { total: 0, skip: 0, limit: 10, lastUpdated: '2026-10-26' },
+      results: [],
+    };
+    const resultText = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+      result.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('\n');
+    const noticeOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+      String((result.structuredContent as { notice?: string }).notice);
+
+    it('sends and echoes a URL-form +AND+ search with spaces', async () => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-10-26' },
+        results: [{ recall_number: 'R-75' }],
+      });
+
+      const result = await runToolContract(searchRecallsTool, {
+        category: 'drug',
+        search: 'classification:"Class I"+AND+status:"Ongoing"',
+      });
+
+      const spaced = 'classification:"Class I" AND status:"Ongoing"';
+      expect(mockQuery.mock.calls[0]![1]).toMatchObject({ search: spaced });
+      expect((result.structuredContent as { effectiveQuery?: string }).effectiveQuery).toBe(spaced);
+      expect(resultText(result)).toContain(`Query: \`${spaced}\``);
+    });
+
+    it('adds the phrase-plus hint to a zero-total notice on both surfaces', async () => {
+      mockQuery.mockResolvedValue(EMPTY);
+
+      const result = await runToolContract(searchRecallsTool, {
+        category: 'drug',
+        search: 'classification.exact:"Class+I"',
+      });
+
+      expect(noticeOf(result)).toContain('write them with spaces: `"Class I"`.');
+      expect(resultText(result)).toContain(`> ${noticeOf(result)}`);
+    });
+
+    it('wraps the caller search in the empty-result notice as a code span on both surfaces', async () => {
+      mockQuery.mockResolvedValue(EMPTY);
+
+      const result = await runToolContract(searchRecallsTool, {
+        category: 'drug',
+        search: 'recalling_firm:*pfi*zzz*',
+      });
+
+      expect(noticeOf(result)).toContain(
+        'No recall/enforcement records matched search: `recalling_firm:*pfi*zzz*` in drug/enforcement.',
+      );
+      expect(resultText(result)).toContain(`> ${noticeOf(result)}`);
+    });
   });
 
   /**

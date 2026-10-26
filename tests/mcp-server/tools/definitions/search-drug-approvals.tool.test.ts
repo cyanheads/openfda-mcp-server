@@ -1,4 +1,4 @@
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
@@ -78,6 +78,45 @@ describe('openfda_search_drug_approvals', () => {
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toMatch(/no drug approvals/i);
+  });
+
+  // #75 wiring: the shared search schema reads a URL-form `+` separator as a
+  // space, so the service and the echo carry the spaced string.
+  describe('search wiring (#75)', () => {
+    const resultText = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+      result.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('\n');
+    const noticeOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+      String((result.structuredContent as { notice?: string }).notice);
+
+    it('sends and echoes a URL-form +AND+ search with spaces', async () => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-10-26' },
+        results: [{ application_number: 'NDA012345' }],
+      });
+
+      const result = await runToolContract(searchDrugApprovalsTool, {
+        search: 'sponsor_name:"PFIZER"+AND+submissions.submission_type:"ORIG"',
+      });
+
+      const spaced = 'sponsor_name:"PFIZER" AND submissions.submission_type:"ORIG"';
+      expect(mockQuery.mock.calls[0]![1]).toMatchObject({ search: spaced });
+      expect((result.structuredContent as { effectiveQuery?: string }).effectiveQuery).toBe(spaced);
+      expect(resultText(result)).toContain(`Query: \`${spaced}\``);
+    });
+
+    it('adds the phrase-plus hint to a zero-total notice on both surfaces', async () => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 0, skip: 0, limit: 10, lastUpdated: '2026-10-26' },
+        results: [],
+      });
+
+      const result = await runToolContract(searchDrugApprovalsTool, {
+        search: 'openfda.brand_name.exact:"HUMIRA+PEN"',
+      });
+
+      expect(noticeOf(result)).toContain('write them with spaces: `"HUMIRA PEN"`.');
+      expect(resultText(result)).toContain(`> ${noticeOf(result)}`);
+    });
   });
 
   it('formats submissions list', () => {

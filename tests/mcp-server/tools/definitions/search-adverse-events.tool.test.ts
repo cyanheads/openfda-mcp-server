@@ -1,4 +1,4 @@
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
@@ -103,6 +103,65 @@ describe('openfda_search_adverse_events', () => {
     expect(enrichment.notice).toMatch(/no adverse event/i);
   });
 
+  // #75 wiring: the shared search schema reads a URL-form `+` separator as a
+  // space, so the service and the echo carry the spaced string. #81: the caller's
+  // search in the empty-result notice is a code span on both surfaces.
+  describe('search wiring (#75, #81)', () => {
+    const EMPTY = {
+      meta: { total: 0, skip: 0, limit: 10, lastUpdated: '2026-10-26' },
+      results: [],
+    };
+    const resultText = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+      result.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('\n');
+    const noticeOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+      String((result.structuredContent as { notice?: string }).notice);
+
+    it('sends and echoes a URL-form +AND+ search with spaces', async () => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-10-26' },
+        results: [{ safetyreportid: '1', patient: {} }],
+      });
+
+      const result = await runToolContract(searchAdverseEventsTool, {
+        category: 'drug',
+        search: 'patient.drug.medicinalproduct:"aspirin"+AND+serious:"1"',
+      });
+
+      const spaced = 'patient.drug.medicinalproduct:"aspirin" AND serious:"1"';
+      expect(mockQuery.mock.calls[0]![1]).toMatchObject({ search: spaced });
+      expect((result.structuredContent as { effectiveQuery?: string }).effectiveQuery).toBe(spaced);
+      expect(resultText(result)).toContain(`Query: \`${spaced}\``);
+    });
+
+    it('adds the phrase-plus hint to a zero-total notice on both surfaces', async () => {
+      mockQuery.mockResolvedValue(EMPTY);
+
+      const result = await runToolContract(searchAdverseEventsTool, {
+        category: 'drug',
+        search: 'patient.reaction.reactionmeddrapt.exact:"INJECTION+SITE+PAIN"',
+      });
+
+      expect(noticeOf(result)).toContain(
+        'A "+" inside a quoted phrase is a literal plus sign, not a space, so `"INJECTION+SITE+PAIN"` can match only values spelled with one. If its words are meant to be separate, write them with spaces: `"INJECTION SITE PAIN"`.',
+      );
+      expect(resultText(result)).toContain(`> ${noticeOf(result)}`);
+    });
+
+    it('wraps the caller search in the empty-result notice as a code span on both surfaces', async () => {
+      mockQuery.mockResolvedValue(EMPTY);
+
+      const result = await runToolContract(searchAdverseEventsTool, {
+        category: 'drug',
+        search: 'patient.drug.medicinalproduct:*cillin*zzz*',
+      });
+
+      expect(noticeOf(result)).toContain(
+        'No adverse event reports matched search: `patient.drug.medicinalproduct:*cillin*zzz*` in drug/event.',
+      );
+      expect(resultText(result)).toContain(`> ${noticeOf(result)}`);
+    });
+  });
+
   it('formats drug adverse event records', () => {
     const content = searchAdverseEventsTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
@@ -126,6 +185,86 @@ describe('openfda_search_adverse_events', () => {
     expect(text).toContain('ASPIRIN');
     expect(text).toContain('Suspect');
     expect(text).toContain('Female');
+  });
+
+  // #72 — coded route, reaction outcome, and age group render their meaning in
+  // content[] beside the raw code; structuredContent keeps the code alone.
+  describe('code meanings (#72)', () => {
+    const codedRecord = () => ({
+      safetyreportid: 'RPT-72',
+      patient: {
+        patientagegroup: '6',
+        reaction: [
+          { reactionmeddrapt: 'DEATH', reactionoutcome: '5' },
+          { reactionmeddrapt: 'RASH', reactionoutcome: '9' },
+        ],
+        drug: [
+          {
+            medicinalproduct: 'METFORMIN',
+            drugcharacterization: '1',
+            drugadministrationroute: '048',
+          },
+          { medicinalproduct: 'INSULIN', drugadministrationroute: '099' },
+        ],
+      },
+    });
+
+    const render = (record: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+      textOf(
+        searchAdverseEventsTool.format!({
+          meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
+          results: [record],
+          ...extra,
+        } as never),
+      );
+
+    it('renders a listed route as `via <label> (<code>)` and an unlisted one unchanged', () => {
+      const text = render(codedRecord());
+      expect(text).toContain('- METFORMIN (Suspect, via oral (048))');
+      expect(text).toContain('- INSULIN (via 099)');
+    });
+
+    it('renders a listed reaction outcome beside its code and an unlisted one unchanged', () => {
+      const text = render(codedRecord());
+      expect(text).toContain('**Reactionoutcome:** fatal (5)');
+      expect(text).toContain('**Reactionoutcome:** 9');
+    });
+
+    it('renders the patient age group beside its code', () => {
+      expect(render(codedRecord())).toContain('**Patientagegroup:** elderly (6)');
+    });
+
+    it('renders an unlisted age group unchanged', () => {
+      const record = codedRecord();
+      record.patient.patientagegroup = '7';
+      expect(render(record)).toContain('**Patientagegroup:** 7');
+    });
+
+    it('keeps raw codes in structuredContent and leaves the record unmutated by format()', async () => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },
+        results: [codedRecord()],
+      });
+
+      const result = await searchAdverseEventsTool.handler(
+        searchAdverseEventsTool.input.parse({ category: 'drug' }),
+        ctx,
+      );
+      const before = JSON.stringify(result);
+      searchAdverseEventsTool.format!(result);
+
+      expect(JSON.stringify(result)).toBe(before);
+      expect(result.results[0]).toEqual(codedRecord());
+    });
+
+    it('keeps raw codes on a fields-projected record', () => {
+      const text = render(
+        { safetyreportid: 'RPT-72', patient: { drug: [{ drugadministrationroute: '048' }] } },
+        { projected_fields: ['patient.drug.drugadministrationroute'] },
+      );
+      expect(text).toContain('048');
+      expect(text).not.toContain('oral');
+    });
   });
 
   it('formats empty results with the metadata header ahead of the no-match line (#68)', () => {

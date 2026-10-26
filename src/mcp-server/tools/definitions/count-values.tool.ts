@@ -6,12 +6,14 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { escapeTableCell, singleLine } from '@/mcp-server/tools/format-utils.js';
+import { codeLiteral, escapeTableCell, singleLine } from '@/mcp-server/tools/format-utils.js';
 import {
   assertSearchDelimitersBalanced,
   malformedSearchError,
   nonBlankString,
-  SEARCH_BALANCE_NOTE,
+  phrasePlusHint,
+  SEARCH_SYNTAX_NOTE,
+  searchExpression,
 } from '@/mcp-server/tools/schema-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
@@ -42,9 +44,26 @@ const ENDPOINTS = [
 /** openFDA rejects a count `limit` above this with HTTP 400. */
 const OPENFDA_MAX_COUNT_TERMS = 1000;
 
+/**
+ * One openFDA count row. A field value arrives as `{ term, count }` (a number on
+ * numeric fields); a date field arrives as `{ time, count }`, one bucket per
+ * distinct `YYYYMMDD` date. Keyed on the row rather than the field catalog,
+ * which does not type every date field openFDA buckets.
+ */
+const CountRowSchema = z.union([
+  z.object({ term: z.union([z.string(), z.number(), z.boolean()]), count: z.number() }),
+  z.object({ time: z.string(), count: z.number() }),
+]);
+
+type CountTerm = { term: string; count: number };
+
+/** Count descending, then term ascending — chronological for `YYYYMMDD` dates. */
+const byCountThenTerm = (a: CountTerm, b: CountTerm) =>
+  b.count - a.count || (a.term < b.term ? -1 : a.term > b.term ? 1 : 0);
+
 export const countValuesTool = tool('openfda_count_values', {
   description:
-    'Aggregate and tally unique values for any field across any openFDA endpoint. Returns ranked term-count pairs sorted by count descending. Pair with openfda_search_adverse_events, openfda_search_drug_approvals, openfda_search_device_clearances, openfda_search_recalls, openfda_get_drug_label, or openfda_lookup_ndc when sample records help interpret the aggregates.',
+    'Aggregate and tally unique values for any field across any openFDA endpoint. Returns ranked term-count pairs sorted by count descending; a date field tallies one term per distinct YYYYMMDD date, ranked the same way. Pair with openfda_search_adverse_events, openfda_search_drug_approvals, openfda_search_device_clearances, openfda_search_recalls, openfda_get_drug_label, or openfda_lookup_ndc when sample records help interpret the aggregates.',
   annotations: { readOnlyHint: true },
 
   input: z.object({
@@ -52,12 +71,12 @@ export const countValuesTool = tool('openfda_count_values', {
       .enum(ENDPOINTS)
       .describe('Full openFDA endpoint path (e.g. "drug/event", "device/classification")'),
     count: nonBlankString().describe(
-      'Field to count. openfda_describe_fields gives the verified expression per field as countAs (null = not countable in any form). Otherwise: append .exact for whole-phrase counting of free-text fields (e.g. "patient.reaction.reactionmeddrapt.exact"); count identifier fields openFDA already indexes as keywords (product_ndc, application_number, pma_number) bare — .exact on those is rejected as not countable.',
+      'Field to count. openfda_describe_fields gives the verified expression per field as countAs (null = not countable in any form). Otherwise: append .exact for whole-phrase counting of free-text fields (e.g. "patient.reaction.reactionmeddrapt.exact"); count identifier fields openFDA already indexes as keywords (product_ndc, application_number, pma_number) bare — .exact on those is rejected as not countable. A date field (receivedate, report_date, decision_date) is counted bare and yields one term per distinct YYYYMMDD date.',
     ),
-    search: nonBlankString()
+    search: searchExpression()
       .optional()
       .describe(
-        `Filter query to scope the count (e.g. patient.drug.medicinalproduct:"metformin"). Omit to count across every record in the endpoint. ${SEARCH_BALANCE_NOTE}`,
+        `Filter query to scope the count (e.g. patient.drug.medicinalproduct:"metformin"). Omit to count across every record in the endpoint. ${SEARCH_SYNTAX_NOTE}`,
       ),
     limit: z
       .number()
@@ -65,7 +84,7 @@ export const countValuesTool = tool('openfda_count_values', {
       .max(OPENFDA_MAX_COUNT_TERMS)
       .default(100)
       .describe(
-        `Number of top terms to return (default 100, max ${OPENFDA_MAX_COUNT_TERMS} — openFDA's own count maximum). truncated reports whether more distinct terms exist beyond it, except at the maximum itself, where openFDA offers no way to tell.`,
+        `Number of top terms to return (default 100, max ${OPENFDA_MAX_COUNT_TERMS} — openFDA's own count maximum). truncated reports whether more distinct terms exist beyond it, except at the maximum itself, where openFDA offers no way to tell. A date field is the exception: openFDA sends every date, so the tool ranks them all and truncated is exact at any limit; scope search to at most limit dates to list each one.`,
       ),
   }),
 
@@ -79,7 +98,7 @@ export const countValuesTool = tool('openfda_count_values', {
       .array(
         z
           .object({
-            term: z.string().describe('Field value'),
+            term: z.string().describe('Field value; on a date field, the date as YYYYMMDD'),
             count: z.number().describe('Number of occurrences'),
           })
           .describe('A single term-count pair'),
@@ -93,7 +112,7 @@ export const countValuesTool = tool('openfda_count_values', {
       .boolean()
       .optional()
       .describe(
-        'True when at least one more distinct term exists beyond the limit. Absent when the list is complete, and at the 1000-term maximum, where openFDA cannot show whether more exist (notice says so).',
+        'True when at least one more distinct term exists beyond the limit. Absent when the list is complete, and at the 1000-term maximum, where openFDA cannot show whether more exist (notice says so). Exact at any limit on a date field, where every date arrives.',
       ),
     shown: z.number().optional().describe('Number of terms returned in this response.'),
     cap: z.number().optional().describe('The limit applied to the term list.'),
@@ -105,7 +124,7 @@ export const countValuesTool = tool('openfda_count_values', {
       .string()
       .optional()
       .describe(
-        'Why the tally is empty — the search matched no records, or the matched records carry no value for the field — and how to widen it; when truncated, how to reach the omitted terms; at the 1000-term maximum, that openFDA cannot show whether more distinct values exist. Absent when a complete list is returned.',
+        'Why the tally is empty — the search matched no records, or the matched records carry no value for the field — and how to widen it; when truncated, how to reach the omitted terms (on a date field, how many distinct dates were counted); at the 1000-term maximum, that openFDA cannot show whether more distinct values exist; how many count rows openFDA sent without a value or numeric count, which are left out. Absent when a complete list is returned.',
       ),
   },
 
@@ -153,6 +172,9 @@ export const countValuesTool = tool('openfda_count_values', {
      * openFDA count responses carry no distinct-term total, so one term past the
      * limit is the only completeness signal: it arrives only when more exist. At
      * the count maximum there is no room for it, and completeness is unknowable.
+     * Date buckets are the exception: openFDA ignores `limit` on them and sends
+     * every bucket in ascending date order, so they are ranked here and the cut
+     * is exact.
      */
     const svc = getOpenFdaService();
     const response = await svc.query(
@@ -171,33 +193,61 @@ export const countValuesTool = tool('openfda_count_values', {
       terms: response.results.length,
     });
 
-    const moreExist = response.results.length > input.limit;
-    const results = response.results.slice(0, input.limit).map((r) => ({
-      term: String(r.term),
-      count: r.count as number,
-    }));
+    const rows = response.results.map((row) => CountRowSchema.safeParse(row).data);
+    const dated = rows.some((row) => row !== undefined && 'time' in row);
+    const considered = dated ? rows : rows.slice(0, input.limit);
+    const tally = considered.flatMap((row) =>
+      row === undefined
+        ? []
+        : [{ term: 'time' in row ? row.time : String(row.term), count: row.count }],
+    );
+    if (dated) tally.sort(byCountThenTerm);
+    const results = tally.slice(0, input.limit);
+    const moreExist = dated ? tally.length > input.limit : response.results.length > input.limit;
+
+    const unreadable = considered.length - tally.length;
+    const unreadableNote =
+      unreadable > 0
+        ? `openFDA returned ${unreadable} count ${unreadable === 1 ? 'row' : 'rows'} with no value or no numeric count; ${unreadable === 1 ? 'it is' : 'they are'} left out of the tally.`
+        : undefined;
+    const withUnreadable = (text: string) => (unreadableNote ? `${text} ${unreadableNote}` : text);
+
+    // Caller text in a notice rides as a code literal, so it reads back as sent.
+    const field = codeLiteral(input.count);
+    const search = input.search && codeLiteral(input.search);
 
     ctx.enrich({ termCount: results.length });
     if (response.meta.nothingToCount) {
       ctx.enrich.notice(
-        `${input.count} is countable on ${input.endpoint}, but the records matching search: ${input.search} carry no value for it, so the tally is empty. Count across a broader search, or count a different field (openfda_describe_fields lists the endpoint's countable fields).`,
+        `${field} is countable on ${input.endpoint}, but the records matching search: ${search} carry no value for it, so the tally is empty. Count across a broader search, or count a different field (openfda_describe_fields lists the endpoint's countable fields).`,
       );
     } else if (results.length === 0) {
+      const hint = phrasePlusHint(input.search, response.results.length);
       ctx.enrich.notice(
-        `${input.count} is countable on ${input.endpoint}, but nothing matched${input.search ? ` search: ${input.search}` : ''}. Broaden or drop the search filter; call openfda_describe_fields for the endpoint field list.`,
+        unreadableNote ??
+          `${field} is countable on ${input.endpoint}, but nothing matched${search ? ` search: ${search}` : ''}. Broaden or drop the search filter; call openfda_describe_fields for the endpoint field list.${hint ? ` ${hint}` : ''}`,
       );
     } else if (moreExist) {
       const lowestCount = results.at(-1)?.count;
+      const raise = input.limit < OPENFDA_MAX_COUNT_TERMS;
       ctx.enrich.truncated({
         shown: results.length,
         cap: input.limit,
         ...(lowestCount !== undefined ? { ceiling: lowestCount } : {}),
-        guidance: `Showing the top ${input.limit} terms by count; more distinct values exist. Raise limit (max ${OPENFDA_MAX_COUNT_TERMS}) or narrow with search.`,
+        guidance: withUnreadable(
+          dated
+            ? `Showing the ${input.limit} dates with the most records of the ${tally.length} distinct dates counted. ${raise ? `Raise limit (max ${OPENFDA_MAX_COUNT_TERMS}) or narrow` : 'Narrow'} search to at most ${input.limit} dates to list every one.`
+            : `Showing the top ${input.limit} terms by count; more distinct values exist. Raise limit (max ${OPENFDA_MAX_COUNT_TERMS}) or narrow with search.`,
+        ),
       });
-    } else if (results.length === OPENFDA_MAX_COUNT_TERMS) {
+    } else if (!dated && results.length === OPENFDA_MAX_COUNT_TERMS) {
       ctx.enrich.notice(
-        `The term list reached openFDA's ${OPENFDA_MAX_COUNT_TERMS}-term maximum for a count, so openFDA cannot show whether more distinct values exist. Narrow with search to rank a smaller population.`,
+        withUnreadable(
+          `The term list reached openFDA's ${OPENFDA_MAX_COUNT_TERMS}-term maximum for a count, so openFDA cannot show whether more distinct values exist. Narrow with search to rank a smaller population.`,
+        ),
       );
+    } else if (unreadableNote) {
+      ctx.enrich.notice(unreadableNote);
     }
 
     return { meta: { lastUpdated: response.meta.lastUpdated }, results };

@@ -25,6 +25,29 @@ const tally = (n: number) => () =>
 const NO_MATCHES = () =>
   Response.json({ error: { code: 'NOT_FOUND', message: 'No matches found!' } }, { status: 404 });
 
+/**
+ * A date-field count response: openFDA sends `{ time, count }` rows, one per
+ * distinct date, in ascending date order, whatever `limit` asked for.
+ */
+const dateBuckets = (rows: Record<string, unknown>[]) => () =>
+  Response.json({ meta: { last_updated: '2026-10-24' }, results: rows });
+
+/** `drug/enforcement` `report_date` over January 2024, as openFDA answers it. */
+const JAN_2024 = [
+  { time: '20240103', count: 50 },
+  { time: '20240110', count: 6 },
+  { time: '20240117', count: 5 },
+  { time: '20240124', count: 30 },
+  { time: '20240131', count: 19 },
+];
+
+/** `n` ascending date buckets whose counts rise with the date. */
+const risingBuckets = (n: number) =>
+  Array.from({ length: n }, (_, i) => ({ time: String(20000101 + i * 100), count: i + 1 }));
+
+/** The table rows `format()` renders, one per term. */
+const tableRows = (text: string) => text.split('\n').filter((line) => /^\| \d/.test(line));
+
 /** The `limit` query parameter of the n-th upstream request. */
 const sentLimit = (index = 0) => new URL(http.calls[index]!.request.url).searchParams.get('limit');
 
@@ -254,5 +277,267 @@ describe('openfda_count_values — truncation from the look-ahead row', () => {
     const date = text.indexOf('Data updated: 2026-09-18');
     expect(date).toBeGreaterThan(-1);
     expect(date).toBeLessThan(text.indexOf('No count results.'));
+  });
+});
+
+/*
+ * #78 — a date field counts into `{ time, count }` buckets. openFDA ignores
+ * `limit` on them and sends every bucket in ascending date order, so the tool
+ * ranks them itself and the truncation it reports is exact.
+ */
+describe('openfda_count_values — date-bucket counts', () => {
+  beforeAll(() => {
+    initOpenFdaService();
+  });
+
+  beforeEach(() => {
+    http.reset();
+    http.install();
+  });
+
+  afterEach(() => {
+    http.restore();
+  });
+
+  // The issue repro, call 1.
+  it('names each bucket by its date and keeps the top limit by count', async () => {
+    http.route({ match: () => true, respond: dateBuckets(JAN_2024) });
+
+    const result = await runToolContract(countValuesTool, {
+      endpoint: 'drug/enforcement',
+      count: 'report_date',
+      search: 'report_date:[20240101 TO 20240131]',
+      limit: 3,
+    });
+
+    expect(result.isError).toBeFalsy();
+    const structured = result.structuredContent as unknown as CountStructured;
+    expect(structured.results).toEqual([
+      { term: '20240103', count: 50 },
+      { term: '20240124', count: 30 },
+      { term: '20240131', count: 19 },
+    ]);
+    expect(structured.termCount).toBe(3);
+    expect(structured.truncated).toBe(true);
+    expect(structured.shown).toBe(3);
+    expect(structured.cap).toBe(3);
+    expect(structured.truncationCeiling).toBe(19);
+    expect(structured.notice).toMatch(/of the 5 distinct dates/);
+    expect(structured.notice).toMatch(/raise limit/i);
+    expect(structured.notice).not.toMatch(/cannot show/i);
+
+    const text = textOfResult(result);
+    expect(text).not.toContain('undefined');
+    expect(tableRows(text)).toEqual([
+      '| 1 | 20240103 | 50 |',
+      '| 2 | 20240124 | 30 |',
+      '| 3 | 20240131 | 19 |',
+    ]);
+    expect(text).toMatch(/of the 5 distinct dates/);
+  });
+
+  it('returns every bucket, ranked, with no truncation when the dates fit the limit', async () => {
+    http.route({ match: () => true, respond: dateBuckets(JAN_2024) });
+
+    const result = await runToolContract(countValuesTool, {
+      endpoint: 'drug/enforcement',
+      count: 'report_date',
+      search: 'report_date:[20240101 TO 20240131]',
+      limit: 5,
+    });
+
+    const structured = result.structuredContent as unknown as CountStructured;
+    expect(structured.results.map((r) => r.term)).toEqual([
+      '20240103',
+      '20240124',
+      '20240131',
+      '20240110',
+      '20240117',
+    ]);
+    expect(structured.truncated).toBeUndefined();
+    expect(structured.shown).toBeUndefined();
+    expect(structured.truncationCeiling).toBeUndefined();
+    expect(structured.notice).toBeUndefined();
+    expect(textOfResult(result)).not.toMatch(/truncat|distinct/i);
+  });
+
+  it('breaks count ties by date ascending, whatever order the buckets arrive in', async () => {
+    http.route({
+      match: () => true,
+      respond: dateBuckets([
+        { time: '20240301', count: 7 },
+        { time: '20240115', count: 7 },
+        { time: '20240220', count: 9 },
+        { time: '20240101', count: 7 },
+      ]),
+    });
+
+    const result = await runToolContract(countValuesTool, {
+      endpoint: 'drug/event',
+      count: 'receivedate',
+      limit: 3,
+    });
+
+    const structured = result.structuredContent as unknown as CountStructured;
+    expect(structured.results).toEqual([
+      { term: '20240220', count: 9 },
+      { term: '20240101', count: 7 },
+      { term: '20240115', count: 7 },
+    ]);
+    expect(structured.truncated).toBe(true);
+    expect(structured.truncationCeiling).toBe(7);
+  });
+
+  // Every bucket is in hand, so even the 1000-term maximum truncates exactly.
+  it('reports exact truncation at the 1000-term maximum, without the unknowable notice', async () => {
+    http.route({ match: () => true, respond: dateBuckets(risingBuckets(1200)) });
+
+    const result = await runToolContract(countValuesTool, {
+      endpoint: 'device/510k',
+      count: 'decision_date',
+      limit: 1000,
+    });
+
+    const structured = result.structuredContent as unknown as CountStructured;
+    expect(structured.results).toHaveLength(1000);
+    expect(structured.results[0]).toEqual({ term: '20120001', count: 1200 });
+    expect(structured.results.at(-1)).toEqual({ term: '20020101', count: 201 });
+    expect(structured.truncated).toBe(true);
+    expect(structured.shown).toBe(1000);
+    expect(structured.cap).toBe(1000);
+    expect(structured.truncationCeiling).toBe(201);
+    expect(structured.notice).toMatch(/of the 1200 distinct dates/);
+    expect(structured.notice).not.toMatch(/raise limit/i);
+    expect(structured.notice).not.toMatch(/cannot show/i);
+
+    const text = textOfResult(result);
+    expect(text).toMatch(/of the 1200 distinct dates/);
+    expect(text).not.toMatch(/cannot show|1000-term maximum/i);
+  });
+
+  it('calls exactly 1000 buckets at limit 1000 complete', async () => {
+    http.route({ match: () => true, respond: dateBuckets(risingBuckets(1000)) });
+
+    const result = await runToolContract(countValuesTool, {
+      endpoint: 'device/510k',
+      count: 'decision_date',
+      limit: 1000,
+    });
+
+    const structured = result.structuredContent as unknown as CountStructured;
+    expect(structured.results).toHaveLength(1000);
+    expect(structured.results[0]!.count).toBe(1000);
+    expect(structured.truncated).toBeUndefined();
+    expect(structured.notice).toBeUndefined();
+    expect(textOfResult(result)).not.toMatch(/cannot show|1000-term maximum|truncat/i);
+  });
+
+  // A bucket with no date or no numeric count cannot be named or ranked.
+  it('leaves out sparse buckets and says so on both surfaces', async () => {
+    http.route({
+      match: () => true,
+      respond: dateBuckets([
+        { time: '20240103', count: 50 },
+        { time: '20240110' },
+        { count: 12 },
+        { time: '20240124', count: 30 },
+      ]),
+    });
+
+    const result = await runToolContract(countValuesTool, {
+      endpoint: 'drug/enforcement',
+      count: 'report_date',
+      limit: 10,
+    });
+
+    expect(result.isError).toBeFalsy();
+    const structured = result.structuredContent as unknown as CountStructured;
+    expect(structured.results).toEqual([
+      { term: '20240103', count: 50 },
+      { term: '20240124', count: 30 },
+    ]);
+    expect(structured.truncated).toBeUndefined();
+    expect(structured.notice).toMatch(/2 count rows/);
+    expect(structured.notice).toMatch(/left out/i);
+
+    const text = textOfResult(result);
+    expect(text).not.toContain('undefined');
+    expect(tableRows(text)).toHaveLength(2);
+    expect(text).toMatch(/2 count rows/);
+  });
+
+  it('keeps the sparse-row disclosure alongside a truncated ranking', async () => {
+    http.route({
+      match: () => true,
+      respond: dateBuckets([...JAN_2024, { time: '20240201', count: null }]),
+    });
+
+    const result = await runToolContract(countValuesTool, {
+      endpoint: 'drug/enforcement',
+      count: 'report_date',
+      limit: 2,
+    });
+
+    const structured = result.structuredContent as unknown as CountStructured;
+    expect(structured.results.map((r) => r.term)).toEqual(['20240103', '20240124']);
+    expect(structured.truncated).toBe(true);
+    expect(structured.notice).toMatch(/of the 5 distinct dates/);
+    expect(structured.notice).toMatch(/1 count row\b/);
+  });
+
+  it('does not call a tally of only unreadable rows a search that matched nothing', async () => {
+    http.route({ match: () => true, respond: dateBuckets([{ time: '20240103' }, { count: 4 }]) });
+
+    const result = await runToolContract(countValuesTool, {
+      endpoint: 'drug/enforcement',
+      count: 'report_date',
+      search: 'report_date:[20240101 TO 20240131]',
+    });
+
+    const structured = result.structuredContent as unknown as CountStructured;
+    expect(structured.results).toEqual([]);
+    expect(structured.notice).toMatch(/2 count rows/);
+    expect(structured.notice).not.toMatch(/nothing matched/i);
+    expect(textOfResult(result)).toContain('No count results.');
+  });
+
+  it('ranks a mixed response of term and date rows as date buckets', async () => {
+    http.route({
+      match: () => true,
+      respond: dateBuckets([
+        { time: '20240103', count: 5 },
+        { term: 'ALPHA', count: 9 },
+        { time: '20240110', count: 7 },
+      ]),
+    });
+
+    const result = await runToolContract(countValuesTool, {
+      endpoint: 'drug/event',
+      count: 'receivedate',
+      limit: 2,
+    });
+
+    const structured = result.structuredContent as unknown as CountStructured;
+    expect(structured.results).toEqual([
+      { term: 'ALPHA', count: 9 },
+      { term: '20240110', count: 7 },
+    ]);
+    expect(structured.truncated).toBe(true);
+    expect(structured.notice).toMatch(/of the 3 distinct/);
+  });
+
+  it('keeps the zero-term notice for a date count whose search matched nothing', async () => {
+    http.route({ match: () => true, respond: NO_MATCHES });
+
+    const result = await runToolContract(countValuesTool, {
+      endpoint: 'drug/event',
+      count: 'receivedate',
+      search: 'receivedate:[19000101 TO 19000102]',
+    });
+
+    expect(result.isError).toBeFalsy();
+    const structured = result.structuredContent as unknown as CountStructured;
+    expect(structured.results).toEqual([]);
+    expect(structured.notice).toMatch(/nothing matched/i);
   });
 });

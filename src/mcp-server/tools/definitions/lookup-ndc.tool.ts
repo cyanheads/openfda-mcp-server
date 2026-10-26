@@ -25,9 +25,10 @@ import {
   fieldSelection,
   fieldsDescription,
   malformedSearchError,
-  nonBlankString,
-  SEARCH_BALANCE_NOTE,
+  phrasePlusHint,
+  SEARCH_SYNTAX_NOTE,
   SKIP_DESCRIPTION,
+  searchExpression,
   sortExpression,
   totalUnverifiedField,
 } from '@/mcp-server/tools/schema-utils.js';
@@ -92,8 +93,8 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
   annotations: { readOnlyHint: true },
 
   input: z.object({
-    search: nonBlankString().describe(
-      `openFDA search query. Examples: product_ndc:"0363-0218", brand_name:"aspirin", generic_name:"metformin", openfda.manufacturer_name:"walgreen", active_ingredients.name:"ASPIRIN". ${SEARCH_BALANCE_NOTE}`,
+    search: searchExpression().describe(
+      `openFDA search query. Examples: product_ndc:"0363-0218", brand_name:"aspirin", generic_name:"metformin", openfda.manufacturer_name:"walgreen", active_ingredients.name:"ASPIRIN". ${SEARCH_SYNTAX_NOTE}`,
     ),
     sort: sortExpression()
       .optional()
@@ -230,6 +231,7 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
       ctx.enrich.notice(
         [
           spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
+          phrasePlusHint(input.search, spill.total),
           projectionNotice(staged),
           pageBudgetNotice(staged),
           stagingNotice(spill),
@@ -257,6 +259,7 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
       page.results.length === 0
         ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
         : undefined,
+      phrasePlusHint(input.search, response.meta.total),
       projectionNotice(page),
       pageBudgetNotice(page),
     ].filter(Boolean);

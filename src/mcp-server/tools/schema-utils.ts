@@ -2,15 +2,17 @@
  * @fileoverview Shared Zod building blocks for tool input schemas, plus the
  * handler guards that reject locally-detectable bad input before an upstream
  * request is spent: the openFDA pagination ceiling, and the `search` delimiter
- * balance check. Also holds the `sort` grammar and the `fields` path grammar,
- * which are regex-expressible and therefore ride the advertised JSON Schema
- * `pattern`, and the paginated tools'
- * shared `meta.totalUnverified` output field.
+ * balance check. Also holds the shared `search` input, which reads openFDA's
+ * URL-form `+` separators as spaces, the `sort` grammar and the `fields` path
+ * grammar, which are regex-expressible and therefore ride the advertised JSON
+ * Schema `pattern`, and the paginated tools' shared `meta.totalUnverified`
+ * output field.
  * @module mcp-server/tools/schema-utils
  */
 
 import { type TypedFail, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { codeLiteral } from '@/mcp-server/tools/format-utils.js';
 
 /**
  * A free-text input that must carry at least one non-whitespace character.
@@ -223,12 +225,13 @@ export function fieldsDescription(
 /* --- search delimiter balance --- */
 
 /**
- * Shared `search` description clause — states the delimiter rule
- * {@link assertSearchDelimitersBalanced} enforces, so every tool advertises it in
- * the same words. Append it to the tool's own `search` prose.
+ * Shared `search` description clause — states the `+` separator rule
+ * {@link searchExpression} applies and the delimiter rule
+ * {@link assertSearchDelimitersBalanced} enforces, so every tool advertises both
+ * in the same words. Append it to the tool's own `search` prose.
  */
-export const SEARCH_BALANCE_NOTE =
-  'Double quotes, parentheses, and range brackets must balance, and the query must not end on a backslash — each is rejected before the request.';
+export const SEARCH_SYNTAX_NOTE =
+  'Separate clauses with spaces. A "+" written in the URL style of openFDA\'s examples also reads as a space where it separates: beside AND, OR, NOT, or TO, after a closing quote, paren, or bracket, or between a term and the next "field:" prefix (a:"x"+AND+b:"y", [20200101+TO+20201231], c:x+d:y). In a query that marks a clause required with a leading +field:, only the AND/OR/NOT/TO positions read that way. Any other "+" is sent as written, and inside a quoted phrase "+" is a literal plus sign. Double quotes, parentheses, and range brackets must balance, and the query must not end on a backslash — each is rejected before the request.';
 
 /** The delimiter faults {@link findSearchDelimiterFault} can detect. */
 export type SearchDelimiterFault =
@@ -369,6 +372,257 @@ export function assertSearchDelimitersBalanced(
   const fault = findSearchDelimiterFault(search);
   if (!fault) return;
   throw ctx.fail('malformed_search', SEARCH_FAULT_MESSAGE[fault]);
+}
+
+/* --- search `+` separators --- */
+
+/** Lucene's word operators — uppercase only; `and` or `to` is an ordinary term. */
+const OPERATOR_WORDS = new Set(['AND', 'OR', 'NOT', 'TO']);
+
+/** The longest word operator plus one, so `AND` is told apart from `BAND` or `ANDROID`. */
+const OPERATOR_SCAN = 4;
+
+/** Characters that end a word operator: whitespace, `+`, a quote, or a group or range delimiter. */
+const OPERATOR_BOUNDARY = /[\s+"()[\]{}]/;
+
+/** Characters that cannot end a term: whitespace and Lucene's syntax characters. `*` and `?` are wildcards, part of the term. */
+const NON_TERM_CHAR = /[\s+\-!(){}[\]^"~:\\/&|]/;
+
+const UPPERCASE = /[A-Z]/;
+const FIELD_START = /[A-Za-z_]/;
+const FIELD_CHAR = /[A-Za-z0-9_.]/;
+
+/** What can open a clause after a required-operator `+`: a field or term, a phrase, a group, or a range. */
+const CLAUSE_START = /[A-Za-z0-9_"([{]/;
+
+/**
+ * Whether the query marks a clause required in Lucene's own syntax: an
+ * unescaped, unquoted `+` at the start or after whitespace or `(`, directly
+ * before a clause. URL form has no use for a `+` there — it would be a leading
+ * space — so such a query is written with `+` as the required operator, and a
+ * `+` between two of its clauses (`+a:"x"+b:"y"`) is that operator too.
+ */
+function marksRequiredClause(search: string): boolean {
+  let inPhrase = false;
+  let escapedAt = -1;
+  for (let i = 0; i < search.length; i += 1) {
+    const char = search[i];
+    if (char === '\\') {
+      i += 1;
+      escapedAt = i;
+      continue;
+    }
+    if (inPhrase) {
+      if (char === '"') inPhrase = false;
+      continue;
+    }
+    if (char === '"') inPhrase = true;
+    else if (
+      char === '+' &&
+      (i === 0 || (escapedAt !== i - 1 && /[\s(]/.test(search[i - 1] ?? ''))) &&
+      CLAUSE_START.test(search[i + 1] ?? '')
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether the unescaped, unquoted `+` at `index` sits in a separator position —
+ * one of the places openFDA's URL-form examples write a space. `escapedAt` is
+ * the index of the most recent backslash-escaped character, so a `\)` or `\"`
+ * before the `+` reads as a term character rather than a closer. In a query that
+ * `requiredStyle` marks as using `+` as the required operator, only the
+ * word-operator position counts: a `+` beside `AND`, `OR`, `NOT`, or `TO` has no
+ * clause of its own to mark.
+ */
+function isSeparatorPlus(
+  search: string,
+  index: number,
+  escapedAt: number,
+  requiredStyle: boolean,
+): boolean {
+  const prev = search[index - 1];
+  const prevEscaped = escapedAt === index - 1;
+
+  // Touching a standalone word operator, on either side. An escaped letter has a
+  // backslash before it, which is no boundary, so the only escape to rule out is
+  // on the boundary character itself (`\(AND+`).
+  let start = index;
+  while (start > 0 && index - start < OPERATOR_SCAN && UPPERCASE.test(search[start - 1] ?? '')) {
+    start -= 1;
+  }
+  if (
+    OPERATOR_WORDS.has(search.slice(start, index)) &&
+    (start === 0 || (escapedAt !== start - 1 && OPERATOR_BOUNDARY.test(search[start - 1] ?? '')))
+  ) {
+    return true;
+  }
+  let end = index + 1;
+  while (end < search.length && end - index <= OPERATOR_SCAN && UPPERCASE.test(search[end] ?? '')) {
+    end += 1;
+  }
+  if (
+    OPERATOR_WORDS.has(search.slice(index + 1, end)) &&
+    (end === search.length || OPERATOR_BOUNDARY.test(search[end] ?? ''))
+  ) {
+    return true;
+  }
+
+  if (requiredStyle) return false;
+
+  // After a closing quote, paren, or bracket. Outside a phrase, an unescaped `"`
+  // just before this `+` can only have closed one.
+  if (prev !== undefined && !prevEscaped && '")]}'.includes(prev)) return true;
+
+  // Between a term and the next clause's `field:` prefix (`ca+serious:1`). The
+  // scan stops at the first non-path character, and a `+` is one, so no stretch
+  // of the query is scanned for two different `+`.
+  if (prev === undefined || (!prevEscaped && NON_TERM_CHAR.test(prev))) return false;
+  if (!FIELD_START.test(search[index + 1] ?? '')) return false;
+  let fieldEnd = index + 2;
+  while (fieldEnd < search.length && FIELD_CHAR.test(search[fieldEnd] ?? '')) fieldEnd += 1;
+  return search[fieldEnd] === ':';
+}
+
+/**
+ * Turn each `+` that openFDA's URL-form syntax uses as a space into a space,
+ * leaving every other `+` as sent.
+ *
+ * openFDA documents `search` in URL form, where `+` is an encoded space
+ * (`a:x+AND+b:y`, `[20040101+TO+20081231]`, `a:x+b:y`). The service sends the
+ * value form-encoded, so a `+` reaches openFDA as a literal plus: `+AND+` matches
+ * nothing, `+TO+` fails to parse, and `"a"+b:"c"` becomes Lucene's required
+ * operator and drops the first clause. A literal plus is also real data and real
+ * syntax — `brand_name.exact:"Bausch + Lomb"`, `device_name.exact:Knee+`, and a
+ * leading `+field:` required clause all answer correctly as sent — so only an
+ * unescaped `+` outside a quoted phrase, in a separator position, is rewritten:
+ *
+ * - touching a standalone `AND`, `OR`, `NOT`, or `TO` (uppercase, as Lucene reads
+ *   them; inside a range too);
+ * - right after a closing `"`, `)`, `]`, or `}`;
+ * - right before a `field:` prefix when the character before the `+` ends a term.
+ *
+ * The last two positions are also where Lucene's required operator goes, so they
+ * are read as separators only in a query that does not otherwise use that
+ * operator ({@link marksRequiredClause}): `+a:"x"+b:"y"` keeps its AND, answered
+ * as sent, where reading the middle `+` as a space would make `b` optional.
+ *
+ * A `+` before `(` after a bare term stays literal, and a keyword-shaped literal
+ * value ending in an operator word (`brand_name.exact:x+AND`) reads as a separator:
+ * neither occurs in the data, and a caller can always write a space or `\+`.
+ *
+ * Two passes, with a constant-size look-around per `+` and a field-prefix scan no
+ * two `+` share, so the cost is linear in the length of the query.
+ */
+function normalizeSearchSeparators(search: string): string {
+  if (!search.includes('+')) return search;
+  const requiredStyle = marksRequiredClause(search);
+  let out = '';
+  let copiedTo = 0;
+  let inPhrase = false;
+  let escapedAt = -1;
+
+  for (let i = 0; i < search.length; i += 1) {
+    const char = search[i];
+    if (char === '\\') {
+      i += 1; // The escaped character is literal, in a phrase or out of one.
+      escapedAt = i;
+      continue;
+    }
+    if (inPhrase) {
+      if (char === '"') inPhrase = false;
+      continue;
+    }
+    if (char === '"') inPhrase = true;
+    else if (char === '+' && isSeparatorPlus(search, i, escapedAt, requiredStyle)) {
+      out += `${search.slice(copiedTo, i)} `;
+      copiedTo = i + 1;
+    }
+  }
+  return out + search.slice(copiedTo);
+}
+
+/**
+ * The shared caller-supplied `search` input: {@link nonBlankString} plus the
+ * URL-form `+` normalization of {@link normalizeSearchSeparators}, applied with
+ * `.overwrite()` inside the schema — as {@link sortExpression} normalizes sort
+ * directions — so the handler, the delimiter guard, the staged path, and the
+ * echoed query all receive the string openFDA is sent.
+ *
+ * Wiring: replace a tool's `search: nonBlankString()` with
+ * `search: searchExpression()`, keeping its `.optional()` and `.describe(...)`
+ * chain. The advertised JSON Schema is unchanged (`minLength: 1` and the
+ * non-blank `pattern`), and no value that parsed before is rejected: the rewrite
+ * runs after both checks and leaves every non-`+` character in place, so the
+ * result is never blank. For the caller's own `search` only — a server-composed
+ * query (`openfda_drug_profile`) puts a drug name inside a phrase, where a `+`
+ * is data.
+ */
+export function searchExpression() {
+  return nonBlankString().overwrite(normalizeSearchSeparators);
+}
+
+/**
+ * The empty-result hint for a search whose quoted phrase holds a `+`, or
+ * `undefined` when there is nothing to say.
+ *
+ * {@link searchExpression} never rewrites inside a phrase, because a phrase `+`
+ * can be real data (`brand_name.exact:"Bausch + Lomb"`). So a URL-style
+ * `reactionmeddrapt.exact:"INJECTION+SITE+PAIN"` is sent as a literal-plus value
+ * and matches nothing where the spaced phrase matches. The hint names the first
+ * such phrase and its spaced form, so the caller can tell which one it meant,
+ * each quoted as a {@link codeLiteral} since the hint lands on a notice.
+ *
+ * Wiring: pass the parsed `input.search` (already normalized) and the result's
+ * `total`, and append the returned text to the tool's empty-result notice. It
+ * returns text only when `total` is 0 — a page past the end of a matched set is
+ * not a miss — and only for an unescaped `+` inside a quoted phrase; a `\+` was
+ * written as a literal on purpose.
+ */
+export function phrasePlusHint(search: string | undefined, total: number): string | undefined {
+  if (search === undefined || total > 0) return;
+  const phrase = firstPhraseWithPlus(search);
+  if (phrase === undefined) return;
+  return `A "+" inside a quoted phrase is a literal plus sign, not a space, so ${codeLiteral(`"${phrase.text}"`)} can match only values spelled with one. If its words are meant to be separate, write them with spaces: ${codeLiteral(`"${phrase.spaced}"`)}.`;
+}
+
+/**
+ * The body of the first quoted phrase holding an unescaped `+`, as written and
+ * with each such `+` turned to a space. Same context rules as
+ * {@link findSearchDelimiterFault}: a backslash escapes the next character, and
+ * an unterminated phrase still counts — the delimiter guard rejects that query
+ * before any result exists, so it never reaches a notice.
+ */
+function firstPhraseWithPlus(search: string): { spaced: string; text: string } | undefined {
+  let phraseStart = -1;
+  let spaced = '';
+  let hasPlus = false;
+
+  for (let i = 0; i < search.length; i += 1) {
+    const char = search[i] ?? '';
+    if (phraseStart === -1) {
+      if (char === '\\') i += 1;
+      else if (char === '"') {
+        phraseStart = i + 1;
+        spaced = '';
+        hasPlus = false;
+      }
+      continue;
+    }
+    if (char === '\\') {
+      spaced += search.slice(i, i + 2);
+      i += 1;
+    } else if (char === '"') {
+      if (hasPlus) return { text: search.slice(phraseStart, i), spaced };
+      phraseStart = -1;
+    } else if (char === '+') {
+      spaced += ' ';
+      hasPlus = true;
+    } else spaced += char;
+  }
+  return phraseStart !== -1 && hasPlus ? { text: search.slice(phraseStart), spaced } : undefined;
 }
 
 /**

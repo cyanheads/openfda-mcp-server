@@ -3,7 +3,7 @@
  * @module tests/mcp-server/tools/definitions/search-tobacco-reports.tool.test
  */
 
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
@@ -132,6 +132,60 @@ describe('openfda_search_tobacco_reports', () => {
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.notice).toMatch(/skip=50/);
+  });
+
+  // #75 wiring: the shared search schema reads a URL-form `+` separator as a
+  // space, so the service and the echo carry the spaced string. #81: the caller's
+  // search in the empty-result notice is a code span on both surfaces.
+  describe('search wiring (#75, #81)', () => {
+    const EMPTY = {
+      meta: { total: 0, skip: 0, limit: 10, lastUpdated: '2026-10-26' },
+      results: [],
+    };
+    const resultText = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+      result.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('\n');
+    const noticeOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+      String((result.structuredContent as { notice?: string }).notice);
+
+    it('sends and echoes a URL-form +AND+ search with spaces', async () => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-10-26' },
+        results: [{ report_id: 'TOB-75' }],
+      });
+
+      const result = await runToolContract(searchTobaccoReportsTool, {
+        search: 'tobacco_products:"Electronic cigarette"+AND+nonuser_affected:"Yes"',
+      });
+
+      const spaced = 'tobacco_products:"Electronic cigarette" AND nonuser_affected:"Yes"';
+      expect(mockQuery.mock.calls[0]![1]).toMatchObject({ search: spaced });
+      expect((result.structuredContent as { effectiveQuery?: string }).effectiveQuery).toBe(spaced);
+      expect(resultText(result)).toContain(`Query: \`${spaced}\``);
+    });
+
+    it('adds the phrase-plus hint to a zero-total notice on both surfaces', async () => {
+      mockQuery.mockResolvedValue(EMPTY);
+
+      const result = await runToolContract(searchTobaccoReportsTool, {
+        search: 'reported_health_problems.exact:"Chest+Pain"',
+      });
+
+      expect(noticeOf(result)).toContain('write them with spaces: `"Chest Pain"`.');
+      expect(resultText(result)).toContain(`> ${noticeOf(result)}`);
+    });
+
+    it('wraps the caller search in the empty-result notice as a code span on both surfaces', async () => {
+      mockQuery.mockResolvedValue(EMPTY);
+
+      const result = await runToolContract(searchTobaccoReportsTool, {
+        search: 'reported_health_problems:*seiz*zzz*',
+      });
+
+      expect(noticeOf(result)).toContain(
+        'No tobacco problem reports matched search: `reported_health_problems:*seiz*zzz*`.',
+      );
+      expect(resultText(result)).toContain(`> ${noticeOf(result)}`);
+    });
   });
 
   it('formats records with products and health problems', () => {

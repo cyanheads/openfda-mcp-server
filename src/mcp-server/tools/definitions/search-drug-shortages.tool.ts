@@ -11,6 +11,7 @@ import { CanvasIdSchema, type ColumnSchema } from '@cyanheads/mcp-ts-core/canvas
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
+  codeLiteral,
   emptyPageBody,
   emptyResultMessage,
   formatRemainingFields,
@@ -24,9 +25,10 @@ import {
   fieldSelection,
   fieldsDescription,
   malformedSearchError,
-  nonBlankString,
-  SEARCH_BALANCE_NOTE,
+  phrasePlusHint,
+  SEARCH_SYNTAX_NOTE,
   SKIP_DESCRIPTION,
+  searchExpression,
   sortExpression,
   totalUnverifiedField,
 } from '@/mcp-server/tools/schema-utils.js';
@@ -88,10 +90,10 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
   annotations: { readOnlyHint: true },
 
   input: z.object({
-    search: nonBlankString()
+    search: searchExpression()
       .optional()
       .describe(
-        `openFDA search query using field:value syntax. Examples: status:"Current", therapeutic_category:"Oncology", generic_name:"carboplatin", company_name:"pfizer". Omit to browse all records. ${SEARCH_BALANCE_NOTE} Call openfda_describe_fields({ endpoint: "drug/shortages" }) for the complete field list.`,
+        `openFDA search query using field:value syntax. Examples: status:"Current", therapeutic_category:"Oncology", generic_name:"carboplatin", company_name:"pfizer". Omit to browse all records. ${SEARCH_SYNTAX_NOTE} Call openfda_describe_fields({ endpoint: "drug/shortages" }) for the complete field list.`,
       ),
     sort: sortExpression()
       .optional()
@@ -196,7 +198,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       emptyResultMessage(
         skip,
         total,
-        `No drug shortage records matched${input.search ? ` search: ${input.search}` : ''}. Try broader filters or check field names. ${formatFieldHint('drug/shortages')}`,
+        `No drug shortage records matched${input.search ? ` search: ${codeLiteral(input.search)}` : ''}. Try broader filters or check field names. ${formatFieldHint('drug/shortages')}`,
         totalUnverified,
       );
 
@@ -228,6 +230,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       ctx.enrich.notice(
         [
           spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
+          phrasePlusHint(input.search, spill.total),
           projectionNotice(staged),
           pageBudgetNotice(staged),
           stagingNotice(spill),
@@ -265,6 +268,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       page.results.length === 0
         ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
         : undefined,
+      phrasePlusHint(input.search, response.meta.total),
       projectionNotice(page),
       pageBudgetNotice(page),
     ].filter(Boolean);

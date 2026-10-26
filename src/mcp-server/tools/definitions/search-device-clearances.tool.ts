@@ -24,9 +24,10 @@ import {
   fieldSelection,
   fieldsDescription,
   malformedSearchError,
-  nonBlankString,
-  SEARCH_BALANCE_NOTE,
+  phrasePlusHint,
+  SEARCH_SYNTAX_NOTE,
   SKIP_DESCRIPTION,
+  searchExpression,
   sortExpression,
   totalUnverifiedField,
 } from '@/mcp-server/tools/schema-utils.js';
@@ -99,10 +100,10 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
     pathway: z
       .enum(['510k', 'pma'])
       .describe('Premarket pathway. 510(k) is the most common; PMA is for higher-risk devices.'),
-    search: nonBlankString()
+    search: searchExpression()
       .optional()
       .describe(
-        `openFDA search query. Examples: applicant:"medtronic", advisory_committee_description:"cardiovascular", product_code:"DXN", openfda.device_name:"catheter". Omit to browse recent. ${SEARCH_BALANCE_NOTE}`,
+        `openFDA search query. Examples: applicant:"medtronic", advisory_committee_description:"cardiovascular", product_code:"DXN", openfda.device_name:"catheter". Omit to browse recent. ${SEARCH_SYNTAX_NOTE}`,
       ),
     sort: sortExpression()
       .optional()
@@ -242,6 +243,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       ctx.enrich.notice(
         [
           spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
+          phrasePlusHint(input.search, spill.total),
           projectionNotice(staged),
           pageBudgetNotice(staged),
           stagingNotice(spill),
@@ -279,6 +281,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       page.results.length === 0
         ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
         : undefined,
+      phrasePlusHint(input.search, response.meta.total),
       projectionNotice(page),
       pageBudgetNotice(page),
     ].filter(Boolean);

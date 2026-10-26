@@ -134,6 +134,60 @@ describe('openfda_search_animal_events', () => {
     expect(enrichment.notice).toMatch(/skip=100/);
   });
 
+  // #75 wiring: the shared search schema reads a URL-form `+` separator as a
+  // space, so the service and the echo carry the spaced string. #81: the caller's
+  // search in the empty-result notice is a code span on both surfaces.
+  describe('search wiring (#75, #81)', () => {
+    const EMPTY = {
+      meta: { total: 0, skip: 0, limit: 10, lastUpdated: '2026-10-26' },
+      results: [],
+    };
+    const resultText = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+      result.content.flatMap((block) => (block.type === 'text' ? [block.text] : [])).join('\n');
+    const noticeOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+      String((result.structuredContent as { notice?: string }).notice);
+
+    it('sends and echoes a URL-form +AND+ search with spaces', async () => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-10-26' },
+        results: [{ unique_aer_id_number: 'AER-75' }],
+      });
+
+      const result = await runToolContract(searchAnimalEventsTool, {
+        search: 'animal.species:"Dog"+AND+serious_ae:"true"',
+      });
+
+      const spaced = 'animal.species:"Dog" AND serious_ae:"true"';
+      expect(mockQuery.mock.calls[0]![1]).toMatchObject({ search: spaced });
+      expect((result.structuredContent as { effectiveQuery?: string }).effectiveQuery).toBe(spaced);
+      expect(resultText(result)).toContain(`Query: \`${spaced}\``);
+    });
+
+    it('adds the phrase-plus hint to a zero-total notice on both surfaces', async () => {
+      mockQuery.mockResolvedValue(EMPTY);
+
+      const result = await runToolContract(searchAnimalEventsTool, {
+        search: 'reaction.veddra_term_name:"INJECTION+SITE+PAIN"',
+      });
+
+      expect(noticeOf(result)).toContain('write them with spaces: `"INJECTION SITE PAIN"`.');
+      expect(resultText(result)).toContain(`> ${noticeOf(result)}`);
+    });
+
+    it('wraps the caller search in the empty-result notice as a code span on both surfaces', async () => {
+      mockQuery.mockResolvedValue(EMPTY);
+
+      const result = await runToolContract(searchAnimalEventsTool, {
+        search: 'animal.species:*og*zzz*',
+      });
+
+      expect(noticeOf(result)).toContain(
+        'No animal adverse event reports matched search: `animal.species:*og*zzz*`.',
+      );
+      expect(resultText(result)).toContain(`> ${noticeOf(result)}`);
+    });
+  });
+
   it('formats records with animal and reaction fields', () => {
     const content = searchAnimalEventsTool.format!({
       meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-01-01' },

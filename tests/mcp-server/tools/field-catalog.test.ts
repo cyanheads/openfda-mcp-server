@@ -148,6 +148,25 @@ describe('field catalog', () => {
       },
     );
 
+    // #72 — the coded drug/event notes read their labels from the shared code
+    // tables, so they carry FDA's field-reference wording, glosses included.
+    it.each<[string, string]>([
+      [
+        'patient.reaction.reactionoutcome',
+        '4 = recovered/resolved with sequelae (consequent health issues)',
+      ],
+      ['patient.drug.drugadministrationroute', '042 = intravenous (not otherwise specified)'],
+    ])('drug/event %s carries the field-reference label %j', (path, fragment) => {
+      expect(fieldOf('drug/event', path).note).toContain(fragment);
+    });
+
+    // #80 — openFDA serves one current record per SPL set; no set_id reaches an earlier revision.
+    it('drug/label set_id says openFDA holds only the current revision', () => {
+      const { note } = fieldOf('drug/label', 'set_id');
+      expect(note).toContain('current revision only');
+      expect(note).not.toContain('stable across revisions');
+    });
+
     it('types the covid19serology performed date as a date', () => {
       expect(fieldOf('device/covid19serology', 'date_performed').type).toBe('date');
     });

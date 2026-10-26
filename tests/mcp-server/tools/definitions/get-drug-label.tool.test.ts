@@ -12,6 +12,7 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 }));
 
 import { getDrugLabelTool } from '@/mcp-server/tools/definitions/get-drug-label.tool.js';
+import { phrasePlusHint } from '@/mcp-server/tools/schema-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import {
   FOOTNOTE_INLINE,
@@ -20,9 +21,23 @@ import {
   SUBSCRIPT_FORMULA,
   WARFARIN_DOSING,
 } from '../../../fixtures/spl-tables.js';
+import { codeLiteralsIn, renderCommonMark } from '../../../helpers/commonmark.js';
 import { textOf } from '../../../helpers/content.js';
 
 const mockQuery = vi.fn();
+
+type WireResult = Awaited<ReturnType<typeof runToolContract>>;
+
+const noticeOf = (result: WireResult) =>
+  String((result.structuredContent as { notice?: string }).notice);
+
+/** The one blockquote of the `content[]` trailer — the notice — as a CommonMark parser renders it. */
+function noticeQuote(result: WireResult): string {
+  const html = renderCommonMark(textOf(result.content, result.content.length - 1));
+  const quotes = html.match(/<blockquote>[\s\S]*?<\/blockquote>/g) ?? [];
+  expect(quotes).toHaveLength(1);
+  return quotes[0] as string;
+}
 
 /** The framework budget the outline and the selection disclosure both measure against. */
 const BUDGET = 24_000;
@@ -115,6 +130,13 @@ describe('openfda_get_drug_label', () => {
     expect(result.results).toHaveLength(1);
   });
 
+  // #80 — openFDA serves one current record per SPL set, so set_id reaches no earlier revision.
+  it('describes set_id as returning the current label, not a chosen revision', () => {
+    const description = getDrugLabelTool.input.shape.search.description ?? '';
+    expect(description).not.toMatch(/specific revision/i);
+    expect(description).toContain('current revision only');
+  });
+
   it('populates enrichment.totalResults and effectiveQuery', async () => {
     mockQuery.mockResolvedValue({
       meta: { total: 1, skip: 0, limit: 5, lastUpdated: '2026-01-01' },
@@ -177,6 +199,63 @@ describe('openfda_get_drug_label', () => {
     expect(result.kind).toBe('full');
     expect(result.results).toEqual([]);
     expect(getEnrichment(ctx).notice).toMatch(/no labels/i);
+  });
+
+  // #81 — caller text in a notice rides as a code literal on both surfaces.
+  it('quotes the search in the empty-result notice', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 0, skip: 0, limit: 5, lastUpdated: '' },
+      results: [],
+    });
+    const search = 'openfda.brand_name:*cillin*zzz*';
+
+    const result = await runToolContract(getDrugLabelTool, { search });
+    expect(noticeOf(result)).toContain(`No labels matched search: \`${search}\`. Try broader`);
+    const quote = noticeQuote(result);
+    expect(codeLiteralsIn(quote)).toEqual([search]);
+    expect(quote).not.toMatch(/<em>/);
+  });
+
+  // #75 — the shared search input.
+  it('sends URL-form + separators as spaces', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 1, skip: 0, limit: 5, lastUpdated: '' },
+      results: [{ openfda: { brand_name: ['Aspirin'] } }],
+    });
+    await runToolContract(getDrugLabelTool, {
+      search: 'openfda.brand_name:"aspirin"+AND+openfda.route:"ORAL"',
+    });
+    expect(mockQuery.mock.calls[0]?.[1]).toMatchObject({
+      search: 'openfda.brand_name:"aspirin" AND openfda.route:"ORAL"',
+    });
+  });
+
+  describe('phrase + hint (#75)', () => {
+    const search = 'openfda.generic_name:"SODIUM+CHLORIDE"';
+
+    it('appends the hint to a no-match notice on both surfaces', async () => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 0, skip: 0, limit: 5, lastUpdated: '' },
+        results: [],
+      });
+      const result = await runToolContract(getDrugLabelTool, { search });
+      const hint = phrasePlusHint(search, 0) as string;
+      expect(noticeOf(result).endsWith(` ${hint}`)).toBe(true);
+      expect(codeLiteralsIn(noticeQuote(result))).toEqual([
+        search,
+        '"SODIUM+CHLORIDE"',
+        '"SODIUM CHLORIDE"',
+      ]);
+    });
+
+    it('leaves it off a page past the end of a matched set', async () => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 3, skip: 5, limit: 5, lastUpdated: '' },
+        results: [],
+      });
+      const result = await runToolContract(getDrugLabelTool, { search, skip: 5 });
+      expect(noticeOf(result)).not.toContain('literal plus sign');
+    });
   });
 
   it('raises the declared pagination contract above the openFDA ceiling (#27)', async () => {
@@ -259,6 +338,32 @@ describe('openfda_get_drug_label', () => {
       const notice = String(getEnrichment(ctx).notice);
       expect(notice).toContain('no_such_section');
       expect(notice).not.toContain('Available on this page');
+    });
+
+    // #81 — the caller's section names ride in the notice as code literals.
+    it('quotes each unmatched section name on both surfaces', async () => {
+      const result = await runToolContract(getDrugLabelTool, {
+        search: 'openfda.brand_name:"warfarin"',
+        sections: ['_boxed_warning_', '*x*'],
+      });
+      expect(noticeOf(result)).toContain(
+        'Not present on this page: `_boxed_warning_`, `*x*`. No requested section is present',
+      );
+      const quote = noticeQuote(result);
+      expect(codeLiteralsIn(quote)).toEqual(['_boxed_warning_', '*x*']);
+      expect(quote).not.toMatch(/<(?:em|strong)>/);
+    });
+
+    it('fences a section name holding a line break inside the notice quote', async () => {
+      const name = 'no_such\nsection';
+      const result = await runToolContract(getDrugLabelTool, {
+        search: 'openfda.brand_name:"warfarin"',
+        sections: ['boxed_warning', name],
+      });
+      expect(noticeOf(result)).toContain(`Not present on this page: \n\`\`\`\n${name}\n\`\`\`\n.`);
+      const quote = noticeQuote(result);
+      expect(codeLiteralsIn(quote)).toEqual([name]);
+      expect(quote).toMatch(/^<blockquote>[\s\S]*<\/pre>[\s\S]*<\/blockquote>$/);
     });
 
     it('projects each record onto the requested sections it carries when presence varies', async () => {

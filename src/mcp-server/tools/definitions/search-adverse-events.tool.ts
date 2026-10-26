@@ -9,8 +9,15 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { CanvasIdSchema, type ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import {
+  ADMINISTRATION_ROUTES,
+  codeLabel,
+  PATIENT_AGE_GROUPS,
+  REACTION_OUTCOMES,
+} from '@/mcp-server/tools/drug-event-codes.js';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
+  codeLiteral,
   emptyPageBody,
   emptyResultMessage,
   formatRemainingFields,
@@ -25,9 +32,10 @@ import {
   fieldSelection,
   fieldsDescription,
   malformedSearchError,
-  nonBlankString,
-  SEARCH_BALANCE_NOTE,
+  phrasePlusHint,
+  SEARCH_SYNTAX_NOTE,
   SKIP_DESCRIPTION,
+  searchExpression,
   sortExpression,
   totalUnverifiedField,
 } from '@/mcp-server/tools/schema-utils.js';
@@ -116,10 +124,10 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
     category: z
       .enum(['drug', 'food', 'device'])
       .describe('Product category — each has different field schemas in the response'),
-    search: nonBlankString()
+    search: searchExpression()
       .optional()
       .describe(
-        `openFDA search query. Examples: patient.drug.medicinalproduct:"aspirin", patient.reaction.reactionmeddrapt:"nausea" AND serious:"1". Omit to browse recent. ${SEARCH_BALANCE_NOTE}`,
+        `openFDA search query. Examples: patient.drug.medicinalproduct:"aspirin", patient.reaction.reactionmeddrapt:"nausea" AND serious:"1". Omit to browse recent. ${SEARCH_SYNTAX_NOTE}`,
       ),
     sort: sortExpression()
       .optional()
@@ -227,7 +235,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       emptyResultMessage(
         skip,
         total,
-        `No adverse event reports matched${input.search ? ` search: ${input.search}` : ''} in ${endpoint}. Try broadening filters or checking field names (use openfda.brand_name for product searches). ${formatFieldHint(endpoint)}`,
+        `No adverse event reports matched${input.search ? ` search: ${codeLiteral(input.search)}` : ''} in ${endpoint}. Try broadening filters or checking field names (use openfda.brand_name for product searches). ${formatFieldHint(endpoint)}`,
         totalUnverified,
       );
 
@@ -259,6 +267,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       ctx.enrich.notice(
         [
           spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
+          phrasePlusHint(input.search, spill.total),
           projectionNotice(staged),
           pageBudgetNotice(staged),
           stagingNotice(spill),
@@ -296,6 +305,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       page.results.length === 0
         ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
         : undefined,
+      phrasePlusHint(input.search, response.meta.total),
       projectionNotice(page),
       pageBudgetNotice(page),
     ].filter(Boolean);
@@ -362,7 +372,12 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
           );
         if (reactions) lines.push(singleLine(`**Reactions:** ${reactions}`));
         for (const rx of (patient.reaction ?? []) as Record<string, unknown>[]) {
-          lines.push(...formatRemainingFields(rx, new Set(['reactionmeddrapt'])));
+          lines.push(
+            ...formatRemainingFields(
+              { ...rx, reactionoutcome: codeLabel(REACTION_OUTCOMES, rx.reactionoutcome) },
+              new Set(['reactionmeddrapt']),
+            ),
+          );
         }
 
         // Drugs — expanded with indication and route
@@ -381,7 +396,9 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
             const detail = [
               char,
               d.drugindication ? `for ${d.drugindication}` : null,
-              d.drugadministrationroute ? `via ${d.drugadministrationroute}` : null,
+              d.drugadministrationroute
+                ? `via ${codeLabel(ADMINISTRATION_ROUTES, d.drugadministrationroute)}`
+                : null,
             ]
               .filter(Boolean)
               .join(', ');
@@ -397,8 +414,13 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
           }
         }
 
-        // Remaining patient fields (age, weight, death, sex code, etc.)
-        lines.push(...formatRemainingFields(patient, new Set(['reaction', 'drug'])));
+        // Remaining patient fields (age, age group, weight, death, sex code, etc.)
+        lines.push(
+          ...formatRemainingFields(
+            { ...patient, patientagegroup: codeLabel(PATIENT_AGE_GROUPS, patient.patientagegroup) },
+            new Set(['reaction', 'drug']),
+          ),
+        );
 
         // Remaining top-level fields (companynumb, sender, primarysource, the
         // serious code, FDA workflow timestamps, ...).
