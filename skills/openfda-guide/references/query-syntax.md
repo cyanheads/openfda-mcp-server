@@ -6,7 +6,7 @@ Each row below was checked against `api.fda.gov`. Field paths for a given endpoi
 
 | Form | Behavior |
 |:--|:--|
-| `a:"x" AND b:"y"` | Both clauses must match. Separate terms with spaces; a `+` reaches openFDA as a literal plus and the search silently matches nothing. |
+| `a:"x" AND b:"y"` | Both clauses must match. Separate terms with spaces. A URL-style `+` between clauses (`+AND+`, `"x"+b:"y"`, `[a+TO+b]`) also reads as a space; a `+` inside a quoted phrase stays a literal plus. |
 | `and` / `or` in lowercase | Read as search words, not operators. The search widens, often to most of the index. |
 | `a:"x" OR b:"y"` | Either clause. Use it to union a drug's name variants (`medicinalproduct:"atorvastatin" OR medicinalproduct:"lipitor"`). |
 | `AND NOT _exists_:serious` | Excludes records that carry the field. |
@@ -30,5 +30,5 @@ When a date-scoped search returns zero, read the field's note in `openfda_descri
 ## Ceilings
 
 - `skip` stops at 25,000. To get past it, narrow the search, for example by splitting the date range.
-- `openfda_count_values` returns at most 1,000 terms. At exactly 1,000 it cannot tell whether more exist, so narrow the search and count again.
+- `openfda_count_values` returns at most 1,000 terms. On a non-date field, at exactly 1,000 it cannot tell whether more exist, so narrow the search and count again. A date field returns one bucket per date, ranked by count, and its truncation is exact.
 - A staged drain stops at 25,000 rows or about 16 MB, whichever comes first. `staged_rows` reports how many rows it holds.

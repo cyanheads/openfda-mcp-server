@@ -193,9 +193,10 @@ src/
         index.ts                        # Barrel
   mcp-server/
     tools/
+      drug-event-codes.ts               # Code tables for coded drug/event fields (route, outcome, age group), shared by format() and the field catalog
       field-catalog.ts                  # Searchable field paths per endpoint + live-verified count form per field
-      format-utils.ts                   # Shared format() helpers
-      schema-utils.ts                   # Shared input schemas + handler guards (skip ceiling, search delimiters)
+      format-utils.ts                   # Shared format() helpers + codeLiteral (caller text in notices and format() prose)
+      schema-utils.ts                   # Shared input schemas + handler guards (skip ceiling, search delimiters, `+` separator normalization)
       spl-table.ts                      # SPL *_table markup → GFM table, for openfda_get_drug_label content[]
     tools/definitions/
       count-values.tool.ts              # openfda_count_values

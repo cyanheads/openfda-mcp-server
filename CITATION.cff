@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: openfda-mcp-server
-abstract: "Model Context Protocol (MCP) server for the openFDA API, providing adverse event reporting search across drugs, food, and devices; enforcement and recall records; drug labeling and approvals (NDA/ANDA); device clearances (510(k) and PMA); NDC directory lookups; and field aggregation across all 19 openFDA endpoints."
+abstract: "Model Context Protocol (MCP) server for the openFDA API, providing adverse event reporting search across drugs, food, and devices; enforcement and recall records; drug labeling and approvals (NDA/ANDA); device clearances (510(k) and PMA); NDC directory lookups; and field aggregation across all 20 openFDA endpoints."
 type: software
 authors:
   - family-names: Hand

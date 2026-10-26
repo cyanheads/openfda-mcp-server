@@ -29,7 +29,7 @@ NDCs match only in their hyphenated form: `product_ndc:"69339364"` matches nothi
 ## Gates
 
 **Query syntax**
-- Separate terms with spaces. openFDA's documentation writes `+` for a space, but these tools pass `+` through as a literal plus: `…"aspirin"+AND+serious:"1"` returns zero results and no error.
+- Separate terms with spaces. openFDA's documentation writes `+` for a space; the tools read a `+` that way where it separates clauses (`+AND+`, `+TO+`, `"a"+field:`), but inside a quoted phrase a `+` stays a literal plus: `reactionmeddrapt.exact:"INJECTION+SITE+PAIN"` matches nothing, `"INJECTION SITE PAIN"` matches 299,526.
 - Write `AND`, `OR`, `NOT` in uppercase. With lowercase `and`, the same aspirin-and-serious search matches 13.8M reports instead of 435K.
 - Quote every identifier value. Unquoted hyphens parse as operators, so `recall_number:D-321-2016` matches about 18,000 records (nearly all of drug enforcement) where the quoted form matches one.
 - Before writing a date range, check the field's note in `openfda_describe_fields`. Most dates take `[20240101 TO 20241231]`, but shortage dates take `[2026-01-01 TO 2026-12-31]`, and the YYYYMMDD form matches nothing there.
@@ -46,7 +46,8 @@ A zero or low count is not evidence until each of these has been ruled out:
 - openFDA cannot tie two clauses to the same array element. `patient.drug.medicinalproduct:"aspirin" AND patient.drug.drugcharacterization:"1"` matches any report that names aspirin and has any suspect drug. In a 25-report sample, aspirin was concomitant in 24. To count only reports where the drug is the suspect, read `drugcharacterization` on each drug entry of the returned records, or on a staged slice in SQL.
 - `openfda_count_values` over an array field tallies every element of every matching report. Counting `reactionmeddrapt.exact` on reports that match `LIVER INJURY` also returns their co-reported FATIGUE, PAIN, and NAUSEA. Counting drug names under a drug search likewise lists the concomitant drugs.
 - Report counts are not incidence. To compare two drugs, divide each drug's reaction count by that drug's total report count (`meta.total` from a search with `limit: 1`). Use the same name definition in both, and present the result as reporting proportions, not risk.
-- `openfda_drug_profile` keys `adverse_events` on the typed name in `medicinalproduct`, and keys recalls, approval, and shortage on one canonical generic name it resolves from a label (`meta.fanOutKey`). Its recall list therefore inherits the gap in item 1, and can be narrower still when that name is a single product's (`METFORMIN ER 500 MG`): an empty or short `recalls` there does not mean the drug has never been recalled. Use `openfda_search_recalls` for the complete list.
+- `openfda_drug_profile` keys `adverse_events` on the typed name in `medicinalproduct`, and keys recalls, approval, and shortage on `meta.fanOutKey`: the typed name when it is an ingredient of the resolved generic, otherwise that generic (brand input such as `Lipitor` keys on `ATORVASTATIN CALCIUM`). Its recall search covers `openfda.generic_name` and `product_description`, so item 1's gap is closed for that one phrase, and `recalls_total` counts every match beside the newest 5 shown. A report that names the drug another way (a brand only, a misspelling) is still missed: use `openfda_search_recalls` for the complete list.
+- Counting a date field (`receivedate`) returns the busiest dates first, not a time series; scope `search` to a date range of at most `limit` dates to get every bucket.
 
 ## Workflows
 

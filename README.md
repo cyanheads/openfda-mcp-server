@@ -55,7 +55,8 @@ FDA data on drugs, food, devices, and recalls from the openFDA public API. Searc
 
 ### `openfda_drug_profile` <sub>tool</sub>
 
-- One `drug` name, brand or generic, resolved once to canonical identity (generic name, NDC, RxCUI, SPL set ID) that keys every sub-query; `meta.resolvedVia` (`label`, `ndc`, `none`) names the source, and a single-ingredient product is preferred over combinations
+- One `drug` name, brand or generic, resolved once to an identity (generic name, NDC, RxCUI, SPL set ID); recalls, approval, and shortage key on `meta.fanOutKey` — the typed name when it is an ingredient of the resolved generic, else that generic; `meta.resolvedVia` (`label`, `ndc`, `none`) names the source, and a single-ingredient product is preferred over combinations
+- Recalls and approval also search records openFDA never harmonized (`product_description`, `products.active_ingredients.name`); `recalls_total` gives the match count beside the newest 5 recalls
 - Sections `label`, `adverse_events`, `recalls`, `approval`, and `shortage` are best-effort and come back `null` (or an empty `recalls`) on a miss; `degraded[]` names each section whose sub-query failed upstream, so a listed section is unknown rather than absent
 - Auth, configuration, and cancellation failures fail the whole call instead of degrading a section
 
@@ -65,6 +66,7 @@ FDA data on drugs, food, devices, and recalls from the openFDA public API. Searc
 
 - `category` (`drug`, `food`, `device`) selects the endpoint and its record schema; up to 1000 records per page
 - Sortable date fields differ by category: `receivedate` (drug), `date_created` (food), `date_received` (device); another category's field fails as `query_error`
+- Text output decodes drug administration route, reaction outcome, and patient age group codes beside the raw value (`via oral (048)`, `fatal (5)`, `elderly (6)`); structured output keeps the codes
 
 ---
 
@@ -99,8 +101,8 @@ FDA data on drugs, food, devices, and recalls from the openFDA public API. Searc
 
 ### `openfda_count_values` <sub>tool</sub>
 
-- `endpoint` (any of the 20 openFDA endpoints), a `count` field expression, and an optional `search`; returns up to 1000 top terms (default 100), ranked by count
-- `truncated` flags more distinct terms past `limit`, except at the 1000-term maximum, where a notice says completeness can't be known; an expression openFDA can't aggregate fails as `not_aggregatable` (take the `countAs` form from `openfda_describe_fields`)
+- `endpoint` (any of the 20 openFDA endpoints), a `count` field expression, and an optional `search`; returns up to 1000 top terms (default 100), ranked by count; a date field returns one term per distinct `YYYYMMDD` date, ranked the same way
+- `truncated` flags more distinct terms past `limit`, except at the 1000-term maximum, where a notice says completeness can't be known (a date count is exact at any limit, since openFDA sends every date); an expression openFDA can't aggregate fails as `not_aggregatable` (take the `countAs` form from `openfda_describe_fields`)
 - Always runs against the live API, even with the bulk mirror enabled
 
 ---
@@ -168,7 +170,7 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 openFDA-specific:
 
 - One client for all 20 openFDA endpoints, with retry on 429 and 5xx. No API key is needed (1K requests/day); a free `OPENFDA_API_KEY` raises that to 120K/day
-- Queries are `field:value` over dotted paths joined by AND/OR; `openfda_describe_fields` lists the paths, and a malformed query fails as `malformed_search` before any request
+- Queries are `field:value` over dotted paths joined by AND/OR (a URL-style `+` between clauses reads as a space); `openfda_describe_fields` lists the paths, and a malformed query fails as `malformed_search` before any request
 - Paging: `limit` up to 1000 and `skip` up to openFDA's 25,000-record ceiling (`pagination_limit_reached` past it); each page is held to a 24,000-byte budget
 - `fields` on any `openfda_search_*` tool or `openfda_lookup_ndc` trims each record to the dotted paths you name, so large records fit inline
 - DataCanvas staging (on by default; `CANVAS_PROVIDER_TYPE=none` turns it off) with `stage: true` or a `canvas_id`, and an optional local bulk mirror (`OPENFDA_MIRROR_ENABLED=true`) that answers exact-key lookups without spending API budget
