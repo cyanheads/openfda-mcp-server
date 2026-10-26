@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.9.1](changelog/0.9.x/0.9.1.md) — 2026-10-26
+
+Search and drug_profile accuracy fixes: top-level OR on the enforcement endpoints returns the full union, URL-style + separators read as spaces, date-field counts return real dates, and drug_profile keys recalls and approval on the typed ingredient and marks failed sections unknown.
+
 ## [0.9.0](changelog/0.9.x/0.9.0.md) — 2026-10-25
 
 Publishes the openfda-guide agent skill, served over MCP as skill://openfda-guide/SKILL.md, and moves to mcp-ts-core 0.13.18: the HTTP per-request memory leak of 0.13.16 is fixed (0.13.17), query echoes in content[] render as code spans (0.13.18), and DataCanvas runs on DuckDB 2.
