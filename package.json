@@ -20,6 +20,7 @@
     "server.json",
     "manifest.json",
     "changelog/",
+    "skills/",
     "scripts/openfda-mirror.ts"
   ],
   "scripts": {
@@ -31,6 +32,7 @@
     "format": "biome check --write",
     "format:unsafe": "biome check --write --unsafe",
     "test": "bunx vitest run",
+    "test:coverage": "bunx vitest run --coverage",
     "audit:fix": "bun audit fix",
     "audit:refresh": "rm -f bun.lock && bun install && bun audit",
     "list-skills": "bun run scripts/list-skills.ts",
@@ -45,6 +47,7 @@
     "changelog:check": "bun run scripts/build-changelog.ts --check",
     "release:github": "bun run scripts/release-github.ts",
     "publish-mcp": "mcp-publisher login github -token \"$(security find-generic-password -a \"$USER\" -s mcp-publisher-github-pat -w)\" && mcp-publisher publish",
+    "start": "bun ./dist/index.js",
     "start:stdio": "MCP_TRANSPORT_TYPE=stdio bun ./dist/index.js",
     "start:http": "MCP_TRANSPORT_TYPE=http bun ./dist/index.js"
   },
@@ -90,22 +93,22 @@
     "access": "public"
   },
   "dependencies": {
-    "@cyanheads/mcp-ts-core": "^0.13.16",
-    "@duckdb/node-api": "^1.5.6-r.2",
+    "@cyanheads/mcp-ts-core": "^0.13.18",
+    "@duckdb/node-api": "^2.0.0-r.1",
     "pino-pretty": "^13.2.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.6.2",
+    "@biomejs/biome": "^2.6.3",
     "@opentelemetry/api": "^1.10.0",
     "@socketsecurity/bun-security-scanner": "^1.1.3",
     "@types/node": "^26.6.5",
     "@vitest/coverage-istanbul": "^5.0.5",
     "better-sqlite3": "^13.0.3",
     "depcheck": "^1.4.7",
-    "ignore": "^7.0.13",
+    "ignore": "^7.0.14",
     "node-cron": "^4.6.0",
-    "tsc-alias": "^1.9.8",
+    "tsc-alias": "^1.9.9",
     "typescript": "^7.0.2",
     "vitest": "^5.0.5"
   },
