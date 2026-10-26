@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.9.0](changelog/0.9.x/0.9.0.md) — 2026-10-25
+
+Publishes the openfda-guide agent skill, served over MCP as skill://openfda-guide/SKILL.md, and moves to mcp-ts-core 0.13.18: the HTTP per-request memory leak of 0.13.16 is fixed (0.13.17), query echoes in content[] render as code spans (0.13.18), and DataCanvas runs on DuckDB 2.
+
 ## [0.8.2](changelog/0.8.x/0.8.2.md) — 2026-10-25
 
 DataCanvas staging and SQL are enabled by default for npm and Docker, with framework maintenance.
