@@ -13,6 +13,7 @@ import {
   projectRecords,
   recordProjection,
 } from '@/services/openfda/record-projection.js';
+import { codeLiteralsIn, renderCommonMark } from '../../helpers/commonmark.js';
 import { linearTiming } from '../../helpers/cpu-timing.js';
 
 const ID = ['safetyreportid'] as const;
@@ -181,9 +182,9 @@ describe('projectionNotice / projectionLine', () => {
       results: [REPORT],
     });
     expect(notice).toContain(
-      'Records projected to the requested fields (serious, patient.drug.nope, zzz)',
+      'Records projected to the requested fields (`serious`, `patient.drug.nope`, `zzz`)',
     );
-    expect(notice).toContain('No record in this page carries patient.drug.nope, zzz');
+    expect(notice).toContain('No record in this page carries `patient.drug.nope`, `zzz`');
     // describe_fields lists the searchable subset, not every key a record carries.
     expect(notice).toContain('openfda_describe_fields lists the searchable ones');
     expect(notice).not.toContain("lists the endpoint's paths");
@@ -196,6 +197,22 @@ describe('projectionNotice / projectionLine', () => {
   it('renders the same sentence as a quoted content[] line', () => {
     const result = { projected_fields: ['serious'], results: [REPORT] };
     expect(projectionLine(result)).toBe(`> ${projectionNotice(result)}`);
+  });
+
+  // #81 — a caller path like `_exists_` would otherwise render as emphasis.
+  it('reads every caller path back exactly from the rendered line', () => {
+    const line = projectionLine({
+      projected_fields: ['_exists_', 'patient__drug_'],
+      results: [REPORT],
+    });
+    const html = renderCommonMark(line ?? '');
+    expect(html).not.toMatch(/<(?:em|strong)>/);
+    expect(codeLiteralsIn(html)).toEqual([
+      '_exists_',
+      'patient__drug_',
+      '_exists_',
+      'patient__drug_',
+    ]);
   });
 });
 

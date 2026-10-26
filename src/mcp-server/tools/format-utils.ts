@@ -3,9 +3,34 @@
  * @module mcp-server/tools/format-utils
  */
 
+import { markdown } from '@cyanheads/mcp-ts-core/utils';
 import { AGGREGATE_ROUTE } from '@/services/openfda/canvas-spill.js';
 import { type PageBudgetFields, pageBudgetLine } from '@/services/openfda/page-budget.js';
 import { type ProjectionFields, projectionLine } from '@/services/openfda/record-projection.js';
+
+/**
+ * Caller text interpolated into server-authored prose — an enrichment notice —
+ * as a code literal a CommonMark parse reads back exactly, with nothing escaped:
+ * a one-line value as an inline code span, a value holding a line break as a
+ * fenced block on lines of its own. The framework renders a `notice` into the
+ * `content[]` trailer as live Markdown and leaves embedded untrusted text to the
+ * notice's author, so a wildcard query's `*` would otherwise render as emphasis.
+ * A backslash escape is no fix: in a Lucene query `\*` means a literal asterisk,
+ * so a query copied out of an escaped notice would mean something else.
+ *
+ * The span and fence come from the framework's `MarkdownBuilder` — sized one
+ * backtick past the longest run in the value, padded where CommonMark would
+ * strip or merge a character — the same rule the trailer applies to `echo`
+ * values. A span reads a line break back as a space, hence the fence; the
+ * leading and trailing line feeds put its fences at the start of a line, where
+ * a fence must stand to open and close. CR and CRLF become LF, as a fence reads
+ * them back anyway. The notice blockquote prefixes every line, fence lines
+ * included, so the block stays inside the quote.
+ */
+export function codeLiteral(value: string): string {
+  if (!/[\r\n]/.test(value)) return markdown().inlineCode(value).build();
+  return `\n${markdown().codeBlock(value.replace(/\r\n?/g, '\n')).build()}\n`;
+}
 
 /** Truncate a string, appending ellipsis when trimmed. */
 export function truncate(value: string | undefined | null, max: number): string {

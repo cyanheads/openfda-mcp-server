@@ -3,8 +3,11 @@
  * @module tests/mcp-server/tools/format-utils
  */
 
+import { tool, z } from '@cyanheads/mcp-ts-core';
+import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { describe, expect, it } from 'vitest';
 import {
+  codeLiteral,
   emptyPageBody,
   emptyResultMessage,
   escapeTableCell,
@@ -20,7 +23,88 @@ import {
   singleLine,
   truncate,
 } from '@/mcp-server/tools/format-utils.js';
+import { codeLiteralsIn, renderCommonMark } from '../../helpers/commonmark.js';
 import { linearTiming } from '../../helpers/cpu-timing.js';
+
+/** One-line values: the code span each wraps to, delimiters and padding included. */
+const SPAN_CASES: [string, string][] = [
+  ['openfda.brand_name:*cillin*zzz*', '`openfda.brand_name:*cillin*zzz*`'],
+  ['report_date:[20240101 TO 20240131]', '`report_date:[20240101 TO 20240131]`'],
+  ['_exists_:openfda', '`_exists_:openfda`'],
+  ['a`b', '``a`b``'],
+  ['`x`', '`` `x` ``'],
+  ['a``b`c', '```a``b`c```'],
+  ['``', '``` `` ```'],
+  [' lead and trail ', '`  lead and trail  `'],
+  ['   ', '`   `'],
+  ['trail ', '`trail `'],
+  ['<b>x</b> &amp; AT&T', '`<b>x</b> &amp; AT&T`'],
+  ['a\\*b', '`a\\*b`'],
+];
+
+/** Values holding a line break: the fenced block each wraps to, on lines of its own. */
+const FENCE_CASES: [string, string][] = [
+  ['a:"x"\nAND b:"y"', '\n```\na:"x"\nAND b:"y"\n```\n'],
+  ['x\r\ny\rz', '\n```\nx\ny\nz\n```\n'],
+  ['a\n```\nb', '\n````\na\n```\nb\n````\n'],
+  ['first\n\nthird', '\n```\nfirst\n\nthird\n```\n'],
+  [' lead\n  > quoted *x*\ntrail ', '\n```\n lead\n  > quoted *x*\ntrail \n```\n'],
+  ['ends on a break\n', '\n```\nends on a break\n\n```\n'],
+];
+
+/**
+ * A tool whose notice interpolates its input through {@link codeLiteral}, run
+ * through the framework's real enrichment trailer, so the read-back covers the
+ * blockquote the trailer wraps every notice in.
+ */
+const noticeTool = tool('notice_probe', {
+  description: 'Interpolates the caller value into a notice.',
+  input: z.object({ value: z.string().describe('Value to interpolate.') }),
+  output: z.object({}),
+  enrichment: { notice: z.string().optional().describe('Notice.') },
+  handler(input, ctx) {
+    ctx.enrich.notice(`Nothing matched search: ${codeLiteral(input.value)}. Broaden the search.`);
+    return {};
+  },
+});
+
+describe('codeLiteral', () => {
+  it.each(SPAN_CASES)('wraps %j in a sized code span', (value, expected) => {
+    expect(codeLiteral(value)).toBe(expected);
+  });
+
+  it.each(FENCE_CASES)('wraps %j in a fenced block on lines of its own', (value, expected) => {
+    expect(codeLiteral(value)).toBe(expected);
+  });
+
+  it.each([...SPAN_CASES, ...FENCE_CASES])(
+    'reads %j back exactly from the content[] notice blockquote',
+    async (value) => {
+      const result = await runToolContract(noticeTool, { value });
+      const notice = (result.structuredContent as { notice: string }).notice;
+      expect(notice).toBe(`Nothing matched search: ${codeLiteral(value)}. Broaden the search.`);
+
+      const trailer = result.content.at(-1);
+      if (trailer?.type !== 'text') throw new Error('Expected a text trailer');
+      const html = renderCommonMark(trailer.text);
+      expect(codeLiteralsIn(html)).toEqual([value.replace(/\r\n?/g, '\n')]);
+      // One quote holds the whole notice: the fence neither breaks out of it nor
+      // leaves the sentence after it outside.
+      expect(html.match(/<blockquote>/g)).toHaveLength(1);
+      expect(html.trim()).toMatch(
+        /^<blockquote>[\s\S]*Broaden the search\.<\/p>\s*<\/blockquote>$/,
+      );
+      expect(html).not.toMatch(/<(?:em|strong|del|a)\b/);
+    },
+  );
+
+  it('keeps the copied value byte-identical in the raw content[] text', async () => {
+    const value = 'report_date:[20240101 TO 20240131] AND _exists_:openfda';
+    const result = await runToolContract(noticeTool, { value });
+    const trailer = result.content.at(-1);
+    expect(trailer?.type === 'text' && trailer.text).toContain(`\`${value}\``);
+  });
+});
 
 describe('truncate', () => {
   it('returns value unchanged when within limit', () => {
@@ -308,9 +392,9 @@ describe('searchLead', () => {
     });
     expect(lead).toHaveLength(3);
     expect(lead[1]).toMatch(
-      /^> Records projected to the requested fields \(code_info, missing\.leaf\)/,
+      /^> Records projected to the requested fields \(`code_info`, `missing\.leaf`\)/,
     );
-    expect(lead[1]).toContain('No record in this page carries missing.leaf');
+    expect(lead[1]).toContain('No record in this page carries `missing.leaf`');
     expect(lead[2]).toMatch(/^> Inline page exceeds the 24000-byte budget/);
     expect(lead[2]).toContain('code_info (30002 bytes)');
   });
@@ -653,5 +737,31 @@ describe('cell and line scanner timing', { timeout: 60_000 }, () => {
     const { t5k, t320k } = linearTiming(lineContent, build(5_000), build(320_000));
     expect(t320k / t5k).toBeLessThan(256);
     expect(t320k).toBeLessThan(500_000);
+  });
+});
+
+/**
+ * {@link codeLiteral} scans caller text for backtick runs, line breaks, and edge
+ * spaces. Each shape doubles from 5,000 to 320,000 characters, the bound checked
+ * at every size before the next, on this thread's CPU time.
+ */
+describe('codeLiteral timing', { timeout: 120_000 }, () => {
+  const shapes: [string, (n: number) => string][] = [
+    ['one backtick run', (n) => '`'.repeat(n)],
+    ['alternating backtick runs', (n) => '`a'.repeat(n / 2)],
+    ['backtick runs of rising length', (n) => '`a``a```a````a'.repeat(n / 14 + 1).slice(0, n)],
+    ['a long digit run', (n) => '1'.repeat(n)],
+    ['spaces at both ends', (n) => ` ${'a'.repeat(n - 2)} `],
+    ['one long line ending in a break', (n) => `${'§1 x'.repeat(n / 4)}\ny`],
+    ['breaks throughout', (n) => '  \r\n'.repeat(n / 4)],
+  ];
+
+  it.each(shapes)('stays linear on %s', (_name, build) => {
+    let timing = { t5k: 0, t320k: 0 };
+    for (let size = 10_000; size <= 320_000; size *= 2) {
+      timing = linearTiming(codeLiteral, build(5_000), build(size));
+      expect(timing.t320k).toBeLessThan(500_000);
+    }
+    expect(timing.t320k / timing.t5k).toBeLessThan(256);
   });
 });

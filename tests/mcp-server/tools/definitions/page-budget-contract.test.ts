@@ -463,8 +463,8 @@ describe.each(SEARCH_TOOLS.map(([tool, input]) => [tool.name, tool, input] as co
       expect(result.isError).toBeFalsy();
       expect(structured.results).toHaveLength(2);
       for (const surface of [wireText(result), String(structured.notice)]) {
-        expect(surface).toContain('No record in this page carries patient.drug.no_such_leaf');
-        expect(surface).not.toContain('carries receivedate');
+        expect(surface).toContain('No record in this page carries `patient.drug.no_such_leaf`');
+        expect(surface).not.toContain('carries `receivedate`');
       }
     });
 

@@ -14,6 +14,7 @@ import {
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { dataframeQueryTool } from '@/mcp-server/tools/definitions/dataframe-query.tool.js';
+import { codeLiteralsIn, renderCommonMark } from '../../../helpers/commonmark.js';
 
 vi.mock('@/services/canvas/canvas-accessor.js', () => {
   let _canvas: unknown;
@@ -148,6 +149,19 @@ describe('openfda_dataframe_query', () => {
       '| --- | --- | --- | --- | --- |',
       '| F-0061-2017 | \\<E> | a\\|b | x<br>y | {"k":"x\\|y"} |',
     ]);
+  });
+
+  // #81 — the caller's canvas_id rides as a code literal; its alphabet admits `_`.
+  it('renders the caller canvas_id as a code literal in content[]', async () => {
+    const canvasId = '_abcdefgh_';
+    const result = await runToolContract(dataframeQueryTool, {
+      canvas_id: canvasId,
+      query: 'SELECT classification, n FROM spilled_x',
+    });
+    expect((result.structuredContent as unknown as { canvas_id: string }).canvas_id).toBe(canvasId);
+    const html = renderCommonMark((result.content[0] as { text: string }).text);
+    expect(codeLiteralsIn(html)).toEqual([canvasId]);
+    expect(html).not.toMatch(/<em>/);
   });
 });
 

@@ -19,6 +19,7 @@ import { dataframeDescribeTool } from '@/mcp-server/tools/definitions/dataframe-
 import { dataframeDropTool } from '@/mcp-server/tools/definitions/dataframe-drop.tool.js';
 import { dataframeQueryTool } from '@/mcp-server/tools/definitions/dataframe-query.tool.js';
 import { setCanvas } from '@/services/canvas/canvas-accessor.js';
+import { codeLiteralsIn, renderCommonMark } from '../../../helpers/commonmark.js';
 import { textOf } from '../../../helpers/content.js';
 
 const TENANT = 'dataframe-drop';
@@ -200,6 +201,34 @@ describe('openfda_dataframe_drop', () => {
       reason: 'canvas_disabled',
       recovery: { hint: expect.stringContaining('CANVAS_PROVIDER_TYPE=duckdb') },
     });
+  });
+
+  /*
+   * #81 — the caller's table name and canvas_id ride as code literals: both
+   * alphabets admit `_`, which would otherwise render as emphasis. A stub canvas
+   * stands in, since a real one mints its own id.
+   */
+  it('renders the caller table name and canvas_id as code literals in content[]', async () => {
+    const stubId = '_abcdefgh_';
+    const table = '_x_';
+    setCanvas({
+      acquire: async () => ({ drop: async () => true, describe: async () => [] }),
+    } as never);
+    const result = await runToolContract(
+      dataframeDropTool,
+      { canvas_id: stubId, table },
+      contractContext,
+    );
+    setCanvas(canvas);
+
+    expect(result.structuredContent as unknown as DropStructured).toEqual({
+      canvas_id: stubId,
+      table,
+      remaining_tables: [],
+    });
+    const html = renderCommonMark(textOf(result.content as never));
+    expect(codeLiteralsIn(html)).toEqual([table, stubId]);
+    expect(html).not.toMatch(/<(?:em|strong)>/);
   });
 
   it.each([

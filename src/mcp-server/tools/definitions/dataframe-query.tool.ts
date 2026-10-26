@@ -12,7 +12,7 @@ import {
   SQL_GATE_REASONS,
 } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
-import { escapeTableCell, formatCell } from '@/mcp-server/tools/format-utils.js';
+import { codeLiteral, escapeTableCell, formatCell } from '@/mcp-server/tools/format-utils.js';
 import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 
@@ -200,7 +200,9 @@ export const dataframeQueryTool = tool('openfda_dataframe_query', {
   },
 
   format: (result) => {
-    const lines: string[] = [`**${result.row_count} rows** | Canvas: ${result.canvas_id}\n`];
+    const lines: string[] = [
+      `**${result.row_count} rows** | Canvas: ${codeLiteral(result.canvas_id)}\n`,
+    ];
     if (result.truncated) {
       lines.push(
         `> Truncated: capped at the canvas row limit — ${result.rows.length} rows returned and more matched. ` +

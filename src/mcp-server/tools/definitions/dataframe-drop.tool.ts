@@ -9,6 +9,7 @@ import { disabledTool, tool, z } from '@cyanheads/mcp-ts-core';
 import { CANVAS_IDENTIFIER_REGEX, CanvasIdSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getServerConfig } from '@/config/server-config.js';
+import { codeLiteral } from '@/mcp-server/tools/format-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 
 /** The tool definition itself, before the deployment flag decides whether it is callable. */
@@ -118,7 +119,7 @@ const dataframeDropDefinition = tool('openfda_dataframe_drop', {
     return [
       {
         type: 'text',
-        text: `Dropped table **${result.table}** from canvas ${result.canvas_id}.\n${remaining}`,
+        text: `Dropped table ${codeLiteral(result.table)} from canvas ${codeLiteral(result.canvas_id)}.\n${remaining}`,
       },
     ];
   },

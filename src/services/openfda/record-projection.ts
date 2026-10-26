@@ -13,6 +13,7 @@
  */
 
 import { z } from '@cyanheads/mcp-ts-core';
+import { markdown } from '@cyanheads/mcp-ts-core/utils';
 
 /** What one call projects its records to. */
 export interface RecordProjection {
@@ -155,16 +156,27 @@ export function projectionFields(projection: RecordProjection | undefined): Proj
  * a path missing from one page is not proof it is misspelled. One sentence source
  * for both surfaces, like the page-budget notice — {@link projectionLine} renders
  * it into `content[]` and the handler puts it on `enrichment.notice`.
+ *
+ * Each path is the caller's own text, so it rides as a code span: `_exists_`
+ * would otherwise render as emphasis. The span comes from the framework's
+ * `MarkdownBuilder` directly rather than through `codeLiteral` in
+ * `format-utils.ts`, which imports this module; the `fields` pattern admits no
+ * line break, so the span is all of `codeLiteral`'s rule a path can reach.
  */
 export function projectionNotice(
   result: ProjectionFields & { results: readonly unknown[] },
 ): string | undefined {
   const paths = result.projected_fields;
   if (!paths) return;
-  const projected = `Records projected to the requested fields (${paths.join(', ')}) plus each record's identity key; every other field is left out on request.`;
+  const projected = `Records projected to the requested fields (${codeSpans(paths)}) plus each record's identity key; every other field is left out on request.`;
   const absent = result.results.length > 0 ? pathsNotCarried(result.results, paths) : [];
   if (absent.length === 0) return projected;
-  return `${projected} No record in this page carries ${absent.join(', ')} — check it against the keys records carry (openfda_describe_fields lists the searchable ones); records are sparse, so a path can be absent from one page and present on another.`;
+  return `${projected} No record in this page carries ${codeSpans(absent)} — check it against the keys records carry (openfda_describe_fields lists the searchable ones); records are sparse, so a path can be absent from one page and present on another.`;
+}
+
+/** Each path as an inline code span, comma-separated. */
+function codeSpans(paths: readonly string[]): string {
+  return paths.map((path) => markdown().inlineCode(path).build()).join(', ');
 }
 
 /**

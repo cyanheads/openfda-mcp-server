@@ -7,6 +7,8 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { dataframeDescribeTool } from '@/mcp-server/tools/definitions/dataframe-describe.tool.js';
+import { codeLiteralsIn, renderCommonMark } from '../../../helpers/commonmark.js';
+import { textOf } from '../../../helpers/content.js';
 
 vi.mock('@/services/canvas/canvas-accessor.js', () => {
   let _canvas: unknown;
@@ -85,5 +87,15 @@ describe('openfda_dataframe_describe', () => {
     expect(text).toContain('spilled_x');
     expect(text).toContain('recall_number');
     expect(text).toContain('VARCHAR');
+  });
+
+  // #81 — the caller's canvas_id rides as a code literal; its alphabet admits `_`.
+  it('renders the caller canvas_id as a code literal in content[]', async () => {
+    const canvasId = '_abcdefgh_';
+    const result = await runToolContract(dataframeDescribeTool, { canvas_id: canvasId });
+    expect((result.structuredContent as { canvas_id: string }).canvas_id).toBe(canvasId);
+    const html = renderCommonMark(textOf(result.content as never));
+    expect(codeLiteralsIn(html)).toEqual([canvasId]);
+    expect(html).not.toMatch(/<em>/);
   });
 });

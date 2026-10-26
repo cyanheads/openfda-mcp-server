@@ -7,6 +7,7 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { CanvasIdSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { codeLiteral } from '@/mcp-server/tools/format-utils.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 
 export const dataframeDescribeTool = tool('openfda_dataframe_describe', {
@@ -108,7 +109,7 @@ export const dataframeDescribeTool = tool('openfda_dataframe_describe', {
 
   format: (result) => {
     const lines: string[] = [
-      `**Canvas:** ${result.canvas_id} | **${result.tables.length} table(s)**\n`,
+      `**Canvas:** ${codeLiteral(result.canvas_id)} | **${result.tables.length} table(s)**\n`,
     ];
     for (const t of result.tables) {
       lines.push(`## ${t.name} (${t.kind}, ${t.row_count} rows)`);
