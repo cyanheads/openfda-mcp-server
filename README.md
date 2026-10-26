@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.8.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/openfda-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.3.1-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.8.2-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/openfda-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.4.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -182,113 +182,32 @@ Agent-friendly output:
 
 ## Getting started
 
-### Public Hosted Instance
+Connect to the hosted instance, no install:
 
-A public instance is available at `https://openfda.caseyjhand.com/mcp` — no installation required. Point any MCP client at it via Streamable HTTP:
-
-```json
-{
-  "mcpServers": {
-    "openfda-mcp-server": {
-      "type": "streamable-http",
-      "url": "https://openfda.caseyjhand.com/mcp"
-    }
-  }
-}
+```sh
+claude mcp add --transport http openfda-mcp-server https://openfda.caseyjhand.com/mcp
 ```
 
-### Self-Hosted / Local
+Or run it locally:
 
-Add the following to your MCP client configuration file.
-
-```json
-{
-  "mcpServers": {
-    "openfda-mcp-server": {
-      "type": "stdio",
-      "command": "bunx",
-      "args": ["@cyanheads/openfda-mcp-server@latest"],
-      "env": {
-        "MCP_TRANSPORT_TYPE": "stdio",
-        "MCP_LOG_LEVEL": "info",
-        "OPENFDA_API_KEY": "your-key-here"
-      }
-    }
-  }
-}
+```sh
+claude mcp add openfda-mcp-server -- npx -y @cyanheads/openfda-mcp-server
 ```
 
-Or with npx (no Bun required):
+For other clients, add this to the MCP config file:
 
 ```json
 {
   "mcpServers": {
     "openfda-mcp-server": {
-      "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@cyanheads/openfda-mcp-server@latest"],
-      "env": {
-        "MCP_TRANSPORT_TYPE": "stdio",
-        "MCP_LOG_LEVEL": "info",
-        "OPENFDA_API_KEY": "your-key-here"
-      }
+      "args": ["-y", "@cyanheads/openfda-mcp-server"]
     }
   }
 }
 ```
 
-Or with Docker:
-
-```json
-{
-  "mcpServers": {
-    "openfda-mcp-server": {
-      "type": "stdio",
-      "command": "docker",
-      "args": ["run", "-i", "--rm", "-e", "MCP_TRANSPORT_TYPE=stdio", "ghcr.io/cyanheads/openfda-mcp-server:latest"]
-    }
-  }
-}
-```
-
-For Streamable HTTP, set the transport and start the server:
-
-```sh
-MCP_TRANSPORT_TYPE=http MCP_HTTP_PORT=3010 bun run start:http
-# Server listens at http://localhost:3010/mcp
-```
-
-### Prerequisites
-
-- [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
-- Optional: an [openFDA API key](https://open.fda.gov/apis/authentication/) raises the limit from 1K to 120K requests per day.
-
-### Installation
-
-1. **Clone the repository:**
-
-```sh
-git clone https://github.com/cyanheads/openfda-mcp-server.git
-```
-
-2. **Navigate into the directory:**
-
-```sh
-cd openfda-mcp-server
-```
-
-3. **Install dependencies:**
-
-```sh
-bun install
-```
-
-4. **Configure environment:**
-
-```sh
-cp .env.example .env
-# edit .env and set OPENFDA_API_KEY and the mirror or canvas options as needed
-```
+No API key is needed. A free [openFDA API key](https://open.fda.gov/apis/authentication/) set as `OPENFDA_API_KEY` raises the limit from 1K to 120K requests per day. For Docker or a source build, see [Running the server](#running-the-server).
 
 ## Configuration
 
@@ -339,33 +258,43 @@ On Node, install the optional `better-sqlite3` peer dependency (Bun uses its bui
 
 ### Local development
 
-- **Build and run the production version:**
+Requires [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
+
+- **Clone and install:**
+
+  ```sh
+  git clone https://github.com/cyanheads/openfda-mcp-server.git
+  cd openfda-mcp-server && bun install
+  cp .env.example .env   # optionally set OPENFDA_API_KEY and the mirror or canvas options
+  ```
+
+- **Build and run:**
 
   ```sh
   # One-time build
   bun run rebuild
 
   # Run the built server
-  bun run start:http
-  # or
   bun run start:stdio
+  # or
+  bun run start:http
   ```
 
 - **Run checks and tests:**
 
   ```sh
-  bun run devcheck  # Lints, formats, type-checks, and more
-  bun run test      # Runs the test suite
+  bun run devcheck   # Lint, format, typecheck, security
+  bun run test       # Vitest test suite
+  bun run lint:mcp   # Validate MCP definitions against spec
   ```
 
 ### Docker
 
 ```sh
-docker build -t openfda-mcp-server .
-docker run --rm -p 3010:3010 openfda-mcp-server
+docker run --rm -p 3010:3010 ghcr.io/cyanheads/openfda-mcp-server:latest
 ```
 
-The Dockerfile defaults to HTTP transport, stateless session mode, and logs to `/var/log/openfda-mcp-server`. OpenTelemetry peer dependencies are installed by default; build with `--build-arg OTEL_ENABLED=false` to omit them. To keep a mirror harvest across container replacement, mount a volume over `/usr/src/app/data/openfda-mirror`.
+The image defaults to HTTP transport, stateless session mode, and logs to `/var/log/openfda-mcp-server`. To run it over stdio from an MCP client, use `"command": "docker"` with `"args": ["run", "-i", "--rm", "-e", "MCP_TRANSPORT_TYPE=stdio", "ghcr.io/cyanheads/openfda-mcp-server:latest"]`. To build locally, `docker build -t openfda-mcp-server .`; OpenTelemetry peer dependencies are installed by default — build with `--build-arg OTEL_ENABLED=false` to omit them. To keep a mirror harvest across container replacement, mount a volume over `/usr/src/app/data/openfda-mirror`.
 
 ## Project structure
 

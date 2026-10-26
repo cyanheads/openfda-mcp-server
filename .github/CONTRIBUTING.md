@@ -2,11 +2,11 @@
 
 Thanks for using `openfda-mcp-server`. Bugs, feature requests, and documentation gaps all belong in an issue — that's where they get read and picked up.
 
-Open one from the **Issues** tab and pick the **Bug Report** or **Feature Request** form. Both are structured, and filling in the fields is what makes an issue actionable.
+Open one from the **Issues** tab and pick the **Bug Report** or **Feature Request** form. Both are structured, and filling in the fields is what makes an issue actionable. Anything that fits neither can be a plain issue — a half-formed idea in your own words is fine.
 
 File one directly: [Bug Report](https://github.com/cyanheads/openfda-mcp-server/issues/new?template=bug_report.yml) · [Feature Request](https://github.com/cyanheads/openfda-mcp-server/issues/new?template=feature_request.yml).
 
-PRs welcome; open an issue first for anything larger than a typo.
+<!-- This project takes contributions as issues. Do not add a "pull requests are welcome" line. -->
 
 ## Server bug or framework bug?
 
