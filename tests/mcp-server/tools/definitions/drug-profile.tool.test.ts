@@ -17,10 +17,12 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
   getOpenFdaService: vi.fn(),
 }));
 
-import { drugProfileTool } from '@/mcp-server/tools/definitions/drug-profile.tool.js';
+import { drugProfileTool, fanOutKeyFor } from '@/mcp-server/tools/definitions/drug-profile.tool.js';
 import { findSearchDelimiterFault } from '@/mcp-server/tools/schema-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import { codeLiteralsIn, renderCommonMark } from '../../../helpers/commonmark.js';
 import { textOf } from '../../../helpers/content.js';
+import { linearTiming } from '../../../helpers/cpu-timing.js';
 
 const mockQuery = vi.fn();
 
@@ -135,7 +137,8 @@ describe('openfda_drug_profile', () => {
     );
 
     expect(result.meta.resolvedVia).toBe('label');
-    expect(result.meta.fanOutKey).toBe('metformin hydrochloride');
+    // The typed ingredient is a word of the resolved generic, so it is the key (#82).
+    expect(result.meta.fanOutKey).toBe('metformin');
     expect(result.identity.generic_name).toBe('metformin hydrochloride');
     expect(result.identity.brand_names).toContain('Glucophage');
     expect(result.identity.rxcui).toBe('860975');
@@ -258,6 +261,47 @@ describe('openfda_drug_profile', () => {
     expect(getEnrichment(ctx).notice).toMatch(/could not resolve/i);
   });
 
+  // #81 — the caller's drug name rides in the notice as a code literal.
+  it('quotes the unresolved drug name as a code literal on both surfaces', async () => {
+    mockQuery.mockResolvedValue({ meta: meta(), results: [] });
+    const drug = '*not*a_drug_`x`';
+
+    const result = await runToolContract(drugProfileTool, { drug });
+    const notice = String((result.structuredContent as { notice?: string }).notice);
+    expect(notice).toBe(
+      `Could not resolve \`\` ${drug} \`\` to an FDA drug. Check the spelling, try the generic name, or query openfda_get_drug_label / openfda_lookup_ndc directly.`,
+    );
+    const html = renderCommonMark(textOf(result.content, result.content.length - 1));
+    expect(codeLiteralsIn(html)).toEqual([drug]);
+    expect(html).not.toMatch(/<em>/);
+  });
+
+  /*
+   * The heading echoes the caller's drug name and the resolution line its typed
+   * term (the fan-out key after #82), so both ride as code literals: a CommonMark
+   * read of the profile block gives back the exact string `structuredContent`
+   * carries, with no emphasis made of its `*` and `_`. One case per side of
+   * codeLiteral's branch: a span inside the heading and the line, and a fence on
+   * the lines after them — where a line of the name that reads as a heading
+   * stays text inside the fence (#67).
+   */
+  it.each([
+    ['*x*_y_', '<h1>Drug profile: <code>*x*_y_</code></h1>'],
+    ['*x*\n# _y_', '<h1>Drug profile:</h1>'],
+  ])('renders the caller drug name %j as a code literal in format()', async (drug, heading) => {
+    mockQuery.mockResolvedValue({ meta: meta(), results: [] });
+
+    const result = await runToolContract(drugProfileTool, { drug });
+    const structured = result.structuredContent as { meta: { drug: string; fanOutKey: string } };
+    expect(structured.meta).toMatchObject({ drug, fanOutKey: drug });
+
+    const html = renderCommonMark(textOf(result.content, 0));
+    expect(html).toContain(heading);
+    expect(html.match(/<h\d>/g)).toHaveLength(7);
+    expect(codeLiteralsIn(html)).toEqual([drug, drug]);
+    expect(html.match(/<em>[\s\S]*?<\/em>/g)).toEqual(['<em>Resolved via: none</em>']);
+  });
+
   it('renders every section header in format(), even when sections are null', () => {
     const content = drugProfileTool.format!({
       meta: { drug: 'mystery', resolvedVia: 'none', fanOutKey: 'mystery' },
@@ -271,6 +315,7 @@ describe('openfda_drug_profile', () => {
       label: null,
       adverse_events: null,
       recalls: [],
+      recalls_total: 0,
       approval: null,
       shortage: null,
       degraded: [],
@@ -287,8 +332,59 @@ describe('openfda_drug_profile', () => {
     ]) {
       expect(text).toContain(header);
     }
-    expect(text).toContain('Drug profile: mystery');
-    expect(text).toContain('fan-out key: mystery');
+    expect(text).toContain('# Drug profile: `mystery`');
+    expect(text).toContain('_Resolved via: none_ · fan-out key: `mystery`');
+  });
+
+  /**
+   * A null section reads as unknown when its sub-query failed, and as absent only
+   * when the search succeeded and matched nothing (#86).
+   */
+  describe.each([
+    ['label', 'Unknown — the label search failed upstream (see Degraded).', 'No label on file.'],
+    [
+      'adverse_events',
+      'Unknown — the adverse-event search failed upstream (see Degraded).',
+      'No adverse-event data.',
+    ],
+    [
+      'shortage',
+      'Unknown — the shortage search failed upstream (see Degraded).',
+      'Not currently listed in the shortage database.',
+    ],
+  ] as const)('format() for a null %s section', (section, unknownLine, absentLine) => {
+    const nullProfile = (degraded: Array<{ section: string; reason: string; message: string }>) =>
+      drugProfileTool.format!({
+        meta: { drug: 'metformin', resolvedVia: 'none', fanOutKey: 'metformin' },
+        identity: {
+          brand_names: [],
+          generic_name: null,
+          product_ndc: null,
+          rxcui: null,
+          spl_set_id: null,
+        },
+        label: null,
+        adverse_events: null,
+        recalls: [],
+        recalls_total: 0,
+        approval: null,
+        shortage: null,
+        degraded,
+      } as Parameters<NonNullable<typeof drugProfileTool.format>>[0]);
+
+    it('reads as unknown when the section is degraded', () => {
+      const text = textOf(
+        nullProfile([{ section, reason: 'upstream_error', message: 'gateway timeout' }]),
+      );
+      expect(text).toContain(unknownLine);
+      expect(text).not.toContain(absentLine);
+    });
+
+    it('reads as absent when the search succeeded and matched nothing', () => {
+      const text = textOf(nullProfile([]));
+      expect(text).toContain(absentLine);
+      expect(text).not.toContain(unknownLine);
+    });
   });
 
   // Issue #19 — Rx labels carry safety text in boxed_warning / warnings_and_cautions,
@@ -474,17 +570,18 @@ describe('openfda_drug_profile', () => {
     });
 
     it('escapes the resolved fan-out key on the structured sub-queries', async () => {
+      // Brand input, so the key is the resolved generic rather than the typed term (#82).
       mockQuery.mockImplementation(async (endpoint: string) =>
         endpoint === 'drug/label'
           ? {
               meta: meta({ total: 1 }),
-              results: [{ openfda: { generic_name: ['odd\\name'], brand_name: ['Odd'] } }],
+              results: [{ openfda: { generic_name: ['odd\\name'], brand_name: ['Oddbrand'] } }],
             }
           : { meta: meta(), results: [] },
       );
 
       const result = await drugProfileTool.handler(
-        drugProfileTool.input.parse({ drug: 'odd' }),
+        drugProfileTool.input.parse({ drug: 'Oddbrand' }),
         ctx,
       );
 
@@ -507,6 +604,359 @@ describe('openfda_drug_profile', () => {
       expect(sentSearches()).toContain(
         'openfda.generic_name:"metformin" OR openfda.brand_name:"metformin"',
       );
+    });
+  });
+
+  /** The search each structured sub-query (recalls, approval, shortage) sent. */
+  const structuredSearches = () =>
+    Object.fromEntries(
+      mockQuery.mock.calls
+        .filter(([endpoint]) =>
+          ['drug/enforcement', 'drug/drugsfda', 'drug/shortages'].includes(endpoint as string),
+        )
+        .map(([endpoint, params]) => [endpoint, (params as { search: string }).search]),
+    ) as Record<'drug/enforcement' | 'drug/drugsfda' | 'drug/shortages', string>;
+
+  /**
+   * Issue #82 — the structured sub-queries keyed on one label's `openfda.generic_name`,
+   * which can be a single product's string (`ADALIMUMAB-AACF`, `METFORMIN ER 500 MG`).
+   * When the typed term is words of that generic, the caller typed the ingredient and
+   * it is the key; brand input keeps keying on the resolved generic (#10).
+   */
+  describe('fan-out key follows a typed ingredient (#82)', () => {
+    const labelWith = (generic: string, brand: string) => async (endpoint: string) =>
+      endpoint === 'drug/label'
+        ? {
+            meta: meta({ total: 1 }),
+            results: [{ openfda: { generic_name: [generic], brand_name: [brand] } }],
+          }
+        : { meta: meta(), results: [] };
+
+    it('keys on the typed term when it is a word of a product-specific generic', async () => {
+      mockQuery.mockImplementation(labelWith('ADALIMUMAB-AACF', 'IDACIO'));
+
+      const result = await drugProfileTool.handler(
+        drugProfileTool.input.parse({ drug: 'adalimumab' }),
+        ctx,
+      );
+
+      expect(result.meta.fanOutKey).toBe('adalimumab');
+      // Identity still reports the label it resolved; only the key changes.
+      expect(result.identity.generic_name).toBe('ADALIMUMAB-AACF');
+      const searches = Object.values(structuredSearches());
+      expect(searches).toHaveLength(3);
+      for (const search of searches) {
+        expect(search).toContain('"adalimumab"');
+        expect(search).not.toContain('AACF');
+      }
+    });
+
+    it.each(['METFORMIN HCL', 'METFORMIN ER 500 MG', 'METFORMIN HYDROCHLORIDE'])(
+      'keys metformin on the typed term whichever label resolves (%s)',
+      async (generic) => {
+        mockQuery.mockImplementation(labelWith(generic, 'Metformin'));
+
+        const result = await drugProfileTool.handler(
+          drugProfileTool.input.parse({ drug: 'metformin' }),
+          ctx,
+        );
+
+        expect(result.meta.fanOutKey).toBe('metformin');
+        expect(structuredSearches()['drug/shortages']).toBe('generic_name:"metformin"');
+      },
+    );
+
+    it('keeps the resolved generic when the term is not whole words of it', async () => {
+      mockQuery.mockImplementation(labelWith('METFORMIN HCL', 'Metform'));
+
+      const result = await drugProfileTool.handler(
+        drugProfileTool.input.parse({ drug: 'Metform' }),
+        ctx,
+      );
+
+      expect(result.meta.fanOutKey).toBe('METFORMIN HCL');
+    });
+
+    it('applies the same rule to an identity resolved through drug/ndc', async () => {
+      mockQuery.mockImplementation(async (endpoint: string) =>
+        endpoint === 'drug/ndc'
+          ? {
+              meta: meta({ total: 1 }),
+              results: [{ brand_name: 'Tylenol', generic_name: 'ACETAMINOPHEN 500 MG' }],
+            }
+          : { meta: meta(), results: [] },
+      );
+
+      const result = await drugProfileTool.handler(
+        drugProfileTool.input.parse({ drug: 'acetaminophen' }),
+        ctx,
+      );
+
+      expect(result.meta.resolvedVia).toBe('ndc');
+      expect(result.meta.fanOutKey).toBe('acetaminophen');
+      expect(structuredSearches()['drug/shortages']).toBe('generic_name:"acetaminophen"');
+    });
+  });
+
+  /**
+   * Issue #79 — `drug/enforcement` and `drug/drugsfda` fill `openfda.generic_name`
+   * only for records openFDA could harmonize, so each sub-query also searches the
+   * record's own field for the key, and the recall section reports its match total.
+   */
+  describe('recall and approval searches reach unharmonized records (#79)', () => {
+    it('composes each structured search with its own-field clause', async () => {
+      mockQuery.mockImplementation(async (endpoint: string, params: { count?: string }) =>
+        fullUpstream(endpoint, params),
+      );
+
+      await drugProfileTool.handler(drugProfileTool.input.parse({ drug: 'metformin' }), ctx);
+
+      expect(structuredSearches()).toEqual({
+        'drug/enforcement': 'openfda.generic_name:"metformin" OR product_description:"metformin"',
+        'drug/drugsfda':
+          'openfda.generic_name:"metformin" OR products.active_ingredients.name:"metformin"',
+        // drug/shortages carries generic_name on the record itself — no harmonization gap.
+        'drug/shortages': 'generic_name:"metformin"',
+      });
+      const enforcement = mockQuery.mock.calls.find(([e]) => e === 'drug/enforcement')?.[1];
+      expect(enforcement).toMatchObject({ sort: 'report_date:desc', limit: 5 });
+    });
+
+    it('costs 7 upstream requests resolved by label and 8 through the drug/ndc fallback', async () => {
+      mockQuery.mockImplementation(async (endpoint: string, params: { count?: string }) =>
+        fullUpstream(endpoint, params),
+      );
+      await drugProfileTool.handler(drugProfileTool.input.parse({ drug: 'metformin' }), ctx);
+      expect(mockQuery).toHaveBeenCalledTimes(7);
+
+      mockQuery.mockReset();
+      mockQuery.mockResolvedValue({ meta: meta(), results: [] });
+      await drugProfileTool.handler(drugProfileTool.input.parse({ drug: 'metformin' }), ctx);
+      expect(mockQuery).toHaveBeenCalledTimes(8);
+    });
+
+    /** Upstream with the recall search answering `results` out of `total` matches. */
+    const withRecalls =
+      (results: unknown[], total: number) => async (endpoint: string, params: { count?: string }) =>
+        endpoint === 'drug/enforcement'
+          ? { meta: meta({ total }), results }
+          : fullUpstream(endpoint, params);
+    const RECALL = {
+      classification: 'Class II',
+      reason_for_recall: 'Failed dissolution specification.',
+      recalling_firm: 'Acme Pharma',
+      report_date: '20240115',
+    };
+
+    it('reports the recall match total beside the newest five, on both surfaces', async () => {
+      mockQuery.mockImplementation(
+        withRecalls(
+          Array.from({ length: 5 }, () => RECALL),
+          91,
+        ),
+      );
+
+      const result = await runToolContract(drugProfileTool, { drug: 'metformin' });
+
+      expect(result.isError).toBeFalsy();
+      const structured = result.structuredContent as {
+        recalls: unknown[];
+        recalls_total: number | null;
+      };
+      expect(structured.recalls).toHaveLength(5);
+      expect(structured.recalls_total).toBe(91);
+      expect(textOf(result.content)).toContain('## Recalls (5 of 91)');
+    });
+
+    it('names the searched fields when no recall report matches', async () => {
+      mockQuery.mockImplementation(withRecalls([], 0));
+
+      const result = await runToolContract(drugProfileTool, { drug: 'metformin' });
+
+      const structured = result.structuredContent as { recalls_total: number | null };
+      expect(structured.recalls_total).toBe(0);
+      const text = textOf(result.content);
+      expect(text).toContain('## Recalls (0 of 0)');
+      expect(text).toContain('openfda.generic_name or product_description');
+      expect(text).not.toContain('No recalls on record.');
+    });
+
+    it('reports the recall total as unknown, never 0, when the recall search fails', async () => {
+      mockQuery.mockImplementation(async (endpoint: string, params: { count?: string }) => {
+        if (endpoint === 'drug/enforcement') {
+          throw serviceUnavailable('openFDA upstream error: gateway timeout', {
+            reason: 'upstream_error',
+          });
+        }
+        return fullUpstream(endpoint, params);
+      });
+
+      const result = await runToolContract(drugProfileTool, { drug: 'metformin' });
+
+      const structured = result.structuredContent as {
+        recalls_total: number | null;
+        degraded: Array<{ section: string }>;
+      };
+      expect(structured.recalls_total).toBeNull();
+      expect(structured.degraded.map((d) => d.section)).toEqual(['recalls']);
+      const text = textOf(result.content);
+      expect(text).toContain('## Recalls (unknown)');
+      expect(text).not.toContain('openfda.generic_name or product_description');
+    });
+
+    it('names the searched fields when no Drugs@FDA application matches', async () => {
+      mockQuery.mockImplementation(async (endpoint: string, params: { count?: string }) =>
+        endpoint === 'drug/drugsfda'
+          ? { meta: meta(), results: [] }
+          : fullUpstream(endpoint, params),
+      );
+
+      const result = await runToolContract(drugProfileTool, { drug: 'metformin' });
+
+      expect((result.structuredContent as { approval: unknown }).approval).toBeNull();
+      const text = textOf(result.content);
+      expect(text).toContain('openfda.generic_name or products.active_ingredients.name');
+      expect(text).not.toContain('No Drugs@FDA approval found.');
+    });
+
+    it('says the approval is unknown, not unmatched, when its search fails', async () => {
+      mockQuery.mockImplementation(async (endpoint: string, params: { count?: string }) => {
+        if (endpoint === 'drug/drugsfda') {
+          throw serviceUnavailable('openFDA upstream error: gateway timeout', {
+            reason: 'upstream_error',
+          });
+        }
+        return fullUpstream(endpoint, params);
+      });
+
+      const result = await runToolContract(drugProfileTool, { drug: 'metformin' });
+
+      const text = textOf(result.content);
+      expect(text).toMatch(/## Approval\nUnknown/);
+      expect(text).not.toContain('products.active_ingredients.name');
+    });
+
+    /** Drugs@FDA application shapes as api.fda.gov returns them (metformin, 2026-10-26). */
+    const app = (
+      application_number: string,
+      products: Array<{ brand_name: string; ingredients: string[] }>,
+      openfda?: { generic_name: string[]; brand_name: string[] },
+    ) => ({
+      application_number,
+      sponsor_name: `Sponsor of ${application_number}`,
+      products: products.map((p) => ({
+        brand_name: p.brand_name,
+        marketing_status: 'Prescription',
+        active_ingredients: p.ingredients.map((name) => ({ name, strength: '500MG' })),
+      })),
+      ...(openfda ? { openfda } : {}),
+    });
+
+    it('scores applications without an openfda block on their products, choosing the best match', async () => {
+      const apps = [
+        // Unharmonized combination ranked first by relevance.
+        app('ANDA211466', [
+          {
+            brand_name: 'DAPAGLIFLOZIN AND METFORMIN HYDROCHLORIDE',
+            ingredients: ['DAPAGLIFLOZIN', 'METFORMIN HYDROCHLORIDE'],
+          },
+        ]),
+        app(
+          'ANDA205981',
+          [
+            {
+              brand_name: 'SAXAGLIPTIN AND METFORMIN HYDROCHLORIDE',
+              ingredients: ['METFORMIN HYDROCHLORIDE', 'SAXAGLIPTIN HYDROCHLORIDE'],
+            },
+          ],
+          {
+            generic_name: ['SAXAGLIPTIN AND METFORMIN'],
+            brand_name: ['SAXAGLIPTIN AND METFORMIN'],
+          },
+        ),
+        // The single-ingredient application, unharmonized.
+        app('ANDA076869', [
+          { brand_name: 'METFORMIN HYDROCHLORIDE', ingredients: ['METFORMIN HYDROCHLORIDE'] },
+        ]),
+      ];
+      mockQuery.mockImplementation(async (endpoint: string, params: { count?: string }) =>
+        endpoint === 'drug/drugsfda'
+          ? { meta: meta({ total: 214 }), results: apps }
+          : fullUpstream(endpoint, params),
+      );
+
+      const result = await drugProfileTool.handler(
+        drugProfileTool.input.parse({ drug: 'metformin' }),
+        ctx,
+      );
+
+      expect(result.approval).toEqual({
+        applicationNumber: 'ANDA076869',
+        sponsor: 'Sponsor of ANDA076869',
+        marketingStatus: 'Prescription',
+      });
+    });
+
+    it('prefers a harmonized single-ingredient application over an unharmonized combination', async () => {
+      const apps = [
+        app('ANDA211466', [
+          {
+            brand_name: 'DAPAGLIFLOZIN AND METFORMIN HYDROCHLORIDE',
+            ingredients: ['DAPAGLIFLOZIN', 'METFORMIN HYDROCHLORIDE'],
+          },
+        ]),
+        app('NDA020357', [{ brand_name: 'GLUCOPHAGE', ingredients: ['METFORMIN HYDROCHLORIDE'] }], {
+          generic_name: ['METFORMIN HYDROCHLORIDE'],
+          brand_name: ['GLUCOPHAGE'],
+        }),
+      ];
+      mockQuery.mockImplementation(async (endpoint: string, params: { count?: string }) =>
+        endpoint === 'drug/drugsfda'
+          ? { meta: meta({ total: 214 }), results: apps }
+          : fullUpstream(endpoint, params),
+      );
+
+      const result = await drugProfileTool.handler(
+        drugProfileTool.input.parse({ drug: 'metformin' }),
+        ctx,
+      );
+
+      expect(result.approval?.applicationNumber).toBe('NDA020357');
+    });
+
+    it('finds an approval for a drug no label or NDC resolves (troglitazone)', async () => {
+      const discontinued = (n: string, brand: string) => ({
+        ...app(n, [{ brand_name: brand, ingredients: ['TROGLITAZONE'] }]),
+        products: [
+          {
+            brand_name: brand,
+            marketing_status: 'Discontinued',
+            active_ingredients: [{ name: 'TROGLITAZONE', strength: '200MG' }],
+          },
+        ],
+      });
+      mockQuery.mockImplementation(async (endpoint: string) =>
+        endpoint === 'drug/drugsfda'
+          ? {
+              meta: meta({ total: 2 }),
+              results: [discontinued('NDA020720', 'REZULIN'), discontinued('NDA020719', 'PRELAY')],
+            }
+          : { meta: meta(), results: [] },
+      );
+
+      const result = await drugProfileTool.handler(
+        drugProfileTool.input.parse({ drug: 'troglitazone' }),
+        ctx,
+      );
+
+      expect(result.meta.resolvedVia).toBe('none');
+      expect(structuredSearches()['drug/drugsfda']).toBe(
+        'openfda.generic_name:"troglitazone" OR products.active_ingredients.name:"troglitazone"',
+      );
+      expect(result.approval).toMatchObject({
+        applicationNumber: 'NDA020720',
+        marketingStatus: 'Discontinued',
+      });
     });
   });
 
@@ -658,7 +1108,8 @@ describe('openfda_drug_profile', () => {
       );
 
       const text = textOf(drugProfileTool.format!(result));
-      expect(text).toContain('No adverse-event data.');
+      expect(text).toContain('Unknown — the adverse-event search failed upstream (see Degraded).');
+      expect(text).not.toContain('No adverse-event data.');
       expect(text).not.toContain('**Total reports:**');
       expect(text).toContain('## Degraded (1 section)');
     });
@@ -782,7 +1233,8 @@ describe('openfda_drug_profile adverse-event total at the HTTP boundary', () => 
       .map(paramsOf)
       .filter((params) => !params.has('count'));
     expect(totalRequests).toHaveLength(1);
-    expect(totalRequests[0]!.get('search')).toBe('patient.drug.medicinalproduct:"metformin"');
+    // The service wraps every search in one pair of parentheses on the wire (#84).
+    expect(totalRequests[0]!.get('search')).toBe('(patient.drug.medicinalproduct:"metformin")');
     expect(totalRequests[0]!.get('limit')).toBe('0');
     expect(totalRequests[0]!.has('sort')).toBe(false);
 
@@ -806,11 +1258,16 @@ describe('openfda_drug_profile adverse-event total at the HTTP boundary', () => 
 
     expect(result.isError).toBeFalsy();
     expect(eventRequests()).toHaveLength(3);
+    // Label and drug/ndc both miss: the fallback profile's 8 requests.
+    expect(http.calls).toHaveLength(8);
     const structured = result.structuredContent as {
       adverse_events: unknown;
+      recalls_total: number | null;
       degraded: unknown[];
     };
     expect(structured.adverse_events).toBeNull();
+    // openFDA's no-match 404 is a known zero, not the unknown a failed search reports (#79).
+    expect(structured.recalls_total).toBe(0);
     expect(structured.degraded).toEqual([]);
   });
 
@@ -915,6 +1372,82 @@ describe('openfda_drug_profile adverse-event total at the HTTP boundary', () => 
         '/drug/label.json',
         '/drug/ndc.json',
       ]);
+    });
+  });
+});
+
+/**
+ * The fan-out key rule at its own seam (#82): the typed term when its words occur,
+ * in order and case-insensitively, in the resolved generic name; otherwise the
+ * resolved generic, then the brand, then the term, with #25's blank guard. The
+ * handler tests above prove the wiring; this table is the rule.
+ */
+describe('fanOutKeyFor', () => {
+  it.each([
+    // [term, generic, brand, key, why]
+    ['adalimumab', 'ADALIMUMAB-AACF', 'IDACIO', 'adalimumab', 'a hyphen ends a word'],
+    ['metformin', 'METFORMIN HYDROCHLORIDE', 'Glucophage', 'metformin', 'a salt name'],
+    ['metformin', 'METFORMIN ER 500 MG', undefined, 'metformin', 'a strength suffix'],
+    ['insulin glargine', 'INSULIN GLARGINE-YFGN', undefined, 'insulin glargine', 'two words'],
+    ['Insulin  Glargine', 'INSULIN GLARGINE', undefined, 'Insulin  Glargine', 'spacing, case'],
+    ['glargine insulin', 'INSULIN GLARGINE', undefined, 'INSULIN GLARGINE', 'word order'],
+    [
+      'sitagliptin and metformin',
+      'SITAGLIPTIN AND METFORMIN HYDROCHLORIDE',
+      'Janumet',
+      'sitagliptin and metformin',
+      'a combination',
+    ],
+    ['metform', 'METFORMIN HCL', undefined, 'METFORMIN HCL', 'a prefix, not a word'],
+    ['formin', 'METFORMIN', undefined, 'METFORMIN', 'a suffix, not a word'],
+    ['metfor.*', 'METFORMIN HCL', undefined, 'METFORMIN HCL', 'regex syntax is literal'],
+    ['café', 'CAFÉ EXTRACT', undefined, 'café', 'non-ASCII letters'],
+    ['a a b', 'A A A B', undefined, 'a a b', 'a repeated first word'],
+    ['a b a b c', 'A B A B A B C', undefined, 'a b a b c', 'an overlapping restart'],
+    ['a a b', 'A A A', undefined, 'A A A', 'a near miss on repeated words'],
+    [
+      'metformin hydrochloride extended',
+      'METFORMIN HYDROCHLORIDE',
+      undefined,
+      'METFORMIN HYDROCHLORIDE',
+      'more words than the generic',
+    ],
+    ['---', 'METFORMIN', undefined, 'METFORMIN', 'a term with no words'],
+    ['Glucophage', 'metformin hydrochloride', 'Glucophage', 'metformin hydrochloride', 'a brand'],
+    ['Lipitor', 'ATORVASTATIN CALCIUM', 'Lipitor', 'ATORVASTATIN CALCIUM', 'a brand'],
+    ['metformin', null, 'Glucophage', 'Glucophage', 'no generic resolved'],
+    ['notadrug', null, undefined, 'notadrug', 'nothing resolved'],
+    ['metformin', '"', undefined, 'metformin', 'a blank resolved generic (#25)'],
+    ['metform', '  METFORMIN HCL  ', undefined, 'METFORMIN HCL', 'a padded resolved generic'],
+  ] as const)('%j in %j (brand %j) keys %j — %s', (term, generic, brand, key, _why) => {
+    expect(fanOutKeyFor(term, generic, brand)).toBe(key);
+  });
+
+  /**
+   * The match reads caller text, so it is timed on its worst shapes across a 64×
+   * span on this thread's CPU time, growing by doubling and checking the bound at
+   * each size. A naive rescan from every start goes quadratic on the first shape.
+   */
+  describe('timing', { timeout: 120_000 }, () => {
+    const shapes: [string, (n: number) => [string, string]][] = [
+      ['repeated words with a near miss', (n) => [`${'a '.repeat(n / 4)}b`, 'a '.repeat(n / 2)]],
+      [
+        'one long line ending in a break',
+        (n) => [`${'§1 x'.repeat(n / 4)}\ny`, `${'§1 x'.repeat(n / 4)}\nz`],
+      ],
+      ['breaks throughout', (n) => ['  \r\n'.repeat(n / 4), '  \r\n'.repeat(n / 4)]],
+      ['a long digit run', (n) => ['1'.repeat(n), '1'.repeat(n)]],
+    ];
+
+    it.each(shapes)('stays linear on %s', (_name, build) => {
+      const run = ([term, generic]: [string, string]) => fanOutKeyFor(term, generic, undefined);
+      let ratio = 0;
+      for (let n = 10_000; n <= 320_000; n *= 2) {
+        const { t5k, t320k: tN } = linearTiming(run, build(5_000), build(n));
+        expect(tN).toBeLessThan(500_000);
+        ratio = tN / t5k;
+      }
+      expect(ratio).toBeLessThan(256);
     });
   });
 });

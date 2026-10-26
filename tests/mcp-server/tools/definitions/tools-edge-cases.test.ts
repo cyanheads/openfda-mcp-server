@@ -1274,11 +1274,13 @@ describe('record headings and list items stay on one line (#67)', () => {
       ['**Recall #F-1 ### injected** — Class II', '**Recall #Z-1 ### injected**'],
     ],
     [
-      'drug profile — heading from the caller term, reaction and recall items',
+      // The heading's caller drug name rides as a code literal instead (#81),
+      // read back through a CommonMark parse in drug-profile.tool.test.ts.
+      'drug profile — reaction and recall items',
       () =>
         textOf(
           drugProfileTool.format!({
-            meta: { drug: 'aspirin\n# injected', resolvedVia: 'none', fanOutKey: 'aspirin' },
+            meta: { drug: 'aspirin', resolvedVia: 'none', fanOutKey: 'aspirin' },
             identity: {
               brand_names: [],
               generic_name: null,
@@ -1300,13 +1302,13 @@ describe('record headings and list items stay on one line (#67)', () => {
                 reason: 'r\n# x',
               },
             ],
+            recalls_total: 1,
             approval: null,
             shortage: null,
             degraded: [],
           }),
         ),
       [
-        '# Drug profile: aspirin # injected',
         '- NAUSEA - x: 1',
         '- **Classification:** Class II - x · **Recalling firm:** n/a · **Date:** n/a',
         '  **Reason:** r # x',
@@ -1339,6 +1341,7 @@ describe('record headings and list items stay on one line (#67)', () => {
               ],
             },
             recalls: [],
+            recalls_total: 0,
             approval: {
               applicationNumber: 'NDA1',
               sponsor: 'BAYER\n# x',
