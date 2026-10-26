@@ -1,0 +1,27 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "openfda-mcp-server",
+  "version": "0.8.2",
+  "description": "Query FDA data on drugs, food, devices, and recalls via openFDA. STDIO or Streamable HTTP.",
+  "author": {
+    "name": "Casey Hand",
+    "email": "casey@caseyjhand.com",
+    "url": "https://caseyjhand.com"
+  },
+  "homepage": "https://github.com/cyanheads/openfda-mcp-server#readme",
+  "repository": "https://github.com/cyanheads/openfda-mcp-server",
+  "license": "Apache-2.0",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "openfda",
+    "fda",
+    "drug-safety",
+    "adverse-events",
+    "typescript",
+    "bun",
+    "stdio",
+    "streamable-http"
+  ]
+}
