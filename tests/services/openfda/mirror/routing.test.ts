@@ -175,10 +175,11 @@ describe('mirror routing', () => {
     );
 
     // The mirror holds the whole match set and could have answered it; upstream
-    // ranks it by relevance, so the ordering is the API's to define.
+    // ranks it by relevance, so the ordering is the API's to define. The mirror
+    // gate planned on the caller's string; only the wire form is grouped (#84).
     expect(mockFetch).toHaveBeenCalledOnce();
     expect(new URL(mockFetch.mock.calls[0]?.[0] as string).searchParams.get('search')).toBe(
-      'event_id:"72241"',
+      '(event_id:"72241")',
     );
     expect(response.results).toEqual([LIVE_RECORD]);
   });

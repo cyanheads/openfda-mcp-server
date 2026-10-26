@@ -229,9 +229,20 @@ export class OpenFdaService {
     );
   }
 
+  /**
+   * The request URL. `search` goes out wrapped in one pair of parentheses: on
+   * `drug/enforcement`, `food/enforcement`, and `device/enforcement` — one shared
+   * index — openFDA appends its own product-type clause, and a top-level `A OR B`
+   * then matches only `B`'s records (food: `cheese OR milk` answered 1,675, the
+   * union 3,141). Grouped, OR is a union there as everywhere else; on every
+   * endpoint a query with no top-level OR answers the same total either way. The
+   * wrap lives here, at the one place every request is built — side requests and
+   * server-composed queries included — so callers, the mirror gate, and echoed
+   * queries all keep the unwrapped string.
+   */
   private buildUrl(endpoint: string, params: OpenFdaQueryParams): URL {
     const url = new URL(`/${endpoint}.json`, this.baseUrl);
-    if (params.search) url.searchParams.set('search', params.search);
+    if (params.search) url.searchParams.set('search', `(${params.search})`);
     if (params.count) url.searchParams.set('count', params.count);
     if (params.sort) url.searchParams.set('sort', params.sort);
     if (params.limit !== undefined) url.searchParams.set('limit', String(params.limit));

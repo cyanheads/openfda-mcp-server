@@ -171,7 +171,7 @@ describe('OpenFdaService security', () => {
   });
 
   describe('query injection safety', () => {
-    it('passes through injection-like search strings without modification', async () => {
+    it('passes through injection-like search strings unmodified inside the search group', async () => {
       const service = new OpenFdaService({ baseUrl: 'https://api.fda.gov' });
       const injectionPayload = `'; DROP TABLE drugs; --`;
       mockFetch.mockResolvedValue(
@@ -183,9 +183,10 @@ describe('OpenFdaService security', () => {
 
       await service.query('drug/event', { search: injectionPayload }, ctx);
 
-      // Payload should be URL-encoded in the request — not evaluated
+      // Payload should be URL-encoded in the request — not evaluated. The only
+      // change is the one pair of parentheses every search is sent in (#84).
       const calledUrl = new URL(mockFetch.mock.calls[0]![0] as string);
-      expect(calledUrl.searchParams.get('search')).toBe(injectionPayload);
+      expect(calledUrl.searchParams.get('search')).toBe(`(${injectionPayload})`);
     });
 
     it('URL-encodes query parameters to prevent injection', async () => {

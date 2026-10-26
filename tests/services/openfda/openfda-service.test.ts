@@ -75,10 +75,85 @@ describe('OpenFdaService', () => {
 
       const url = new URL(mockFetch.mock.calls[0]![0]);
       expect(url.pathname).toBe('/drug/event.json');
-      expect(url.searchParams.get('search')).toBe('aspirin');
+      expect(url.searchParams.get('search')).toBe('(aspirin)');
       expect(url.searchParams.get('sort')).toBe('receivedate:desc');
       expect(url.searchParams.get('limit')).toBe('5');
       expect(url.searchParams.get('skip')).toBe('10');
+    });
+
+    /*
+     * #84 — on the enforcement endpoints openFDA appends its own product-type
+     * clause to `search`, and a top-level `A OR B` then matches only `B`
+     * (food/enforcement `cheese OR milk`: 1,675 against a 3,141 union). The
+     * service sends every search grouped, so OR is a union on every endpoint.
+     */
+    describe('search grouping (#84)', () => {
+      const OK = () =>
+        mockResponse(200, {
+          meta: { results: { total: 1, skip: 0, limit: 1 }, last_updated: '2026-01-01' },
+          results: [{ id: '1' }],
+        });
+      const sent = () => new URL(mockFetch.mock.calls[0]![0]);
+
+      it('sends a top-level OR inside one pair of parentheses', async () => {
+        mockFetch.mockResolvedValue(OK());
+        const search = 'product_description:"cheese" OR product_description:"milk"';
+
+        await service.query('food/enforcement', { search, limit: 1 }, ctx);
+
+        expect(sent().searchParams.get('search')).toBe(`(${search})`);
+      });
+
+      it.each([
+        ['(a:x) OR (b:y)', '((a:x) OR (b:y))'],
+        ['(a:x OR b:y)', '((a:x OR b:y))'],
+        ['field:(a OR b)', '(field:(a OR b))'],
+      ])(
+        'wraps %j once, even when it already starts and ends with a paren',
+        async (search, wire) => {
+          mockFetch.mockResolvedValue(OK());
+
+          await service.query('drug/enforcement', { search }, ctx);
+
+          expect(sent().searchParams.get('search')).toBe(wire);
+        },
+      );
+
+      it('wraps the search of a count request and leaves the count expression alone', async () => {
+        mockFetch.mockResolvedValue(
+          mockResponse(200, {
+            meta: { last_updated: '2026-01-01' },
+            results: [{ term: 'Class II', count: 1 }],
+          }),
+        );
+
+        await service.query(
+          'food/enforcement',
+          { search: 'a:x OR b:y', count: 'classification.exact' },
+          ctx,
+        );
+
+        expect(sent().searchParams.get('search')).toBe('(a:x OR b:y)');
+        expect(sent().searchParams.get('count')).toBe('classification.exact');
+      });
+
+      it('sends no search parameter when the query has none', async () => {
+        mockFetch.mockResolvedValue(OK());
+
+        await service.query('drug/event', { count: 'serious' }, ctx);
+
+        expect(sent().searchParams.has('search')).toBe(false);
+      });
+
+      // A space goes out as `+` (openFDA reads a space) and a literal plus as
+      // `%2B` (openFDA reads a plus), with the parentheses percent-encoded.
+      it('form-encodes the grouped search: a space as +, a plus as %2B', async () => {
+        mockFetch.mockResolvedValue(OK());
+
+        await service.query('device/udi', { search: 'brand_name.exact:"Bausch + Lomb"' }, ctx);
+
+        expect(sent().search).toContain('search=%28brand_name.exact%3A%22Bausch+%2B+Lomb%22%29');
+      });
     });
 
     it('includes api_key when configured', async () => {
@@ -203,7 +278,7 @@ describe('OpenFdaService', () => {
         expect(mockFetch).toHaveBeenCalledTimes(2);
         const recovery = calledUrl(1);
         expect(recovery.pathname).toBe('/drug/enforcement.json');
-        expect(recovery.searchParams.get('search')).toBe(SEARCH);
+        expect(recovery.searchParams.get('search')).toBe(`(${SEARCH})`);
         expect(recovery.searchParams.get('skip')).toBe('0');
         expect(recovery.searchParams.get('limit')).toBe('0');
         expect(recovery.searchParams.has('sort')).toBe(false);
