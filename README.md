@@ -7,7 +7,7 @@
 
 <div align="center">
 
-[![Version](https://img.shields.io/badge/Version-0.9.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/openfda-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.4.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4-blueviolet.svg?style=flat-square)](https://bun.sh/)
+[![Version](https://img.shields.io/badge/Version-0.9.1-blue.svg?style=flat-square)](./CHANGELOG.md) [![License](https://img.shields.io/badge/License-Apache%202.0-orange.svg?style=flat-square)](./LICENSE) [![Docker](https://img.shields.io/badge/Docker-ghcr.io-2496ED?style=flat-square&logo=docker&logoColor=white)](https://github.com/users/cyanheads/packages/container/package/openfda-mcp-server) [![MCP SDK](https://img.shields.io/badge/MCP%20SDK-^2.4.0-green.svg?style=flat-square)](https://modelcontextprotocol.io/) [![npm](https://img.shields.io/npm/v/@cyanheads/openfda-mcp-server?style=flat-square&logo=npm&logoColor=white)](https://www.npmjs.com/package/@cyanheads/openfda-mcp-server) [![TypeScript](https://img.shields.io/badge/TypeScript-^7.0.2-3178C6.svg?style=flat-square)](https://www.typescriptlang.org/) [![Bun](https://img.shields.io/badge/Bun-v1.4.4%2B-blueviolet.svg?style=flat-square)](https://bun.sh/)
 
 </div>
 
@@ -55,24 +55,26 @@ FDA data on drugs, food, devices, and recalls from the openFDA public API. Searc
 
 ### `openfda_drug_profile` <sub>tool</sub>
 
-- One `drug` name, brand or generic, resolved once to an identity (generic name, NDC, RxCUI, SPL set ID); recalls, approval, and shortage key on `meta.fanOutKey` — the typed name when it is an ingredient of the resolved generic, else that generic; `meta.resolvedVia` (`label`, `ndc`, `none`) names the source, and a single-ingredient product is preferred over combinations
-- Recalls and approval also search records openFDA never harmonized (`product_description`, `products.active_ingredients.name`); `recalls_total` gives the match count beside the newest 5 recalls
-- Sections `label`, `adverse_events`, `recalls`, `approval`, and `shortage` are best-effort and come back `null` (or an empty `recalls`) on a miss; `degraded[]` names each section whose sub-query failed upstream, so a listed section is unknown rather than absent
+- One `drug` name, brand or generic, resolved once to an identity (generic name, NDC, manufacturer, application number, original-packager flag, RxCUI, SPL set ID) from an original packager's label when one matches, else any matching label or the NDC directory, and from the approval application's own label when it has one; `meta.resolvedVia` (`label`, `ndc`, `none`) names the source, and a single-ingredient product is preferred over combinations
+- `approval` is the drug's own Drugs@FDA application, ranked over the name's NDA, BLA, and brand matches; recalls and shortage key on `meta.fanOutKey` — the typed name when it is an ingredient of the resolved generic, else that generic
+- Each section names its product: `shortage` gives the product, company, and presentation of the record shown, with the match total and per-status counts, and differing `identity.application_number` / `approval.applicationNumber` mean two products
+- Recalls also search records openFDA never harmonized (`product_description`); `recalls_total` gives the match count beside the newest 5 recalls
+- Sections `label`, `adverse_events`, `recalls`, `approval`, and `shortage` are best-effort and come back `null` (or an empty `recalls`) on a miss; `degraded[]` names each section whose sub-query failed upstream, so a listed section is unknown rather than absent; a sub-query cut by the 50 s profile deadline is listed with reason `timeout`
 - Auth, configuration, and cancellation failures fail the whole call instead of degrading a section
 
 ---
 
 ### `openfda_search_adverse_events` <sub>tool</sub>
 
-- `category` (`drug`, `food`, `device`) selects the endpoint and its record schema; up to 1000 records per page
-- Sortable date fields differ by category: `receivedate` (drug), `date_created` (food), `date_received` (device); another category's field fails as `query_error`
-- Text output decodes drug administration route, reaction outcome, and patient age group codes beside the raw value (`via oral (048)`, `fatal (5)`, `elderly (6)`); structured output keeps the codes
+- `category` (`drug`, `food`, `device`) selects the endpoint and its record schema; `limit` defaults to 5 (cap 25) for drug, 25 (cap 1000) for food, 10 (cap 175) for device
+- Sortable date fields differ by category: `receivedate` (drug), `date_created` (food), `date_received` (device); another category's field fails as `query_error`; with neither `search` nor `sort`, results come newest first on that field
+- Text output lists each reaction with its outcome (`Death — fatal (5)`), shows onset age with its unit (`3 month (802)`), and decodes the coded drug and report fields from FDA's field reference beside the raw value (`via oral (048)`, `elderly (6)`, `drug withdrawn (1)`); structured output keeps the codes
 
 ---
 
 ### `openfda_search_animal_events` <sub>tool</sub>
 
-- Optional `search` over veterinary reports, e.g. `animal.species`, `drug.active_ingredients.name`, `reaction.veddra_term_name`, `serious_ae`; up to 1000 records per page
+- Optional `search` over veterinary reports, e.g. `animal.species`, `drug.active_ingredients.name`, `reaction.veddra_term_name`, `serious_ae`; `limit` defaults to 25, cap 450; a bare browse (no `search`, no `sort`) is newest first by `original_receive_date`
 - Brand and manufacturer names are masked as `MSK` on every record, so search by active ingredient; `drug.manufacturer.registration_number` narrows to one approval
 - Records carry animal species, breed, age, and weight, the drug and route, VeDDRA reaction terms, and outcome
 
@@ -80,28 +82,28 @@ FDA data on drugs, food, devices, and recalls from the openFDA public API. Searc
 
 ### `openfda_search_drug_shortages` <sub>tool</sub>
 
-- Optional `search` over `status` (`Current` / `To Be Discontinued` / `Resolved`), `therapeutic_category`, `generic_name`, or `company_name`; up to 1000 records per page
+- Optional `search` over `status` (`Current` / `To Be Discontinued` / `Resolved`), `therapeutic_category`, `generic_name`, or `company_name`; `limit` defaults to 25, cap 1000
 - Each record's `openfda` block carries `brand_name`, `product_ndc`, and `rxcui` for chaining into `openfda_get_drug_label` or `openfda_lookup_ndc`
 
 ---
 
 ### `openfda_search_tobacco_reports` <sub>tool</sub>
 
-- Optional `search` over `tobacco_products`, `reported_health_problems`, `reported_product_problems`, or `nonuser_affected`; up to 1000 records per page
+- Optional `search` over `tobacco_products`, `reported_health_problems`, `reported_product_problems`, or `nonuser_affected`; `limit` defaults to 25, cap 1000; a bare browse (no `search`, no `sort`) is newest first by `date_submitted`
 - Reports carry the problem arrays plus `number_tobacco_products`, `number_health_problems`, and `number_product_problems` counts
 
 ---
 
 ### `openfda_search_recalls` <sub>tool</sub>
 
-- `category` (`drug`, `food`, `device`) plus `endpoint`: `enforcement` (default, every category) or `recall` (devices only; other categories fail as `recall_endpoint_non_device`); up to 1000 records per page
+- `category` (`drug`, `food`, `device`) plus `endpoint`: `enforcement` (default, every category) or `recall` (devices only; other categories fail as `recall_endpoint_non_device`); `limit` defaults to 25 (cap 1000) for drug and food enforcement, 10 (cap 125) for device enforcement, 10 (cap 50) for device recall; a bare browse (no `search`, no `sort`) is newest first by `report_date` (`event_date_initiated` for device recall)
 - Enforcement records carry `recall_number`, `classification` (Class I/II/III), and `status`; device recall records carry `product_res_number` and `recall_status` instead, with no hazard classification
 
 ---
 
 ### `openfda_count_values` <sub>tool</sub>
 
-- `endpoint` (any of the 20 openFDA endpoints), a `count` field expression, and an optional `search`; returns up to 1000 top terms (default 100), ranked by count; a date field returns one term per distinct `YYYYMMDD` date, ranked the same way
+- `endpoint` (any of the 20 openFDA endpoints), a `count` field expression, and an optional `search`; returns the top `limit` terms (default 100, cap 1000; a larger `limit` returns 1000 with a notice), ranked by count; a date field returns one term per distinct `YYYYMMDD` date, ranked the same way
 - `truncated` flags more distinct terms past `limit`, except at the 1000-term maximum, where a notice says completeness can't be known (a date count is exact at any limit, since openFDA sends every date); an expression openFDA can't aggregate fails as `not_aggregatable` (take the `countAs` form from `openfda_describe_fields`)
 - Always runs against the live API, even with the bulk mirror enabled
 
@@ -116,29 +118,29 @@ FDA data on drugs, food, devices, and recalls from the openFDA public API. Searc
 
 ### `openfda_get_drug_label` <sub>tool</sub>
 
-- Required `search` on label fields (`openfda.brand_name`, `openfda.generic_name`, `openfda.manufacturer_name`, `set_id`); `limit` defaults to 5, max 1000
-- A page over the 24,000-byte inline budget returns `kind: "outline"` (section names and sizes, largest first) instead of label text; re-call with `sections: [...]` to get those sections plus identity metadata (`openfda`, `set_id`, `id`, `effective_time`, `version`), returned whole even when over budget
+- Required `search` on label fields (`openfda.brand_name`, `openfda.generic_name`, `openfda.manufacturer_name`, `set_id`); `limit` defaults to 5, cap 1000 (a larger value returns 1000 records with a notice naming the next `skip`); an empty search names `spl_product_data_elements` for labels openFDA never linked to a product
+- A page over 24,000 bytes returns `kind: "outline"` (section names and sizes, largest first) instead of label text; re-call with `sections: [...]` to get those sections plus identity metadata (`openfda`, `set_id`, `id`, `effective_time`, `version`), returned whole even when over budget
 - `*_table` sections render as Markdown tables in the text output; structured results keep the raw SPL markup
 
 ---
 
 ### `openfda_search_drug_approvals` <sub>tool</sub>
 
-- Optional `search` over `openfda.brand_name`, `sponsor_name` (stored uppercase, so a lowercase quoted value matches nothing), `submissions.submission_type`, or `submissions.review_priority`; up to 1000 records per page
+- Optional `search` over `products.brand_name` (any letter case; `openfda.*` covers harmonized applications only), `sponsor_name` (stored uppercase, so a lowercase quoted value matches nothing), `submissions.submission_type`, or `submissions.review_priority`; omitted, the page is newest first by latest submission (`submissions.submission_status_date:desc`), not approval date; `limit` defaults to 25, cap 375
 - Records carry `application_number`, `sponsor_name`, `products[]`, and the application's full `submissions[]` history
 
 ---
 
 ### `openfda_search_device_clearances` <sub>tool</sub>
 
-- `pathway` (`510k` or `pma`, one per call) plus an optional `search` over `applicant`, `product_code`, `advisory_committee_description`, or `openfda.device_name`; up to 1000 records per page
+- `pathway` (`510k` or `pma`, one per call) plus an optional `search` over `applicant`, `product_code`, `advisory_committee_description`, or `openfda.device_name`; `limit` defaults to 10 (cap 175) for 510(k), 25 (cap 575) for PMA; a bare browse (no `search`, no `sort`) is newest first by `decision_date`
 - 510(k) records carry `k_number`, `device_name`, and `decision_date`; PMA records carry `pma_number`, `trade_name`, and `supplement_number`
 
 ---
 
 ### `openfda_lookup_ndc` <sub>tool</sub>
 
-- Required `search` over `product_ndc`, `brand_name`, `generic_name`, `openfda.manufacturer_name`, or `active_ingredients.name`; up to 1000 records per page
+- Required `search` over `product_ndc`, `brand_name`, `generic_name`, `labeler_name`, or `active_ingredients.name`; `limit` defaults to 25, cap 1000
 - Records carry `product_ndc`, `labeler_name`, `dosage_form`, `route`, `marketing_category`, `active_ingredients[]`, and `packaging[]`
 
 ---
@@ -171,16 +173,16 @@ openFDA-specific:
 
 - One client for all 20 openFDA endpoints, with retry on 429 and 5xx. No API key is needed (1K requests/day); a free `OPENFDA_API_KEY` raises that to 120K/day
 - Queries are `field:value` over dotted paths joined by AND/OR (a URL-style `+` between clauses reads as a space); `openfda_describe_fields` lists the paths, and a malformed query fails as `malformed_search` before any request
-- Paging: `limit` up to 1000 and `skip` up to openFDA's 25,000-record ceiling (`pagination_limit_reached` past it); each page is held to a 24,000-byte budget
+- Paging: `limit` is the page size, with a default and cap per endpoint (default 5 and cap 25 for drug adverse events, default 25 and cap 1000 for the shortest records); a larger value is clamped to the cap with a notice, and `skip` runs up to openFDA's 25,000-record ceiling (`pagination_limit_reached` past it); no page is cut to a byte budget
 - `fields` on any `openfda_search_*` tool or `openfda_lookup_ndc` trims each record to the dotted paths you name, so large records fit inline
 - DataCanvas staging (on by default; `CANVAS_PROVIDER_TYPE=none` turns it off) with `stage: true` or a `canvas_id`, and an optional local bulk mirror (`OPENFDA_MIRROR_ENABLED=true`) that answers exact-key lookups without spending API budget
 
 Agent-friendly output:
 
-- Disclosed bounds: `page_omitted`, `page_bytes`, `page_largest_fields`, `projected_fields`, the label `outline`, and `staged_rows` report every cut
+- Disclosed bounds: the clamp notice, `projected_fields`, the label `outline`, and `staged_rows` report every clamp, projection, outline, and staging cut; `page_bytes` and `page_largest_fields` flag a record over 24,000 bytes
 - Typed failures: callers branch on `error.data.reason` (`rate_limited`, `query_error`, `not_aggregatable`, ...) instead of parsing messages
 - Unknown vs. absent: `openfda_drug_profile` returns `null` for a section with no FDA record and lists failed sections in `degraded[]`
-- Empty-result guidance: a no-match search points at `openfda_describe_fields` and broader terms
+- Empty-result guidance: a no-match search points at `openfda_describe_fields`, broader terms, and the endpoint's own product-name field
 
 ## Getting started
 
@@ -217,6 +219,7 @@ No API key is needed. A free [openFDA API key](https://open.fda.gov/apis/authent
 |:---|:---|:---|
 | `OPENFDA_API_KEY` | Free API key from [open.fda.gov](https://open.fda.gov/apis/authentication/); raises the daily limit from 1K to 120K requests. | none |
 | `OPENFDA_BASE_URL` | API base URL override, for a proxy or mock. | `https://api.fda.gov` |
+| `OPENFDA_CLAMP_LIMITS` | Clamp a `limit` above its endpoint's cap to the cap, with a notice; `false` rejects it and advertises the cap as the schema `maximum`. | `true` |
 | `OPENFDA_MIRROR_ENABLED` | Answer exact-key lookups from the [local bulk mirror](#local-bulk-mirror). | `false` |
 | `OPENFDA_MIRROR_PATH` | Directory holding one SQLite file per mirrored dataset. | `./data/openfda-mirror` |
 | `OPENFDA_MIRROR_REFRESH_CRON` | Cron expression for the in-process mirror refresh (HTTP transport only). | none |
@@ -252,7 +255,7 @@ bun run mirror:verify                # integrity check + row counts
 bun run mirror:refresh               # re-harvest datasets whose dump has advanced
 ```
 
-A refresh re-reads the whole dump. Set `OPENFDA_MIRROR_REFRESH_CRON` to run it in-process on the HTTP transport; on stdio, run `bun run mirror:refresh` from the host. A mirrored response's `meta.lastUpdated` is the served dump's stamp, which can differ from the live API's.
+A refresh re-reads the whole dump, and server shutdown stops a refresh in progress; the next refresh resumes it. Set `OPENFDA_MIRROR_REFRESH_CRON` to run it in-process on the HTTP transport; on stdio, run `bun run mirror:refresh` from the host. A mirrored response's `meta.lastUpdated` is the served dump's stamp, which can differ from the live API's.
 
 On Node, install the optional `better-sqlite3` peer dependency (Bun uses its built-in `bun:sqlite`). `OPENFDA_MIRROR_REFRESH_CRON` also needs the optional `node-cron` peer dependency; without it the server fails at startup.
 
@@ -260,7 +263,7 @@ On Node, install the optional `better-sqlite3` peer dependency (Bun uses its bui
 
 ### Local development
 
-Requires [Bun v1.4.0](https://bun.sh/) or higher (or Node.js v24+).
+Requires [Bun v1.4.4](https://bun.sh/) or higher (or Node.js v24+).
 
 - **Clone and install:**
 
@@ -306,7 +309,7 @@ The image defaults to HTTP transport, stateless session mode, and logs to `/var/
 | `src/config` | Server-specific environment variable parsing and validation with Zod. |
 | `src/mcp-server/tools/definitions` | Tool definitions (`*.tool.ts`), fifteen in all. |
 | `src/mcp-server/tools` | Shared tool helpers: per-endpoint field catalog, input schemas and guards, formatters, SPL table rendering. |
-| `src/services/openfda` | openFDA API client (retry, rate limits, error normalization), inline page budget, `fields` record projection, canvas staging. |
+| `src/services/openfda` | openFDA API client (retry, rate limits, 50 s call deadline, error normalization), oversized-record disclosure, `fields` record projection, canvas staging. |
 | `src/services/openfda/mirror` | Opt-in local bulk mirror: dataset registry, dump reader, harvester, mirror-vs-live query gate, refresh schedule. |
 | `src/services/canvas` | DataCanvas accessor for staging and SQL. |
 | `scripts/openfda-mirror.ts` | Mirror lifecycle CLI behind the `mirror:*` scripts. |

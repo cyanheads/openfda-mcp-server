@@ -4,7 +4,7 @@ description: Query discipline for the openfda_* tools — gates that stop false 
 license: Apache-2.0
 metadata:
   author: cyanheads
-  version: "1.0"
+  version: "1.1"
 ---
 
 ## Scope
@@ -15,9 +15,9 @@ openFDA's public API: drug, device, and food adverse-event reports, enforcement 
 
 | Identifier | Shape | Yielded by | Consumed by |
 |:--|:--|:--|:--|
-| Product NDC | `69339-364`, hyphenated labeler-product | `openfda_lookup_ndc`, `openfda_drug_profile` identity, `openfda.product_ndc` on shortage and label records | `product_ndc:"…"` in `openfda_lookup_ndc` |
+| Product NDC | `69339-364`, hyphenated labeler-product | `openfda_lookup_ndc`, `openfda_drug_profile` identity (an original packager's label when one matches; `identity.is_original_packager: false` marks a repackager's), `openfda.product_ndc` on shortage and label records | `product_ndc:"…"` in `openfda_lookup_ndc` |
 | Package NDC | `69339-364-05` | shortage records (one record per package), `packaging[].package_ndc` on NDC records | `packaging.package_ndc:"…"` in `openfda_lookup_ndc` |
-| Application number | `ANDA077861`, `NDA…`, `BLA…` | `openfda_search_drug_approvals`, NDC records, `openfda.application_number` blocks | `application_number:"…"` in `openfda_search_drug_approvals` |
+| Application number | `ANDA077861`, `NDA…`, `BLA…` | `openfda_search_drug_approvals`, `openfda_drug_profile` identity and approval, NDC records, `openfda.application_number` blocks | `application_number:"…"` in `openfda_search_drug_approvals` |
 | SPL set ID | UUID | label records, `openfda.spl_set_id` on NDC and shortage records, profile identity | `set_id:"…"` in `openfda_get_drug_label`; openFDA keeps one current label per set |
 | K-number / PMA number | `K201189` / `P…` | `openfda_search_device_clearances`; `k_numbers` / `pma_numbers` on device recall records | `k_number:"…"` / `pma_number:"…"` in `openfda_search_device_clearances` |
 | Product code | 3 letters, e.g. `OLO` | device recall, 510(k), and PMA records | `product_code:"…"` on those endpoints |
@@ -36,7 +36,7 @@ NDCs match only in their hyphenated form: `product_ndc:"69339364"` matches nothi
 
 **Before concluding absence**
 A zero or low count is not evidence until each of these has been ruled out:
-1. **Empty `openfda` blocks.** The harmonized `openfda.*` fields exist only where FDA could link the record to a product. In drug enforcement, 3,097 of about 18,000 records carry `openfda.generic_name`. About 180,000 drug labels have an empty `openfda` block. Repeat the search on the record's own text fields: `product_description` for recalls, `spl_product_data_elements` for labels. For metformin, recalls go from 33 to 91 on `product_description`. For lisinopril, 577 labels with no `openfda` block turn up on `spl_product_data_elements`, beside 216 found by `openfda.brand_name`.
+1. **Empty `openfda` blocks.** The harmonized `openfda.*` fields exist only where FDA could link the record to a product. In drug enforcement, 2,934 of 18,110 records carry `openfda.generic_name`. 177,118 of 264,693 drug labels have no `openfda` block. In Drugs@FDA, `openfda.*` is on 12,526 of 29,452 applications, while `products.brand_name` is on 29,096. Repeat the search on the record's own fields: `product_description` for recalls, `spl_product_data_elements` for labels, `products.brand_name` for Drugs@FDA applications. For metformin, recalls go from 32 to 91 on `product_description`. For lisinopril, 567 labels with no `openfda.brand_name` turn up on `spl_product_data_elements`, beside 227 found by `openfda.brand_name`. (Figures as of 2026-11-10.)
 2. **Name field and spelling.** In `drug/event`, `patient.drug.medicinalproduct` is the name as the reporter typed it. For atorvastatin, `medicinalproduct:"atorvastatin"` matches 343,931 reports, `medicinalproduct:"lipitor"` matches 180,918, and `patient.drug.openfda.generic_name:"atorvastatin"` matches 249,606. OR-ing all three matches 519,687. Pick one definition, state it, and use the same one for every drug you compare.
 3. **Phrase vs `.exact`.** A quoted phrase on a text field matches the words anywhere in a value: `reactionmeddrapt:"liver injury"` also matches `DRUG-INDUCED LIVER INJURY` (58,268 reports). `reactionmeddrapt.exact:"LIVER INJURY"` matches only the whole term (23,867).
 4. **Case on keyword fields.** Some fields are stored uppercase and match only in that case. `sponsor_name` is one, and the tool description says so. When a lowercase quoted value returns zero, retry it in uppercase.
@@ -46,7 +46,7 @@ A zero or low count is not evidence until each of these has been ruled out:
 - openFDA cannot tie two clauses to the same array element. `patient.drug.medicinalproduct:"aspirin" AND patient.drug.drugcharacterization:"1"` matches any report that names aspirin and has any suspect drug. In a 25-report sample, aspirin was concomitant in 24. To count only reports where the drug is the suspect, read `drugcharacterization` on each drug entry of the returned records, or on a staged slice in SQL.
 - `openfda_count_values` over an array field tallies every element of every matching report. Counting `reactionmeddrapt.exact` on reports that match `LIVER INJURY` also returns their co-reported FATIGUE, PAIN, and NAUSEA. Counting drug names under a drug search likewise lists the concomitant drugs.
 - Report counts are not incidence. To compare two drugs, divide each drug's reaction count by that drug's total report count (`meta.total` from a search with `limit: 1`). Use the same name definition in both, and present the result as reporting proportions, not risk.
-- `openfda_drug_profile` keys `adverse_events` on the typed name in `medicinalproduct`, and keys recalls, approval, and shortage on `meta.fanOutKey`: the typed name when it is an ingredient of the resolved generic, otherwise that generic (brand input such as `Lipitor` keys on `ATORVASTATIN CALCIUM`). Its recall search covers `openfda.generic_name` and `product_description`, so item 1's gap is closed for that one phrase, and `recalls_total` counts every match beside the newest 5 shown. A report that names the drug another way (a brand only, a misspelling) is still missed: use `openfda_search_recalls` for the complete list.
+- `openfda_drug_profile` keys `adverse_events` on the typed name in `medicinalproduct`, ranks `approval` over the typed name's own Drugs@FDA matches, and keys recalls and shortage on `meta.fanOutKey`: the typed name when it is an ingredient of the resolved generic, otherwise that generic (brand input such as `Lipitor` keys on `ATORVASTATIN CALCIUM`). Each section names the product it describes. Compare `identity.application_number` with `approval.applicationNumber` before attributing the label to the approved product. Read `shortage.product` and `shortage.namesInput` before reading one presentation's status as the drug's: every `Humira` shortage record is a Hyrimoz or Simlandi one (as of 2026-11-10). Its recall search covers `openfda.generic_name` and `product_description`, so item 1's gap is closed for that one phrase, and `recalls_total` counts every match beside the newest 5 shown. A report that names the drug another way (a brand only, a misspelling) is still missed: use `openfda_search_recalls` for the complete list.
 - Counting a date field (`receivedate`) returns the busiest dates first, not a time series; scope `search` to a date range of at most `limit` dates to get every bucket.
 
 ## Workflows
@@ -57,11 +57,11 @@ A zero or low count is not evidence until each of these has been ruled out:
 
 **Shortage → products.** `openfda_search_drug_shortages` with `generic_name:"<ingredient>"` returns one record per package, with `status` on each. Pass `package_ndc` to `openfda_lookup_ndc` as `packaging.package_ndc:"…"`, or use `openfda.product_ndc` / `openfda.spl_set_id` to reach the NDC record and the label.
 
-**Label question for a brand or generic.** One name matches many labels, from repackagers and multiple manufacturers (216 for `openfda.brand_name:"lisinopril"`). Narrow by `openfda.manufacturer_name`, `sort: effective_time:desc`, or a `set_id` you already hold. When the response returns an outline, re-call with `sections` naming only the sections that answer the question. For dosing in a population, that is usually `dosage_and_administration` plus the population section listed in the outline.
+**Label question for a brand or generic.** One name matches many labels, from repackagers and multiple manufacturers (227 for `openfda.brand_name:"lisinopril"` as of 2026-11-10). Narrow by `openfda.manufacturer_name`, `sort: effective_time:desc`, or a `set_id` you already hold. When the response returns an outline, re-call with `sections` naming only the sections that answer the question. For dosing in a population, that is usually `dosage_and_administration` plus the population section listed in the outline.
 
-**Bulk analysis.** Results too large to return inline are staged as a DataCanvas table, and the response carries a `canvas_id`. Call `openfda_dataframe_describe` with it for the staged table and column names before writing SQL, then `openfda_dataframe_query` with a read-only query. Pass the same `canvas_id` back to stage further results beside the first; the tables expire with the canvas.
+**Bulk analysis.** A search stages nothing unless it passes `stage: true`, or a `canvas_id` from an earlier staged call to add its table to that canvas; the response then carries `canvas_id` and `canvas_table`. Call `openfda_dataframe_describe` with the `canvas_id` for the staged table and column names before writing SQL, then `openfda_dataframe_query` with a read-only query. Pass the same `canvas_id` back to stage further results beside the first; the tables expire with the canvas.
 
-A staged drain stops at about 16 MB. A drug adverse-event report averages about 65 KB, so the table holds a few hundred reports. Any `GROUP BY` over it describes only the staged slice, so compare `staged_rows` with `meta.total` before reading it as a population figure. For a distribution over everything that matched, use `openfda_count_values`. Stage when you need record-level logic that openFDA can't express, such as per-drug-entry suspect filtering.
+A staged drain stops at about 16 MB. A drug adverse-event report runs tens of kilobytes, so the table holds a few hundred reports. Any `GROUP BY` over it describes only the staged slice, so compare `staged_rows` with `meta.total` before reading it as a population figure. For a distribution over everything that matched, use `openfda_count_values`. Stage when you need record-level logic that openFDA can't express, such as per-drug-entry suspect filtering.
 
 ## References
 
