@@ -12,6 +12,12 @@ const ServerConfigSchema = z.object({
     .optional()
     .describe('openFDA API key — increases daily request limit from 1K to 120K'),
   baseUrl: z.string().default('https://api.fda.gov').describe('openFDA API base URL'),
+  clampLimits: z
+    .stringbool()
+    .default(true)
+    .describe(
+      'Clamp a limit above its endpoint cap to the cap with a notice; false rejects it and advertises the cap as the schema maximum',
+    ),
 
   /* --- DataCanvas (on by default; off with CANVAS_PROVIDER_TYPE=none) --- */
   dataframeDropEnabled: z
@@ -56,6 +62,7 @@ export function getServerConfig(): ServerConfig {
   _config ??= parseEnvConfig(ServerConfigSchema, {
     apiKey: 'OPENFDA_API_KEY',
     baseUrl: 'OPENFDA_BASE_URL',
+    clampLimits: 'OPENFDA_CLAMP_LIMITS',
     dataframeDropEnabled: 'OPENFDA_DATAFRAME_DROP_ENABLED',
     mirrorEnabled: 'OPENFDA_MIRROR_ENABLED',
     mirrorPath: 'OPENFDA_MIRROR_PATH',

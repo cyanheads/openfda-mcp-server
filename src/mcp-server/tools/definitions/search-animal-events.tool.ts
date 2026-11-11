@@ -1,13 +1,13 @@
 /**
  * @fileoverview Tool for searching openFDA animal and veterinary adverse event
- * reports. The inline page is bounded by a serialized-byte budget and discloses any
- * records it withheld along with the routes to them.
+ * reports. A page holding a record over 24,000 bytes names its largest fields.
  * @module mcp-server/tools/definitions/search-animal-events
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { CanvasIdSchema, type ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { sortOrNewest } from '@/mcp-server/tools/default-sort.js';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
   codeLiteral,
@@ -25,8 +25,12 @@ import {
   assertSkipWithinCeiling,
   fieldSelection,
   fieldsDescription,
+  META_LIMIT_DESCRIPTION,
   malformedSearchError,
+  pageLimit,
+  pageSizeNotice,
   phrasePlusHint,
+  resolvePageSize,
   SEARCH_SYNTAX_NOTE,
   SKIP_DESCRIPTION,
   searchExpression,
@@ -47,11 +51,10 @@ import {
 } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import {
-  boundedPage,
-  META_LIMIT_DESCRIPTION,
-  PAGE_BUDGET_NOTE,
-  pageBudgetNotice,
-  pageBudgetOutputShape,
+  inlinePage,
+  OVERSIZED_RECORD_BYTES,
+  oversizedRecordNotice,
+  oversizedRecordOutputShape,
 } from '@/services/openfda/page-budget.js';
 import {
   projectionNotice,
@@ -64,6 +67,9 @@ import {
  * `unique_aer_id_number`.
  */
 const IDENTITY_KEYS = ['unique_aer_id_number'] as const;
+
+/** The sort a bare browse sends: the report FDA received most recently first. */
+const NEWEST_FIRST = 'original_receive_date:desc';
 
 /**
  * The value openFDA stores in place of every veterinary brand and manufacturer
@@ -104,19 +110,14 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
     search: searchExpression()
       .optional()
       .describe(
-        `openFDA search query using field:value syntax. Examples: animal.species:"Dog", drug.active_ingredients.name:"Fluralaner", reaction.veddra_term_name:"Vomiting", serious_ae:"true". Omit to browse recent reports. ${SEARCH_SYNTAX_NOTE}`,
+        `openFDA search query using field:value syntax. Examples: animal.species:"Dog", drug.active_ingredients.name:"Fluralaner", reaction.veddra_term_name:"Vomiting", serious_ae:"true". Omit to browse newest first, sorted by ${NEWEST_FIRST}. ${SEARCH_SYNTAX_NOTE}`,
       ),
     sort: sortExpression()
       .optional()
       .describe(
-        'Sort expression — a field path optionally suffixed with :asc or :desc (any letter case; :ascending and :descending are also accepted, and every direction is sent as asc or desc); comma-separate for multi-field sort. Example: original_receive_date:desc. Field paths take only letters, digits, underscores, and dots; any other character or direction is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
+        `Sort expression — a field path optionally suffixed with :asc or :desc (any letter case; :ascending and :descending are also accepted, and every direction is sent as asc or desc); comma-separate for multi-field sort. Omitted with no search, defaults to ${NEWEST_FIRST}, newest first; omitted with a search, results come in openFDA's relevance order. Field paths take only letters, digits, underscores, and dots; any other character or direction is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.`,
       ),
-    limit: z
-      .number()
-      .min(1)
-      .max(1000)
-      .default(10)
-      .describe(`Maximum number of records to return (1-1000, default 10). ${PAGE_BUDGET_NOTE}`),
+    limit: pageLimit('animalandveterinary/event', 'Records per page.'),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     fields: fieldSelection()
       .optional()
@@ -142,7 +143,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       .describe(
         'Animal adverse event records. Key fields: unique_aer_id_number, original_receive_date, serious_ae, animal (species, gender, breed, age, weight), drug[] (brand_name, active_ingredients, route, dose, administered_by), reaction[] (veddra_term_name, number_of_animals_affected), outcome[] (medical_status), primary_reporter, type_of_information.',
       ),
-    ...pageBudgetOutputShape,
+    ...oversizedRecordOutputShape,
     ...projectionOutputShape,
     ...canvasOutputShape,
   }),
@@ -157,7 +158,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       .string()
       .optional()
       .describe(
-        'Canvas staging disclosure when the call staged, the fields projection and any requested path no record carries, the byte-budget disclosure when the inline page was bounded or one record exceeds it (with the routes to the withheld records and the largest fields of the oversized record), and guidance when results are empty or paging overshot — how to broaden filters or adjust the query.',
+        `Canvas staging disclosure when the call staged, the limit clamp when limit exceeded the cap (requested value, cap, next skip), the fields projection and any requested path no record carries, the size and largest fields when a record on the page exceeds ${OVERSIZED_RECORD_BYTES} bytes, and guidance when results are empty or paging overshot — how to broaden filters or adjust the query.`,
       ),
   },
 
@@ -204,6 +205,8 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
   async handler(input, ctx) {
     assertSkipWithinCeiling(input.skip, ctx);
     assertSearchDelimitersBalanced(input.search, ctx);
+    const size = resolvePageSize(input.limit, 'animalandveterinary/event', ctx);
+    const sort = sortOrNewest(input, NEWEST_FIRST);
 
     const maskedFieldNote = MASKED_FIELDS.some((field) => input.search?.includes(field))
       ? ` ${MASKED_FIELD_GUIDANCE}`
@@ -230,10 +233,10 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       const spill = await spillSearch({
         endpoint: 'animalandveterinary/event',
         search: input.search,
-        sort: input.sort,
+        sort,
         canvasId: input.canvas_id,
         schema: ANIMAL_EVENTS_CANVAS_SCHEMA,
-        limit: input.limit,
+        limit: size.limit,
         skip: input.skip,
         projection,
         ctx,
@@ -245,8 +248,9 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
         [
           spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
           phrasePlusHint(input.search, spill.total),
+          pageSizeNotice(size, staged),
           projectionNotice(staged),
-          pageBudgetNotice(staged),
+          oversizedRecordNotice(staged),
           stagingNotice(spill),
         ]
           .filter(Boolean)
@@ -260,19 +264,18 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       'animalandveterinary/event',
       {
         search: input.search,
-        sort: input.sort,
-        limit: input.limit,
+        sort,
+        limit: size.limit,
         skip: input.skip,
       },
       ctx,
     );
 
-    const page = boundedPage(response, projection);
+    const page = inlinePage(response, size.limit, projection);
 
     ctx.log.info('Animal adverse event search completed', {
       total: response.meta.total,
       returned: page.results.length,
-      pageOmitted: page.page_omitted,
     });
 
     ctx.enrich({ totalResults: response.meta.total });
@@ -282,8 +285,9 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
         ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
         : undefined,
       phrasePlusHint(input.search, response.meta.total),
+      pageSizeNotice(size, page),
       projectionNotice(page),
-      pageBudgetNotice(page),
+      oversizedRecordNotice(page),
     ].filter(Boolean);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
@@ -398,6 +402,8 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
             ),
           );
         }
+        // A blank line ends the list; without it the next line continues the last item.
+        lines.push('');
       }
 
       // Outcomes

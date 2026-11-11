@@ -1,8 +1,9 @@
 /**
  * @fileoverview Tests for the spillSearch DataCanvas helper. The mock
  * CanvasInstance drains the async source registerTable receives, so the paging
- * cadence, the byte budget, the 25k ceiling, and the truncation signal all run
- * for real with only the openFDA service and the canvas accessor stubbed.
+ * cadence, the drain's byte budget, the 25k ceiling, the truncation signal, and
+ * the inline page's oversized-record disclosure all run for real with only the
+ * openFDA service and the canvas accessor stubbed.
  * @module tests/services/openfda/canvas-spill.test
  */
 
@@ -240,14 +241,11 @@ describe('spillSearch', () => {
     expect(result.stagedRows).toBe(50);
   });
 
-  it('never empties the inline page, whatever a single record measures (#31)', async () => {
+  it('holds the whole window, whatever its records measure (#31, #92)', async () => {
     /*
-     * The invariant #31 fixed is that record size cannot empty the page — a 70 KB
-     * `drug/event` report must not render as "No results found." for a match of
-     * hundreds. It is not that the page always holds the full `limit`: #18 asked
-     * for `min(limit, budget-fit)` rows, and #39's byte budget supplies the
-     * budget-fit half. One record here is 70 KB against a 24,000-byte page budget,
-     * so the page holds exactly one — returned whole, never trimmed — and says so.
+     * Record size can neither empty the page (#31) nor shorten it (#92): `limit`
+     * is the page size. Two 70 KB `drug/event`-shaped records come back whole,
+     * and the page states its weight instead of dropping one.
      */
     const svc = makeSvc(600, 70_000);
     await setSvcMock(svc);
@@ -263,10 +261,32 @@ describe('spillSearch', () => {
       skip: 0,
     });
 
-    expect(result.preview).toHaveLength(1);
-    expect(result.preview[0]?.blob).toHaveLength(70_000);
-    expect(result.previewBudget.page_omitted).toBe(1);
+    expect(result.preview.map((r) => r.id)).toEqual(['r0', 'r1']);
+    expect(result.preview[1]?.blob).toHaveLength(70_000);
+    expect(result.previewOversized.page_bytes).toBe(
+      Buffer.byteLength(JSON.stringify(result.preview), 'utf8'),
+    );
+    expect(result.previewOversized.page_largest_fields).toEqual([{ path: 'blob', bytes: 70_002 }]);
+    expect(result.previewOversized).not.toHaveProperty('page_omitted');
     expect(result.total).toBe(600);
+  });
+
+  it('discloses nothing on a window whose records each fit, however large the page', async () => {
+    // Ten ~10 KB records: a ~100 KB page with no record over 24,000 bytes.
+    await setSvcMock(makeSvc(40, 10_000));
+    const { canvas } = makeCanvas();
+    await setCanvasMock(canvas);
+
+    const result = await spillSearch({
+      endpoint: 'drug/event',
+      schema: SCHEMA,
+      ctx: createMockContext(),
+      limit: 10,
+      skip: 0,
+    });
+
+    expect(result.preview).toHaveLength(10);
+    expect(result.previewOversized).toEqual({});
   });
 
   it('stages nothing when the query matched no records', async () => {
@@ -320,10 +340,9 @@ describe('spillSearch', () => {
 });
 
 /*
- * #73 — `meta.limit` is the page size applied to the request: the caller's limit,
- * lowered to the records kept only when the inline byte budget dropped some. The
- * staged response must report what the plain path reports for the same request,
- * so a short or empty window never reads as a smaller requested limit.
+ * #73, #92 — `meta.limit` is the page size applied to the request, as the call
+ * resolved it. The staged response must report what the plain path reports for
+ * the same request, so a short or empty window never reads as a smaller limit.
  */
 describe('canvasResult meta.limit (#73)', () => {
   beforeEach(async () => {
@@ -363,25 +382,25 @@ describe('canvasResult meta.limit (#73)', () => {
     expect(result.meta.limit).toBe(10);
   });
 
-  it('reports the requested limit on a full page the budget did not bound', async () => {
+  it('reports the requested limit on a full page', async () => {
     const { result } = await stagedMeta(makeSvc(2500), { limit: 10, skip: 0 });
     expect(result.results).toHaveLength(10);
-    expect(result.page_omitted).toBeUndefined();
     expect(result.meta.limit).toBe(10);
   });
 
-  it('lowers the limit to the records kept when the budget dropped some', async () => {
-    // ~10 KB records: two fit the 24,000-byte budget, the other eight are dropped.
+  it('keeps every record and the requested limit on a page past 24,000 bytes', async () => {
+    // ~10 KB records: the earlier byte budget kept two of these ten and reported limit 2.
     const { result } = await stagedMeta(makeSvc(40, 10_000), { limit: 10, skip: 0 });
-    expect(result.results).toHaveLength(2);
-    expect(result.page_omitted).toBe(8);
-    expect(result.meta.limit).toBe(2);
+    expect(result.results).toHaveLength(10);
+    expect(result.meta.limit).toBe(10);
+    expect(result).not.toHaveProperty('page_omitted');
+    expect(result).not.toHaveProperty('page_bytes');
   });
 
-  it('keeps the requested limit for a lone record over the budget that dropped nothing', async () => {
+  it('keeps the requested limit for a lone record over 24,000 bytes, and states its size', async () => {
     const { result } = await stagedMeta(makeSvc(1, 70_000), { limit: 10, skip: 0 });
     expect(result.results).toHaveLength(1);
-    expect(result.page_omitted).toBeUndefined();
+    expect(result).not.toHaveProperty('page_omitted');
     expect(result.page_bytes).toBeGreaterThan(24_000);
     expect(result.meta.limit).toBe(10);
   });
@@ -393,7 +412,7 @@ describe('stagingNotice', () => {
     lastUpdated: '2026-06-01',
     limit: 10,
     preview: [],
-    previewBudget: {},
+    previewOversized: {},
     skip: 0,
     spilled: true,
     stagedRows: 235,
@@ -405,6 +424,16 @@ describe('stagingNotice', () => {
     const notice = stagingNotice({ ...base, truncated: true });
     expect(notice).toContain('narrow the query');
     expect(notice).toContain('openfda_count_values');
+  });
+
+  it('names the cause that stopped a truncated stage: the size budget or the row ceiling', () => {
+    const byBudget = stagingNotice({ ...base, truncated: true });
+    expect(byBudget).toContain('Staging stopped at its size budget');
+
+    const byCeiling = stagingNotice({ ...base, stagedRows: 25_000, truncated: true });
+    expect(byCeiling).toContain("Staging stopped at openFDA's 25000-row pagination ceiling");
+    expect(byCeiling).not.toContain('size budget');
+    expect(byCeiling).toContain('the table holds the first 25000 records');
   });
 
   it('omits the aggregate route when the whole match was staged (#36)', () => {

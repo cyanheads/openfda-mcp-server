@@ -8,6 +8,7 @@ import { createApp } from '@cyanheads/mcp-ts-core';
 import { normalizeEnv } from '@cyanheads/mcp-ts-core/config';
 import { setCanvas } from './services/canvas/canvas-accessor.js';
 import { closeMirrors, scheduleMirrorRefresh } from './services/openfda/mirror/index.js';
+import type { MirrorRefreshJob } from './services/openfda/mirror/refresh-schedule.js';
 import { initOpenFdaService } from './services/openfda/openfda-service.js';
 
 // Load .env before choosing defaults; exported deployment settings still win.
@@ -22,6 +23,9 @@ process.env.CANVAS_PROVIDER_TYPE = normalizeEnv(process.env).CANVAS_PROVIDER_TYP
 // Tool registration reads server configuration, so import it after loading .env.
 const { allToolDefinitions } = await import('./mcp-server/tools/definitions/index.js');
 
+/** The scheduled mirror refresh, when `setup()` registered one; teardown stops it. */
+let mirrorRefresh: MirrorRefreshJob | undefined;
+
 await createApp({
   name: 'openfda-mcp-server',
   title: 'openfda-mcp-server',
@@ -30,7 +34,7 @@ await createApp({
   // MCP_SESSION_MODE still overrides this when it carries a meaningful value.
   sessionMode: 'stateless',
   instructions:
-    'Use the openfda_* tools to query the openFDA public API for drugs, food, devices, and animal/veterinary products: search adverse events, drug approvals, device clearances, and recalls; look up NDC codes; fetch drug labels; aggregate field counts. Queries use dotted field paths joined by AND/OR with double-quoted phrases (e.g. `openfda.brand_name:"aspirin"`); cross-product fields use the `openfda.*` prefix.',
+    'Use the openfda_* tools to query the openFDA public API for drugs, food, devices, and animal/veterinary products: search adverse events, drug approvals, device clearances, and recalls; look up NDC codes; fetch drug labels; aggregate field counts. Queries use dotted field paths joined by AND/OR with double-quoted phrases (e.g. `patient.drug.medicinalproduct:"aspirin"`). The harmonized `openfda` block sits under `patient.drug` on drug adverse events (`patient.drug.openfda.brand_name`) and under `device` on device adverse events, is absent from food, animal, and tobacco records, and elsewhere exists only where openFDA linked the record to a product, so an `openfda.*` miss does not show the product is absent: also search the endpoint\'s own product field.',
   // Public catalog — serve full landing inventory without requiring auth
   landing: { requireAuth: false },
   skills: 'skills',
@@ -40,10 +44,13 @@ await createApp({
     setCanvas(core.canvas);
     // No-op unless OPENFDA_MIRROR_ENABLED and a refresh cron are both set; the
     // initial harvest always runs out-of-band via `bun run mirror:init`.
-    await scheduleMirrorRefresh(core.config.mcpTransportType);
+    mirrorRefresh = await scheduleMirrorRefresh(core.config.mcpTransportType);
   },
   async teardown() {
-    // Mirrors open lazily on first lookup; nothing else holds the SQLite files.
+    // A scheduled refresh writes to the stores, so it is stopped and settled
+    // before they close. Mirrors otherwise open lazily on first lookup, and
+    // nothing else holds the SQLite files.
+    await mirrorRefresh?.stop();
     await closeMirrors();
   },
 });

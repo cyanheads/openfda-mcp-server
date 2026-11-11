@@ -23,6 +23,7 @@
         "MCP_AUTH_MODE": "none",
         "NODE_ENV": "production",
         "OPENFDA_API_KEY": "${user_config.openfda_api_key}",
+        "OPENFDA_CLAMP_LIMITS": "${user_config.openfda_clamp_limits}",
         "CANVAS_PROVIDER_TYPE": "none",
         "OPENFDA_DATAFRAME_DROP_ENABLED": "${user_config.openfda_dataframe_drop_enabled}",
         "OPENFDA_MIRROR_ENABLED": "${user_config.openfda_mirror_enabled}",
@@ -48,6 +49,13 @@
       "required": false,
       "sensitive": true,
       "default": ""
+    },
+    "openfda_clamp_limits": {
+      "type": "string",
+      "title": "Clamp oversized limits",
+      "description": "Leave true so a limit above its endpoint's cap returns the cap's worth of records with a notice. Set to false to reject such a limit instead.",
+      "required": false,
+      "default": "true"
     },
     "openfda_dataframe_drop_enabled": {
       "type": "string",

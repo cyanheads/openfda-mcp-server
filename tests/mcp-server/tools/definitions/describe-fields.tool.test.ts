@@ -27,6 +27,23 @@ describe('openfda_describe_fields', () => {
     expect(result.queryTips).toBeTruthy();
   });
 
+  // #90 fold-in — the coded drug/event fields carry their code meanings and
+  // count form in the content[] table.
+  it('renders the coded drug/event fields with their code meanings (#90)', async () => {
+    const result = await describeFieldsTool.handler(
+      describeFieldsTool.input.parse({ endpoint: 'drug/event' }),
+      ctx,
+    );
+    const text = textOf(describeFieldsTool.format!(result));
+
+    expect(text).toMatch(
+      /^\| `patient\.patientonsetageunit` \| string \| not countable \| [^|]*802 = month[^|]*\|$/m,
+    );
+    expect(text).toMatch(
+      /^\| `patient\.drug\.actiondrug` \| string \| `patient\.drug\.actiondrug` \| [^|]*1 = drug withdrawn[^|]*\|$/m,
+    );
+  });
+
   it('returns groups for drug/shortages', async () => {
     const result = await describeFieldsTool.handler(
       describeFieldsTool.input.parse({ endpoint: 'drug/shortages' }),
@@ -204,6 +221,20 @@ describe('openfda_describe_fields', () => {
       );
 
       expect(queryTips).toMatch(/countAs/);
+    });
+
+    // #89 — the Drugs@FDA product name, which openfda.brand_name misses on every
+    // application openFDA never harmonized.
+    it('lists drug/drugsfda products.brand_name with count form .exact on both surfaces', async () => {
+      const result = await describeFieldsTool.handler(
+        describeFieldsTool.input.parse({ endpoint: 'drug/drugsfda' }),
+        ctx,
+      );
+
+      expect(countAsByPath(result).get('products.brand_name')).toBe('products.brand_name.exact');
+      expect(textOf(describeFieldsTool.format!(result))).toContain(
+        '| `products.brand_name` | string | `products.brand_name.exact` |',
+      );
     });
   });
 

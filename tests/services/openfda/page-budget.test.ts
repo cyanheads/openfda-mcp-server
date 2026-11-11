@@ -1,22 +1,27 @@
 /**
- * @fileoverview Size breakdown and disclosure for an inline page that meets the
- * byte budget (#66): which fields of an oversized record the notice names, the
- * exactness of the sizes it reports (UTF-8 bytes of the serialized JSON, the size
- * the payload occupies on the wire), the presence rule for `page_bytes` and
- * `page_largest_fields`, and the notice's wording per case. The tool-boundary
- * contract lives in `page-budget-contract.test.ts`.
+ * @fileoverview The oversized-record disclosure for an inline search page (#66,
+ * #92): a page holds every record its `limit`/`skip` window addresses, and only a
+ * record that serializes above 24,000 bytes on its own earns `page_bytes` and
+ * `page_largest_fields`. Covers which fields of an oversized record are named,
+ * the exactness of the sizes reported (UTF-8 bytes of the serialized JSON, the
+ * size the payload occupies on the wire), the presence rule for both fields, and
+ * the notice's wording per case. The tool-boundary contract lives in
+ * `page-budget-contract.test.ts`.
  * @module tests/services/openfda/page-budget.test
  */
 
 import { Buffer } from 'node:buffer';
 import { describe, expect, it } from 'vitest';
 import {
-  boundPageToBudget,
+  inlinePage,
   largestFields,
-  PAGE_BUDGET_BYTES,
-  pageBudgetFields,
-  pageBudgetNotice,
+  OVERSIZED_RECORD_BYTES,
+  oversizedRecordFields,
+  oversizedRecordLine,
+  oversizedRecordNotice,
 } from '@/services/openfda/page-budget.js';
+import { recordProjection } from '@/services/openfda/record-projection.js';
+import type { OpenFdaResponse } from '@/services/openfda/types.js';
 import { linearTiming } from '../../helpers/cpu-timing.js';
 
 /** UTF-8 bytes of the serialized value — what it occupies on the wire. */
@@ -48,33 +53,105 @@ const REPORT = {
   },
 };
 
-/** The response shape a handler returns for a bounded page, built the way `boundedPage` builds it. */
-const bounded = (records: Record<string, unknown>[], skip = 0) => {
-  const page = boundPageToBudget(records);
-  return { meta: { skip }, results: page.records, ...pageBudgetFields(page) };
-};
+/** A record serializing to exactly `bytes` UTF-8 bytes: `{"id":"<n>","t":"…"}`. */
+function recordOf(bytes: number, id = '1'): Record<string, unknown> {
+  const record = { id, t: '' };
+  record.t = 'x'.repeat(bytes - size(record));
+  return record;
+}
 
-describe('boundPageToBudget', () => {
-  it('measures UTF-8 bytes of the serialized page, not UTF-16 code units', () => {
-    const records = [{ text: 'é漢😀' }, { text: 'naïve' }];
-    const page = boundPageToBudget(records);
-    expect(page.bytes).toBe(size(records));
-    // 'é' is 2 bytes, '漢' 3, '😀' 4: the code-unit count understates the page.
-    expect(page.bytes).toBeGreaterThan(JSON.stringify(records).length);
+/** A search response holding `records`, as the service returns it. */
+const response = (records: Record<string, unknown>[], limit = 99): OpenFdaResponse => ({
+  meta: { total: 1000, skip: 0, limit, lastUpdated: '2026-11-10' },
+  results: records,
+});
+
+/** The response shape a handler returns for a page, built the way `inlinePage` builds it. */
+const pageOf = (records: Record<string, unknown>[]) =>
+  inlinePage(response(records), records.length);
+
+it('measures an oversized record against the framework outline budget', () => {
+  expect(OVERSIZED_RECORD_BYTES).toBe(24_000);
+});
+
+describe('oversizedRecordFields', () => {
+  it('reports nothing for a page whose records each fit, however large the page', () => {
+    // Three 10 KB reports: a 30 KB page the earlier byte budget cut to two.
+    const records = [recordOf(10_000, '1'), recordOf(10_000, '2'), recordOf(10_000, '3')];
+    expect(size(records)).toBeGreaterThan(OVERSIZED_RECORD_BYTES);
+    expect(oversizedRecordFields(records)).toEqual({});
   });
 
-  it('drops a record whose UTF-8 size crosses the budget even when its code units fit', () => {
-    // Each record is 18 code units but 28 bytes: two fit in 40 code units, not in 40 bytes.
-    const records = [{ a: 'é'.repeat(10) }, { a: 'é'.repeat(10) }];
-    expect(JSON.stringify(records).length).toBeLessThanOrEqual(40);
-    const page = boundPageToBudget(records, 40);
-    expect(page).toEqual({ bytes: size([records[0]]), omitted: 1, records: [records[0]] });
+  it('reports nothing for an empty page', () => {
+    expect(oversizedRecordFields([])).toEqual({});
+  });
+
+  it('treats a record of exactly 24,000 bytes as fitting and one byte more as oversized', () => {
+    expect(oversizedRecordFields([recordOf(24_000)])).toEqual({});
+    expect(oversizedRecordFields([recordOf(24_001)])).toMatchObject({
+      page_bytes: 24_003,
+      page_largest_fields: [{ path: 't', bytes: expect.any(Number) }],
+    });
+  });
+
+  it('reports page_bytes and the largest fields for a lone oversized record', () => {
+    expect(oversizedRecordFields([RECALL])).toEqual({
+      page_bytes: size([RECALL]),
+      page_largest_fields: [{ path: 'code_info', bytes: size(RECALL.code_info) }],
+    });
+  });
+
+  it('totals the whole page and breaks down the largest record on a page of several', () => {
+    const records = [{ id: 'small' }, REPORT, RECALL];
+    const openfdaBytes = REPORT.patient.drug.reduce((sum, d) => sum + size(d.openfda), 0);
+    expect(oversizedRecordFields(records)).toEqual({
+      page_bytes: size(records),
+      page_largest_fields: [{ path: 'patient.drug.openfda', bytes: openfdaBytes }],
+    });
+  });
+
+  it('measures UTF-8 bytes, not UTF-16 code units', () => {
+    // 15,000 two-byte characters: under 24,000 code units, over 24,000 bytes.
+    const record = { id: '1', note: 'é'.repeat(15_000) };
+    expect(JSON.stringify(record).length).toBeLessThan(OVERSIZED_RECORD_BYTES);
+    expect(oversizedRecordFields([record])).toEqual({
+      page_bytes: size([record]),
+      page_largest_fields: [{ path: 'note', bytes: 30_002 }],
+    });
+  });
+});
+
+describe('inlinePage', () => {
+  it('returns every record of the window, whole, with meta.limit set to the applied page size', () => {
+    const records = [recordOf(10_000, '1'), recordOf(10_000, '2'), recordOf(10_000, '3')];
+    expect(inlinePage(response(records, 0), 3)).toEqual({
+      meta: { total: 1000, skip: 0, limit: 3, lastUpdated: '2026-11-10' },
+      results: records,
+    });
+  });
+
+  it('carries the oversized disclosure beside the records it measured', () => {
+    const page = inlinePage(response([{ id: 'small' }, RECALL]), 2);
+    expect(page.results).toEqual([{ id: 'small' }, RECALL]);
+    expect(page.page_bytes).toBe(size([{ id: 'small' }, RECALL]));
+    expect(page.page_largest_fields).toEqual([
+      { path: 'code_info', bytes: size(RECALL.code_info) },
+    ]);
+  });
+
+  it('measures the projected records, so a fields projection that drops the bulk clears it', () => {
+    const projection = recordProjection(['recalling_firm'], ['product_res_number']);
+    const page = inlinePage(response([RECALL]), 1, projection);
+    expect(page.results).toEqual([{ product_res_number: 'Z-0030-2018', recalling_firm: 'ACME' }]);
+    expect(page.projected_fields).toEqual(['recalling_firm']);
+    expect(page).not.toHaveProperty('page_bytes');
+    expect(page).not.toHaveProperty('page_largest_fields');
   });
 });
 
 describe('largestFields', () => {
   it('names a dominant top-level field with its exact serialized size', () => {
-    const excess = size(RECALL) + 2 - PAGE_BUDGET_BYTES;
+    const excess = size(RECALL) - OVERSIZED_RECORD_BYTES;
     expect(largestFields(RECALL, excess)).toEqual({
       covered: true,
       fields: [{ path: 'code_info', bytes: size(RECALL.code_info) }],
@@ -82,7 +159,7 @@ describe('largestFields', () => {
   });
 
   it('drills to the deepest field that holds the excess, totalled across array elements', () => {
-    const excess = size(REPORT) + 2 - PAGE_BUDGET_BYTES;
+    const excess = size(REPORT) - OVERSIZED_RECORD_BYTES;
     const openfdaBytes = REPORT.patient.drug.reduce((sum, d) => sum + size(d.openfda), 0);
     // brand_name or unii alone holds ~60 KB of the ~96 KB excess, so the drill stops at openfda.
     expect(largestFields(REPORT, excess)).toEqual({
@@ -125,123 +202,74 @@ describe('largestFields', () => {
   });
 });
 
-describe('pageBudgetFields', () => {
-  it('reports page_bytes and the largest fields for a lone record over the budget', () => {
-    const page = boundPageToBudget([RECALL]);
-    expect(pageBudgetFields(page)).toEqual({
-      page_bytes: size([RECALL]),
-      page_largest_fields: [{ path: 'code_info', bytes: size(RECALL.code_info) }],
-    });
+describe('oversizedRecordNotice', () => {
+  const FIELDS_ROUTE =
+    'Re-call with fields set to the dotted paths you need (any key path on the record works; openfda_describe_fields lists the searchable ones) to project each record to those paths plus its identity key.';
+
+  it('is absent for a page whose records each fit', () => {
+    expect(oversizedRecordNotice(pageOf([recordOf(10_000), recordOf(10_000)]))).toBeUndefined();
   });
 
-  it('reports nothing for a page that fits', () => {
-    expect(pageBudgetFields(boundPageToBudget([{ a: 1 }]))).toEqual({});
+  it('names the lone record, its size, its largest field, and the fields re-call', () => {
+    const page = pageOf([RECALL]);
+    expect(oversizedRecordNotice(page)).toBe(
+      `Oversized record: the one record on this page serializes to ${size(RECALL)} bytes, over 24000 (page_bytes ${size([RECALL])}). Its largest field is code_info (60002 bytes); leaving it out brings the record within 24000 bytes. ${FIELDS_ROUTE}`,
+    );
   });
 
-  it('reports both counts and no fields when records were dropped from a page within budget', () => {
-    const records = [{ a: 'a'.repeat(15_000) }, { b: 'b'.repeat(15_000) }];
-    const page = boundPageToBudget(records);
-    expect(pageBudgetFields(page)).toEqual({ page_bytes: size([records[0]]), page_omitted: 1 });
-  });
-
-  it('reports all three when the one kept record is over budget and the rest were dropped', () => {
-    const page = boundPageToBudget([RECALL, { a: 1 }]);
-    expect(pageBudgetFields(page)).toEqual({
-      page_bytes: size([RECALL]),
-      page_omitted: 1,
-      page_largest_fields: [{ path: 'code_info', bytes: size(RECALL.code_info) }],
-    });
-  });
-});
-
-describe('pageBudgetNotice', () => {
-  const meta = { skip: 0 };
-
-  it('is absent for a page that fits', () => {
-    expect(pageBudgetNotice({ meta, results: [{ a: 1 }] })).toBeUndefined();
-  });
-
-  it('names the lone record, its overrun, its largest field, and the fields re-call', () => {
-    const result = bounded([RECALL]);
-    expect(pageBudgetNotice(result)).toBe(
-      `Inline page exceeds the ${PAGE_BUDGET_BYTES}-byte budget at ${result.page_bytes} bytes — one record exceeds the budget on its own, so it is returned whole rather than leaving the page empty. Its largest field is code_info (60002 bytes); leaving it out brings the record within the budget. Re-call with fields set to the dotted paths you need (any key path on the record works; openfda_describe_fields lists the searchable ones) to project each record to those paths plus its identity key.`,
+  it('names the page and the largest record on a page of several, without the within claim', () => {
+    const records = [RECALL, { a: 1 }, { a: 2 }];
+    expect(oversizedRecordNotice(pageOf(records))).toBe(
+      `Oversized record: this page of 3 records serializes to ${size(records)} bytes, and at least one record on it exceeds 24000 bytes on its own. The largest record's largest field is code_info (60002 bytes). ${FIELDS_ROUTE}`,
     );
   });
 
   it('reads the largest fields the page carries rather than measuring the record again', () => {
-    const notice = pageBudgetNotice({
-      ...bounded([RECALL]),
+    const notice = oversizedRecordNotice({
+      ...pageOf([RECALL]),
       page_largest_fields: [{ path: 'carried.path', bytes: 1 }],
     });
     expect(notice).toContain('Its largest field is carried.path (1 bytes).');
     expect(notice).not.toContain('code_info');
   });
 
-  it('names the oversized record and the routes to the dropped ones, without repeating the fields route', () => {
-    const notice =
-      pageBudgetNotice(bounded([RECALL, { a: 1 }, { a: 2 }, { a: 3 }, { a: 4 }])) ?? '';
-    expect(notice).toContain('Inline page bounded to 1 of the 5 records requested');
-    expect(notice).toContain('code_info (60002 bytes)');
-    expect(notice).toContain('The other 4 begin at skip=1');
-    expect(notice).toContain('Re-call with fields');
-    expect(notice).not.toContain('pass fields');
-  });
-
-  /*
-   * A page holding one record cannot shrink by lowering limit — limit=1 returns
-   * the same page — so that route is named only when the page holds more.
-   */
-  it.each([
-    ['an oversized record', [RECALL, { a: 1 }, { a: 2 }]],
-    ['a record within budget', [{ a: 'a'.repeat(15_000) }, { b: 'b'.repeat(15_000) }]],
-  ])('offers no lower-limit route when the page kept one record — %s', (_label, records) => {
-    const notice = pageBudgetNotice(bounded(records)) ?? '';
-    expect(notice).toContain('Inline page bounded to 1 of the');
-    expect(notice).toContain('re-call with that skip');
-    expect(notice).not.toContain('lower limit');
-  });
-
-  it('offers the lower-limit route when the page kept more than one record', () => {
-    const records = Array.from({ length: 4 }, (_, i) => ({ [`k${i}`]: 'x'.repeat(10_000) }));
-    const result = bounded(records);
-    expect(result.results).toHaveLength(2);
-    expect(pageBudgetNotice(result)).toContain('lower limit for a smaller page');
-  });
-
-  it('adds the fields route to a page bounded under budget', () => {
-    const notice = pageBudgetNotice({ meta, results: [{ a: 1 }], page_bytes: 7, page_omitted: 2 });
-    expect(notice).toContain('pass fields to keep only the paths you need');
-    expect(notice).not.toContain('largest field');
-  });
-
-  it('offers narrower fields, not fields, on a projected page bounded under budget', () => {
-    const notice = pageBudgetNotice({
-      meta,
-      results: [{ a: 1 }],
-      page_bytes: 7,
-      page_omitted: 2,
-      projected_fields: ['a'],
-    });
-    expect(notice).toContain('narrow fields to fewer paths');
-    expect(notice).not.toContain('pass fields');
-  });
-
   it('lists several fields when no single one holds the excess', () => {
-    // ~36 KB against a 24 KB budget: no 12 KB field holds the ~12 KB excess alone.
+    // ~36 KB against 24 KB: no 12 KB field holds the ~12 KB excess alone.
     const record = { a: 'a'.repeat(12_000), b: 'b'.repeat(12_000), c: 'c'.repeat(12_000), id: '1' };
-    expect(pageBudgetNotice(bounded([record]))).toContain(
-      'Its largest fields are a (12002 bytes), b (12002 bytes); leaving them out brings the record within the budget.',
+    expect(oversizedRecordNotice(pageOf([record]))).toContain(
+      'Its largest fields are a (12002 bytes), b (12002 bytes); leaving them out brings the record within 24000 bytes.',
     );
+  });
+
+  it('says nothing about bringing it within when the named fields fall short', () => {
+    // Ten 10 KB fields: the three named hold 30 KB of a ~76 KB excess.
+    const record = Object.fromEntries([...'abcdefghij'].map((k) => [k, k.repeat(10_000)]));
+    const notice = oversizedRecordNotice(pageOf([record])) ?? '';
+    expect(notice).toContain(
+      'Its largest fields are a (10002 bytes), b (10002 bytes), c (10002 bytes).',
+    );
+    expect(notice).not.toContain('brings the record within');
   });
 
   it('reports the UTF-8 sizes of a non-ASCII record', () => {
     // 30,000 two-byte characters: 30,002 code units, 60,002 bytes.
     const record = { id: '1', note: 'é'.repeat(30_000) };
-    const result = bounded([record]);
-    expect(result.page_bytes).toBe(size([record]));
-    const notice = pageBudgetNotice(result) ?? '';
-    expect(notice).toContain(`at ${size([record])} bytes`);
+    const page = pageOf([record]);
+    expect(page.page_bytes).toBe(size([record]));
+    const notice = oversizedRecordNotice(page) ?? '';
+    expect(notice).toContain(`serializes to ${size(record)} bytes`);
     expect(notice).toContain('note (60002 bytes)');
+  });
+});
+
+describe('oversizedRecordLine', () => {
+  it('quotes the notice for content[]', () => {
+    const page = pageOf([RECALL]);
+    expect(oversizedRecordLine(page)).toBe(`> ${oversizedRecordNotice(page)}`);
+  });
+
+  it('is null for a page whose records each fit', () => {
+    expect(oversizedRecordLine(pageOf([{ a: 1 }]))).toBeNull();
   });
 });
 
@@ -281,11 +309,11 @@ describe('largestFields timing', { timeout: 60_000 }, () => {
     expect(t320k).toBeLessThan(500_000);
   });
 
-  it('bounds a page linearly in its UTF-8 size', () => {
+  it('measures a page linearly in its UTF-8 size', () => {
     const page = (n: number) =>
       Array.from({ length: n / 100 }, (_, i) => ({ i, t: 'é'.repeat(40) }));
     const { t5k, t320k } = linearTiming(
-      (records) => boundPageToBudget(records, Number.POSITIVE_INFINITY),
+      (records) => oversizedRecordFields(records),
       page(5_000),
       page(320_000),
     );

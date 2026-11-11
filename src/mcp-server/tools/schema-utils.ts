@@ -2,17 +2,21 @@
  * @fileoverview Shared Zod building blocks for tool input schemas, plus the
  * handler guards that reject locally-detectable bad input before an upstream
  * request is spent: the openFDA pagination ceiling, and the `search` delimiter
- * balance check. Also holds the shared `search` input, which reads openFDA's
- * URL-form `+` separators as spaces, the `sort` grammar and the `fields` path
- * grammar, which are regex-expressible and therefore ride the advertised JSON
- * Schema `pattern`, and the paginated tools' shared `meta.totalUnverified`
- * output field.
+ * balance check. Also holds the per-endpoint page size every paged tool's
+ * `limit` resolves through (default, cap, and the clamp or strict rejection
+ * above it), the shared `search` input, which reads openFDA's URL-form `+`
+ * separators as spaces, the `sort` grammar and the `fields` path grammar,
+ * which are regex-expressible and therefore ride the advertised JSON Schema
+ * `pattern`, and the paginated tools' shared `meta` output fields.
  * @module mcp-server/tools/schema-utils
  */
 
-import { type TypedFail, z } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { type Context, type TypedFail, z } from '@cyanheads/mcp-ts-core';
+import { JsonRpcErrorCode, validationError } from '@cyanheads/mcp-ts-core/errors';
+import { createCounter } from '@cyanheads/mcp-ts-core/utils';
+import { getServerConfig } from '@/config/server-config.js';
 import { codeLiteral } from '@/mcp-server/tools/format-utils.js';
+import { OVERSIZED_RECORD_BYTES } from '@/services/openfda/page-budget.js';
 
 /**
  * A free-text input that must carry at least one non-whitespace character.
@@ -70,6 +74,215 @@ export function assertSkipWithinCeiling(skip: number, ctx: PaginationCeilingCont
     );
   }
 }
+
+/* --- page size: per-endpoint default and cap --- */
+
+/**
+ * `limit`'s default and cap per openFDA endpoint a tool pages, plus `count`, the
+ * term list `openfda_count_values` returns on every endpoint. `limit` is the page
+ * size — a page holds `limit` records, fewer only at the end of the match — so
+ * the cap is what bounds a response, and it is set per endpoint because record
+ * size spans three orders of magnitude across them.
+ *
+ * Measured 2026-11-10 through each tool's `format()`, as `structuredContent`
+ * UTF-8 bytes on 2–10 windows per endpoint: a cap is the median record count
+ * that serializes to about 1 MB, rounded down to a multiple of 25, or openFDA's
+ * own 1000-record page maximum where a full page is at most 1.27 MB.
+ * `drug/event`'s 25 sits between its product-search (~18) and all-window (~50)
+ * medians. A default stays well under its cap: 25 for short records, 10 or fewer
+ * for heavy ones, 5 for drug reports and labels.
+ *
+ * A byte budget on each page was rejected: it overrides an explicit `limit` with
+ * a record count the caller cannot predict, and continuation stops being
+ * `skip + limit`.
+ */
+export const PAGE_SIZES = {
+  'drug/event': { default: 5, cap: 25 },
+  'food/event': { default: 25, cap: 1000 },
+  'device/event': { default: 10, cap: 175 },
+  'drug/enforcement': { default: 25, cap: 1000 },
+  'food/enforcement': { default: 25, cap: 1000 },
+  'device/enforcement': { default: 10, cap: 125 },
+  'device/recall': { default: 10, cap: 50 },
+  'drug/drugsfda': { default: 25, cap: 375 },
+  'device/510k': { default: 10, cap: 175 },
+  'device/pma': { default: 25, cap: 575 },
+  'animalandveterinary/event': { default: 25, cap: 450 },
+  'drug/shortages': { default: 25, cap: 1000 },
+  'tobacco/problem': { default: 25, cap: 1000 },
+  'drug/ndc': { default: 25, cap: 1000 },
+  'drug/label': { default: 5, cap: 1000 },
+  count: { default: 100, cap: 1000 },
+} as const satisfies Record<string, { cap: number; default: number }>;
+
+/** An endpoint a tool pages, or `count` for the count term list. */
+export type PageKind = keyof typeof PAGE_SIZES;
+
+/** One increment per call whose `limit` exceeded its endpoint cap and was clamped to it. */
+const limitClamps = createCounter(
+  'openfda.limit.clamped',
+  'Calls whose limit exceeded the endpoint cap and was clamped to it',
+  '{calls}',
+);
+
+/**
+ * The integer `limit` schema both page-limit inputs build on. With
+ * `OPENFDA_CLAMP_LIMITS` on (the default) it advertises no `maximum`, since the
+ * handler clamps any larger value; off, it advertises `maximum` and rejects a
+ * larger value at argument validation. Both read the config when they run, so
+ * the advertised schema and the parse always agree. `.int()` alone would
+ * advertise `Number.MAX_SAFE_INTEGER`, which the `maximum` getter replaces.
+ */
+function limitSchema(maximum: number, describe: (strict: boolean) => string) {
+  const strict = () => !getServerConfig().clampLimits;
+  return z
+    .number()
+    .int()
+    .min(1)
+    .check((payload) => {
+      if (payload.value > maximum && strict()) {
+        payload.issues.push({
+          code: 'too_big',
+          origin: 'number',
+          maximum,
+          inclusive: true,
+          input: payload.value,
+        });
+      }
+    })
+    .meta({
+      get maximum() {
+        return strict() ? maximum : undefined;
+      },
+      get description() {
+        return describe(strict());
+      },
+    });
+}
+
+/**
+ * `limit` for a tool that pages one endpoint, or the count term list: an integer
+ * from 1, defaulting to that endpoint's default. `lead` opens the description;
+ * the default and the cap close it, worded for the configured mode.
+ */
+export function pageLimit(kind: PageKind, lead: string) {
+  const { default: fallback, cap } = PAGE_SIZES[kind];
+  return limitSchema(
+    cap,
+    (strict) =>
+      `${lead} Default ${fallback}${strict ? `, at most ${cap}.` : `; a larger value returns at most ${cap} and says so.`}`,
+  ).default(fallback);
+}
+
+/**
+ * `limit` for a tool whose endpoint follows another input (`category`,
+ * `endpoint`, `pathway`): optional with no schema default, since the default is
+ * the selected endpoint's, which {@link resolvePageSize} applies. Advertises its
+ * largest cap as the strict-mode `maximum`; a value under that but over the
+ * selected endpoint's cap is rejected by {@link resolvePageSize} with the typed
+ * {@link limitAboveCapError}. `choices` pairs each label the description lists
+ * with its endpoint.
+ */
+export function pageLimitBy(
+  selector: string,
+  choices: readonly (readonly [label: string, kind: PageKind])[],
+  lead: string,
+) {
+  const sizes = choices
+    .map(([label, kind]) => `${label} ${PAGE_SIZES[kind].default} (cap ${PAGE_SIZES[kind].cap})`)
+    .join(', ');
+  const maximum = Math.max(...choices.map(([, kind]) => PAGE_SIZES[kind].cap));
+  return limitSchema(
+    maximum,
+    (strict) =>
+      `${lead} Default and cap by ${selector}: ${sizes}; ${strict ? 'a value above that cap is rejected.' : 'a larger value returns at most that cap and says so.'}`,
+  ).optional();
+}
+
+/** The page size one call applies, resolved by {@link resolvePageSize}. */
+export interface PageSize {
+  /** Cap for this call's endpoint. */
+  cap: number;
+  /** The caller's limit — present only when it exceeded the cap and was clamped. */
+  clampedFrom?: number | undefined;
+  /** The endpoint, or `count`, the size was resolved for. */
+  kind: PageKind;
+  /** Page size applied: the caller's limit, the endpoint default, or the cap. */
+  limit: number;
+}
+
+/**
+ * Resolve the page size a call applies: the caller's `limit`, or the endpoint's
+ * default when it was omitted. A value above the endpoint's cap is clamped to
+ * the cap — one log line and one `openfda.limit.clamped` increment — or, with
+ * `OPENFDA_CLAMP_LIMITS=false`, rejected as `limit_above_cap` before any
+ * upstream request. Call it after the handler's other local guards and before
+ * the first request; {@link pageSizeNotice} renders the clamp disclosure.
+ */
+export function resolvePageSize(
+  requested: number | undefined,
+  kind: PageKind,
+  ctx: Pick<Context, 'log'>,
+): PageSize {
+  const { default: fallback, cap } = PAGE_SIZES[kind];
+  const limit = requested ?? fallback;
+  if (limit <= cap) return { cap, kind, limit };
+  if (!getServerConfig().clampLimits) {
+    throw validationError(`limit=${limit} exceeds the ${cap} cap for ${kind}.`, {
+      reason: 'limit_above_cap',
+      cap,
+    });
+  }
+  ctx.log.info('Clamped limit to the endpoint cap', { endpoint: kind, requested: limit, cap });
+  limitClamps.add(1, { 'openfda.endpoint': kind });
+  return { cap, clampedFrom: limit, kind, limit: cap };
+}
+
+/**
+ * The `errors[]` entry for a strict-mode `limit` above the selected endpoint's
+ * cap. Declared only by the tools that pick their endpoint from another input:
+ * a single-endpoint tool's strict schema `maximum` is its cap, so its handler
+ * never sees a larger value. Raised by {@link resolvePageSize}, below the
+ * handler body, hence `thrownBy: 'service'`.
+ */
+export const limitAboveCapError = {
+  reason: 'limit_above_cap',
+  code: JsonRpcErrorCode.ValidationError,
+  when: 'limit exceeds the cap of the endpoint this call selects, on a deployment that rejects rather than clamps it.',
+  recovery: 'Lower limit to the cap the message names, and page on with skip for the rest.',
+  thrownBy: 'service',
+} as const;
+
+/**
+ * The disclosure for a clamped `limit`, or `undefined` when none was clamped:
+ * the requested value, the cap applied, and where the next page starts — or that
+ * this page ends the match, or that the next page would pass openFDA's `skip`
+ * ceiling. `page` is the response the call returns; the count term list has no
+ * `skip`, so it omits it.
+ */
+export function pageSizeNotice(
+  size: PageSize,
+  page?: { meta: { skip: number; total: number }; results: readonly unknown[] },
+): string | undefined {
+  if (size.clampedFrom === undefined) return;
+  const unit = size.kind === 'count' ? 'term' : 'record';
+  const scope = size.kind === 'count' ? 'a count' : size.kind;
+  const head = `limit=${size.clampedFrom} is above the ${size.cap}-${unit} cap for ${scope}, so ${size.cap} was applied`;
+  const returned = page?.results.length ?? 0;
+  if (!page || returned === 0) return `${head}.`;
+  const next = page.meta.skip + returned;
+  if (next >= page.meta.total) {
+    return `${head}; this page holds the last ${returned} of the ${page.meta.total} matched records.`;
+  }
+  if (next > OPENFDA_MAX_SKIP) {
+    return `${head}. The next page would start at skip=${next}, past openFDA's ${OPENFDA_MAX_SKIP}-record pagination ceiling — narrow the search to reach the rest.`;
+  }
+  return `${head}. The next page starts at skip=${next}.`;
+}
+
+/** Shared `meta.limit` description for the paged search tools. */
+export const META_LIMIT_DESCRIPTION =
+  'Page size applied to this request: the requested limit, the endpoint default when limit was omitted, or the endpoint cap when limit exceeded it (the notice then says so). A window running past the end of the matched set returns fewer records than this, so read the length of results for the actual count.';
 
 /* --- field paths: sort grammar and field selection --- */
 
@@ -219,7 +432,7 @@ export function fieldsDescription(
   identityKeys: readonly string[],
   example: readonly string[],
 ): string {
-  return `Dotted record paths to keep on each returned record, e.g. [${example.map((path) => `"${path}"`).join(', ')}] — any key path on a returned record works, and openfda_describe_fields lists the searchable ones. Each record is projected to these paths plus its identity key (${identityKeys.join(', ')}) before the inline byte budget is measured, identically on both response surfaces, and a path through an array applies to every element. Use it when records are large: a page_bytes over the budget comes with the largest fields of the oversized record. A path no returned record carries is named on the notice. Omit for whole records. Paths take only letters, digits, underscores, and dots; anything else is rejected before the request. With stage=true, only the inline page is projected — the staged table keeps its columns.`;
+  return `Dotted record paths to keep on each returned record, e.g. [${example.map((path) => `"${path}"`).join(', ')}] — any key path on a returned record works, and openfda_describe_fields lists the searchable ones. Each record is projected to these paths plus its identity key (${identityKeys.join(', ')}), identically on both response surfaces, and a path through an array applies to every element. Use it when records are large: when a record on the page serializes above ${OVERSIZED_RECORD_BYTES} bytes, page_bytes reports the page's size and page_largest_fields names the largest record's biggest fields. A path no returned record carries is named on the notice. Omit for whole records. Paths take only letters, digits, underscores, and dots; anything else is rejected before the request. With stage=true, only the inline page is projected — the staged table keeps its columns.`;
 }
 
 /* --- search delimiter balance --- */

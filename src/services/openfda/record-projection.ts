@@ -1,11 +1,12 @@
 /**
  * @fileoverview Server-side field projection for the inline page a multi-row
  * search tool returns. openFDA has no field selection of its own — an unknown
- * query parameter answers HTTP 400 — and a single record can outweigh the inline
- * byte budget a hundred times over (a `device/recall` record carries megabytes of
- * serial numbers in `code_info`), so lowering `limit` cannot shrink it. A caller
- * that names the dotted paths it needs gets each record cut to those paths plus
- * its identity key, before `page-budget.ts` measures the page.
+ * query parameter answers HTTP 400 — and a single record can run to megabytes (a
+ * `device/recall` record carries megabytes of serial numbers in `code_info`), so
+ * lowering `limit` cannot shrink it. A caller that names the dotted paths it
+ * needs gets each record cut to those paths plus its identity key, and
+ * `page-budget.ts` measures the projected records for its oversized-record
+ * disclosure.
  *
  * A record is never projected unless the caller asked: without `fields` it comes
  * back whole, exactly as openFDA sent it.
@@ -154,8 +155,8 @@ export function projectionFields(projection: RecordProjection | undefined): Proj
  *
  * An absent path is reported rather than rejected: openFDA records are sparse, so
  * a path missing from one page is not proof it is misspelled. One sentence source
- * for both surfaces, like the page-budget notice — {@link projectionLine} renders
- * it into `content[]` and the handler puts it on `enrichment.notice`.
+ * for both surfaces, like the oversized-record notice — {@link projectionLine}
+ * renders it into `content[]` and the handler puts it on `enrichment.notice`.
  *
  * Each path is the caller's own text, so it rides as a code span: `_exists_`
  * would otherwise render as emphasis. The span comes from the framework's
@@ -180,8 +181,8 @@ function codeSpans(paths: readonly string[]): string {
 }
 
 /**
- * The same disclosure as a `content[]` line, quoted to match the page-budget and
- * canvas staging lines beside it. Returns null when the call did not project.
+ * The same disclosure as a `content[]` line, quoted to match the oversized-record
+ * and canvas staging lines beside it. Returns null when the call did not project.
  */
 export function projectionLine(
   result: ProjectionFields & { results: readonly unknown[] },

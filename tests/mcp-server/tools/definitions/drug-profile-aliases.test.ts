@@ -58,7 +58,9 @@ describe('openfda_drug_profile argument aliases', () => {
 
     expect(result.isError).toBeFalsy();
     expect(result.structuredContent).toMatchObject({ meta: { drug: 'metformin' } });
+    // The original-packager search, then the unrestricted one when it matches nothing.
     expect(labelSearches()).toEqual([
+      '(openfda.generic_name:"metformin" OR openfda.brand_name:"metformin") AND openfda.is_original_packager:true',
       'openfda.generic_name:"metformin" OR openfda.brand_name:"metformin"',
     ]);
   });

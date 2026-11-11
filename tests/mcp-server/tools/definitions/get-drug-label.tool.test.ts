@@ -5,12 +5,14 @@
  */
 
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
   getOpenFdaService: vi.fn(),
 }));
 
+import { z } from '@cyanheads/mcp-ts-core';
+import { resetServerConfig } from '@/config/server-config.js';
 import { getDrugLabelTool } from '@/mcp-server/tools/definitions/get-drug-label.tool.js';
 import { phrasePlusHint } from '@/mcp-server/tools/schema-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
@@ -266,6 +268,138 @@ describe('openfda_get_drug_label', () => {
       ),
     ).rejects.toMatchObject({ data: { reason: 'pagination_limit_reached' } });
     expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  // #89 — most labels carry no openfda block, so an openfda.* miss proves little.
+  it('names spl_product_data_elements as the fallback on an empty search, on both surfaces', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 0, skip: 0, limit: 5, lastUpdated: '' },
+      results: [],
+    });
+    const result = await runToolContract(getDrugLabelTool, {
+      search: 'openfda.brand_name:"lisinopril"',
+    });
+    const fallback =
+      'so when an openfda field finds nothing, search the label\'s own product text with spl_product_data_elements (e.g. spl_product_data_elements:"lisinopril").';
+    expect(noticeOf(result)).toContain(fallback);
+    expect(noticeQuote(result)).toContain('spl_product_data_elements:&quot;lisinopril&quot;');
+  });
+
+  /*
+   * #92 — a limit above the 1000-label cap returns the cap's worth with a notice;
+   * the clamp itself is tabled in schema-utils.test.ts. Each return path — the
+   * outline, the whole page, and a sections selection — carries the disclosure
+   * beside whatever else it says.
+   */
+  describe('limit above the cap', () => {
+    const CLAMP = 'limit=5000 is above the 1000-record cap for drug/label, so 1000 was applied.';
+    /** `n` small label records, with `total` matched and openFDA's own meta.limit echo. */
+    const page = (n: number, total: number, limit = 1000) => ({
+      meta: { total, skip: 0, limit, lastUpdated: '2026-11-10' },
+      results: Array.from({ length: n }, (_, i) => ({
+        openfda: { brand_name: [`Label ${i}`] },
+        set_id: `set-${i}`,
+        indications_and_usage: ['Use.'],
+      })),
+    });
+
+    it('sends 1000 and joins the clamp to the outline and paging guidance', async () => {
+      mockQuery.mockResolvedValue(page(1000, 3000));
+      const result = await runToolContract(getDrugLabelTool, { search: 'aspirin', limit: 5000 });
+
+      expect(mockQuery.mock.calls[0]?.[1]).toMatchObject({ limit: 1000 });
+      const structured = result.structuredContent as { kind: string; meta: { limit: number } };
+      expect(structured.kind).toBe('outline');
+      expect(structured.meta.limit).toBe(1000);
+      const notice = noticeOf(result);
+      expect(notice).toMatch(/^3000 labels matched; this page returned 1000\./);
+      expect(notice).toContain(`${CLAMP} The next page starts at skip=1000.`);
+      expect(notice).toMatch(/lists the sections available instead of the label text/);
+      expect(noticeQuote(result)).toContain('The next page starts at skip=1000.');
+      expect(result.structuredContent).toMatchObject({ truncated: true, shown: 1000, cap: 1000 });
+    });
+
+    it('carries the clamp alone on a whole page that ends the match', async () => {
+      mockQuery.mockResolvedValue(page(3, 3));
+      const result = await runToolContract(getDrugLabelTool, { search: 'aspirin', limit: 5000 });
+
+      const structured = result.structuredContent as { kind: string; results: unknown[] };
+      expect(structured.kind).toBe('full');
+      expect(structured.results).toHaveLength(3);
+      expect(noticeOf(result)).toBe(
+        `${CLAMP.slice(0, -1)}; this page holds the last 3 of the 3 matched records.`,
+      );
+    });
+
+    it('joins the clamp to a sections selection', async () => {
+      mockQuery.mockResolvedValue(page(3, 3));
+      const result = await runToolContract(getDrugLabelTool, {
+        search: 'aspirin',
+        limit: 5000,
+        sections: ['indications_and_usage', 'boxed_warning'],
+      });
+
+      const notice = noticeOf(result);
+      expect(notice).toMatch(/^limit=5000 is above the 1000-record cap/);
+      expect(notice).toContain('Not present on this page: `boxed_warning`.');
+    });
+
+    it('joins the clamp to the no-match notice', async () => {
+      mockQuery.mockResolvedValue(page(0, 0));
+      const result = await runToolContract(getDrugLabelTool, { search: 'zzz', limit: 5000 });
+
+      const notice = noticeOf(result);
+      expect(notice).toMatch(/^No labels matched search: `zzz`\./);
+      expect(notice.endsWith(` ${CLAMP}`)).toBe(true);
+    });
+
+    it('sends a limit within the cap as given and reports it as meta.limit', async () => {
+      mockQuery.mockResolvedValue(page(3, 3, 0));
+      const result = await runToolContract(getDrugLabelTool, { search: 'aspirin', limit: 3 });
+
+      expect(mockQuery.mock.calls[0]?.[1]).toMatchObject({ limit: 3 });
+      expect((result.structuredContent as { meta: { limit: number } }).meta.limit).toBe(3);
+      expect(noticeOf(result)).not.toContain('cap');
+    });
+
+    it('sends the default of 5 when limit is omitted', async () => {
+      mockQuery.mockResolvedValue(page(3, 3, 0));
+      const result = await runToolContract(getDrugLabelTool, { search: 'aspirin' });
+
+      expect(mockQuery.mock.calls[0]?.[1]).toMatchObject({ limit: 5 });
+      expect((result.structuredContent as { meta: { limit: number } }).meta.limit).toBe(5);
+    });
+
+    describe('with OPENFDA_CLAMP_LIMITS=false', () => {
+      beforeEach(() => {
+        vi.stubEnv('OPENFDA_CLAMP_LIMITS', 'false');
+        resetServerConfig();
+      });
+
+      afterEach(() => {
+        vi.unstubAllEnvs();
+        resetServerConfig();
+      });
+
+      it('rejects limit 1001 at the schema maximum before any request', async () => {
+        const result = await runToolContract(getDrugLabelTool, { search: 'aspirin', limit: 1001 });
+
+        expect(result.isError).toBe(true);
+        expect(result.structuredContent).toMatchObject({ error: { code: -32602 } });
+        expect(mockQuery).not.toHaveBeenCalled();
+      });
+
+      it('advertises maximum 1000 on limit', () => {
+        const limit = z.toJSONSchema(getDrugLabelTool.input).properties?.limit;
+        expect(limit).toMatchObject({ type: 'integer', minimum: 1, maximum: 1000 });
+      });
+    });
+
+    it('advertises no maximum on limit while clamping', () => {
+      const limit = z.toJSONSchema(getDrugLabelTool.input).properties?.limit;
+      expect(limit).toMatchObject({ type: 'integer', minimum: 1, default: 5 });
+      expect(limit).not.toHaveProperty('maximum');
+    });
   });
 
   describe('sections selection (#11)', () => {

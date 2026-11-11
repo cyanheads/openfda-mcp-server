@@ -145,6 +145,9 @@ describe('openfda_search_recalls — canvas enabled', () => {
     expect(result.staged_rows).toBe(2500);
     expect(result.meta.total).toBe(2500);
     expect(result.truncated).toBeUndefined(); // everything matched reached the canvas
+    // The staged inline page is drug/enforcement's default page, as the plain call's is (#92).
+    expect(result.meta.limit).toBe(25);
+    expect(result.results).toHaveLength(25);
 
     const enrichment = getEnrichment(ctx);
     expect(enrichment.totalResults).toBe(2500);
@@ -261,6 +264,21 @@ describe('openfda_search_recalls — format', () => {
     const text = textOf(blocks);
     expect(text).toContain('Staged 235 of 609468');
     expect(text).toMatch(/size budget/i);
+  });
+
+  it('names the row ceiling when staging stopped at 25000 rows', () => {
+    const blocks = searchRecallsTool.format!({
+      meta: { total: 609_468, skip: 0, limit: 1, lastUpdated: '2026-06-01' },
+      results: [{ recall_number: 'R-0', classification: 'Class I' }],
+      canvas_id: 'cv_recalls',
+      canvas_table: 'spilled_x',
+      spilled: true,
+      staged_rows: 25_000,
+      truncated: true,
+    });
+    const text = textOf(blocks);
+    expect(text).toContain("staging stopped at openFDA's 25000-row pagination ceiling");
+    expect(text).not.toMatch(/size budget/i);
   });
 
   it('never renders "No results found." for a query that matched records (#31)', () => {

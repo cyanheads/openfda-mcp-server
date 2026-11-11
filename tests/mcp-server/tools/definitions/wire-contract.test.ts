@@ -59,9 +59,9 @@ describe('tool input strictness', () => {
 
 describe('service-raised error reasons', () => {
   /**
-   * Raised by `openfda-service.ts`, by the shared guards in `schema-utils.ts`, or
-   * by the framework canvas layer (`canvas.acquire()`), never by a handler's own
-   * `ctx.fail`.
+   * Raised by `openfda-service.ts`, by the shared guards in `schema-utils.ts`
+   * (`resolvePageSize` included), or by the framework canvas layer
+   * (`canvas.acquire()`), never by a handler's own `ctx.fail`.
    */
   const SERVICE_REASONS = new Set([
     'rate_limited',
@@ -70,6 +70,7 @@ describe('service-raised error reasons', () => {
     'not_aggregatable',
     'pagination_limit_reached',
     'malformed_search',
+    'limit_above_cap',
     'canvas_not_found',
     'canvas_capacity_exhausted',
   ]);

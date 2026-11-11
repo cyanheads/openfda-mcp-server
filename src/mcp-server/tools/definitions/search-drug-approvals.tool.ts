@@ -1,14 +1,15 @@
 /**
  * @fileoverview Tool for searching FDA drug application approvals (NDAs and ANDAs)
  * via the Drugs@FDA endpoint. An application's full submission history makes record
- * size vary widely, so the inline page is bounded by a serialized-byte budget and
- * discloses any records it withheld along with the routes to them.
+ * size vary widely, so a page holding a record over 24,000 bytes names its largest
+ * fields.
  * @module mcp-server/tools/definitions/search-drug-approvals
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { CanvasIdSchema, type ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { sortOrNewest } from '@/mcp-server/tools/default-sort.js';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
   emptyPageBody,
@@ -24,8 +25,12 @@ import {
   assertSkipWithinCeiling,
   fieldSelection,
   fieldsDescription,
+  META_LIMIT_DESCRIPTION,
   malformedSearchError,
+  pageLimit,
+  pageSizeNotice,
   phrasePlusHint,
+  resolvePageSize,
   SEARCH_SYNTAX_NOTE,
   SKIP_DESCRIPTION,
   searchExpression,
@@ -46,11 +51,10 @@ import {
 } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import {
-  boundedPage,
-  META_LIMIT_DESCRIPTION,
-  PAGE_BUDGET_NOTE,
-  pageBudgetNotice,
-  pageBudgetOutputShape,
+  inlinePage,
+  OVERSIZED_RECORD_BYTES,
+  oversizedRecordNotice,
+  oversizedRecordOutputShape,
 } from '@/services/openfda/page-budget.js';
 import {
   projectionNotice,
@@ -63,6 +67,13 @@ import {
  * `application_number` — the NDA, ANDA, or BLA number.
  */
 const IDENTITY_KEYS = ['application_number'] as const;
+
+/**
+ * The sort a bare browse sends. A descending sort on the `submissions` array
+ * orders each application by its latest submission status date, supplements
+ * included — not by its original approval.
+ */
+const NEWEST_FIRST = 'submissions.submission_status_date:desc';
 
 /**
  * Canvas table projection for Drugs@FDA application records. The analytical
@@ -87,21 +98,17 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
     search: searchExpression()
       .optional()
       .describe(
-        `openFDA search query. Examples: openfda.brand_name:"humira", sponsor_name:"PFIZER", submissions.submission_type:"ORIG" AND submissions.review_priority:"PRIORITY". Exact quoted values can be case-sensitive on some fields — sponsor_name is stored uppercase, so use sponsor_name:"PFIZER" (a lowercase quoted value returns no matches). Omit to browse recent. ${SEARCH_SYNTAX_NOTE}`,
+        `openFDA search query. Examples: products.brand_name:"eliquis" (any letter case; openfda.* fields are filled only on harmonized applications, so openfda.brand_name misses the rest), sponsor_name:"PFIZER", submissions.submission_type:"ORIG" AND submissions.review_priority:"PRIORITY". Exact quoted values can be case-sensitive on some fields — sponsor_name is stored uppercase, so use sponsor_name:"PFIZER" (a lowercase quoted value returns no matches). Omit to browse by latest submission, newest first, sorted by ${NEWEST_FIRST}. ${SEARCH_SYNTAX_NOTE}`,
       ),
     sort: sortExpression()
       .optional()
       .describe(
-        'Sort expression — a field path optionally suffixed with :asc or :desc (any letter case; :ascending and :descending are also accepted, and every direction is sent as asc or desc); comma-separate for multi-field sort. Example: submissions.submission_status_date:desc. Field paths take only letters, digits, underscores, and dots; any other character or direction is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
+        `Sort expression — a field path optionally suffixed with :asc or :desc (any letter case; :ascending and :descending are also accepted, and every direction is sent as asc or desc); comma-separate for multi-field sort. Omitted with no search, defaults to ${NEWEST_FIRST}: applications by their latest submission status date, supplements included, newest first — not by approval date. Omitted with a search, results come in openFDA's relevance order. Field paths take only letters, digits, underscores, and dots; any other character or direction is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.`,
       ),
-    limit: z
-      .number()
-      .min(1)
-      .max(1000)
-      .default(10)
-      .describe(
-        `Maximum number of records to return (1-1000, default 10). ${PAGE_BUDGET_NOTE} A record carries its application's whole submission history, so a long-running application is an order of magnitude larger than a recent one.`,
-      ),
+    limit: pageLimit(
+      'drug/drugsfda',
+      "Records per page. A record carries its application's whole submission history, so a long-running application is an order of magnitude larger than a recent one.",
+    ),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     fields: fieldSelection()
       .optional()
@@ -127,9 +134,9 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
     results: z
       .array(z.record(z.string(), z.any()))
       .describe(
-        'Drug application records — application_number, sponsor_name, openfda block (brand_name, generic_name, route, product_type, substance_name), products[] (active_ingredients, dosage_form, marketing_status), submissions[] (submission_type, submission_status, submission_status_date, review_priority).',
+        'Drug application records — application_number, sponsor_name, openfda block on harmonized applications only (brand_name, generic_name, route, product_type, substance_name), products[] (brand_name, active_ingredients, dosage_form, marketing_status), submissions[] (submission_type, submission_status, submission_status_date, review_priority).',
       ),
-    ...pageBudgetOutputShape,
+    ...oversizedRecordOutputShape,
     ...projectionOutputShape,
     ...canvasOutputShape,
   }),
@@ -144,7 +151,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       .string()
       .optional()
       .describe(
-        'Canvas staging disclosure when the call staged, the fields projection and any requested path no record carries, the byte-budget disclosure when the inline page was bounded or one record exceeds it (with the routes to the withheld records and the largest fields of the oversized record), and guidance when results are empty — how to broaden filters or correct field names.',
+        `Canvas staging disclosure when the call staged, the limit clamp when limit exceeded the cap (requested value, cap, next skip), the fields projection and any requested path no record carries, the size and largest fields when a record on the page exceeds ${OVERSIZED_RECORD_BYTES} bytes, and guidance when results are empty — how to broaden filters or correct field names.`,
       ),
   },
 
@@ -191,12 +198,14 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
   async handler(input, ctx) {
     assertSkipWithinCeiling(input.skip, ctx);
     assertSearchDelimitersBalanced(input.search, ctx);
+    const size = resolvePageSize(input.limit, 'drug/drugsfda', ctx);
+    const sort = sortOrNewest(input, NEWEST_FIRST);
 
     const emptyNotice = (skip: number, total: number, totalUnverified?: boolean) =>
       emptyResultMessage(
         skip,
         total,
-        `No drug approvals matched the query. Try broader terms, check field names (e.g. openfda.brand_name, sponsor_name), or remove filters. ${formatFieldHint('drug/drugsfda')}`,
+        `No drug approvals matched the query. Try broader terms, check field names — products.brand_name for a product name (openfda.* covers harmonized applications only), sponsor_name for the applicant, stored uppercase (sponsor_name:"PFIZER") — or remove filters. ${formatFieldHint('drug/drugsfda')}`,
         totalUnverified,
       );
 
@@ -214,10 +223,10 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       const spill = await spillSearch({
         endpoint: 'drug/drugsfda',
         search: input.search,
-        sort: input.sort,
+        sort,
         canvasId: input.canvas_id,
         schema: DRUG_APPROVALS_CANVAS_SCHEMA,
-        limit: input.limit,
+        limit: size.limit,
         skip: input.skip,
         projection,
         ctx,
@@ -229,8 +238,9 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
         [
           spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
           phrasePlusHint(input.search, spill.total),
+          pageSizeNotice(size, staged),
           projectionNotice(staged),
-          pageBudgetNotice(staged),
+          oversizedRecordNotice(staged),
           stagingNotice(spill),
         ]
           .filter(Boolean)
@@ -245,20 +255,19 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       'drug/drugsfda',
       {
         search: input.search,
-        sort: input.sort,
-        limit: input.limit,
+        sort,
+        limit: size.limit,
         skip: input.skip,
       },
       ctx,
     );
 
-    const page = boundedPage(response, projection);
+    const page = inlinePage(response, size.limit, projection);
 
     ctx.log.info('Drug approval search completed', {
       search: input.search,
       total: response.meta.total,
       returned: page.results.length,
-      pageOmitted: page.page_omitted,
     });
 
     ctx.enrich({ totalResults: response.meta.total });
@@ -268,8 +277,9 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
         ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
         : undefined,
       phrasePlusHint(input.search, response.meta.total),
+      pageSizeNotice(size, page),
       projectionNotice(page),
-      pageBudgetNotice(page),
+      oversizedRecordNotice(page),
     ].filter(Boolean);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
@@ -299,7 +309,9 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       const openfda = r.openfda ?? {};
       const brandName = (openfda.brand_name ?? [])[0] ?? '';
       const genericName = (openfda.generic_name ?? [])[0] ?? '';
-      const title = brandName || genericName || r.application_number || 'Unknown';
+      // openfda.* is filled on harmonized applications only; products[] names the rest.
+      const productBrand = r.products?.[0]?.brand_name ?? '';
+      const title = brandName || productBrand || genericName || r.application_number || 'Unknown';
 
       lines.push(singleLine(`### ${title}`));
       lines.push(
@@ -349,6 +361,8 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
             ),
           );
         }
+        // A blank line ends the list; without it the next line continues the last item.
+        lines.push('');
       }
 
       const submissions = r.submissions ?? [];
@@ -377,6 +391,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
             ),
           );
         }
+        lines.push('');
       }
 
       lines.push(...formatRemainingFields(r, rendered));

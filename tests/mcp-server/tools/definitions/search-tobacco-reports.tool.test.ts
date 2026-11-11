@@ -12,6 +12,7 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 
 import { searchTobaccoReportsTool } from '@/mcp-server/tools/definitions/search-tobacco-reports.tool.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import { renderCommonMark } from '../../../helpers/commonmark.js';
 import { textOf } from '../../../helpers/content.js';
 
 const mockQuery = vi.fn();
@@ -38,6 +39,65 @@ describe('openfda_search_tobacco_reports', () => {
 
     expect(mockQuery.mock.calls[0]![0]).toBe('tobacco/problem');
     expect(result.results).toHaveLength(1);
+  });
+
+  // #92 — the endpoint's default page size reaches the request and meta.limit.
+  it('pages tobacco/problem at its default of 25 when limit is omitted', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 0, skip: 0, limit: 0, lastUpdated: '' },
+      results: [],
+    });
+
+    const result = await searchTobaccoReportsTool.handler(
+      searchTobaccoReportsTool.input.parse({}),
+      ctx,
+    );
+
+    expect(mockQuery.mock.calls[0]![1]).toMatchObject({ limit: 25 });
+    expect(result.meta.limit).toBe(25);
+  });
+
+  // #88 — a bare browse is newest first by submission date.
+  describe('default sort (#88)', () => {
+    const EMPTY = { meta: { total: 0, skip: 0, limit: 0, lastUpdated: '' }, results: [] };
+
+    it('sends date_submitted:desc with neither search nor sort', async () => {
+      mockQuery.mockResolvedValue(EMPTY);
+
+      await searchTobaccoReportsTool.handler(searchTobaccoReportsTool.input.parse({}), ctx);
+
+      expect(mockQuery.mock.calls[0]![1]).toMatchObject({ sort: 'date_submitted:desc' });
+    });
+
+    it('sends no sort when the call names a search alone', async () => {
+      mockQuery.mockResolvedValue(EMPTY);
+
+      await searchTobaccoReportsTool.handler(
+        searchTobaccoReportsTool.input.parse({ search: 'nonuser_affected:"Yes"' }),
+        ctx,
+      );
+
+      expect(mockQuery.mock.calls[0]![1]).toMatchObject({ sort: undefined });
+    });
+
+    it('sends an explicit sort as given', async () => {
+      mockQuery.mockResolvedValue(EMPTY);
+
+      await searchTobaccoReportsTool.handler(
+        searchTobaccoReportsTool.input.parse({ sort: 'date_submitted:asc' }),
+        ctx,
+      );
+
+      expect(mockQuery.mock.calls[0]![1]).toMatchObject({ sort: 'date_submitted:asc' });
+    });
+
+    it('states the default in the search and sort descriptions', () => {
+      const shape = searchTobaccoReportsTool.input.shape;
+      expect(shape.search.description).toContain(
+        'Omit to browse newest first, sorted by date_submitted:desc.',
+      );
+      expect(shape.sort.description).toContain('defaults to date_submitted:desc');
+    });
   });
 
   it('passes search, sort, limit, skip to service', async () => {
@@ -213,6 +273,39 @@ describe('openfda_search_tobacco_reports', () => {
     expect(text).toContain('Chest pain');
     expect(text).toContain('Battery exploded');
     expect(text).toContain('No');
+  });
+
+  /**
+   * Under CommonMark a line right after a list item, with no blank line between,
+   * continues that item — so the problems and counts rendered inside the last
+   * product type's `<li>`.
+   */
+  it('ends the product list before the record fields that follow it, under CommonMark', () => {
+    const text = textOf(
+      searchTobaccoReportsTool.format!({
+        meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-11-10' },
+        results: [
+          {
+            report_id: 'TOB-LIST',
+            date_submitted: '04/17/2026',
+            nonuser_affected: 'No',
+            tobacco_products: ['Electronic cigarette', 'Cigar'],
+            reported_health_problems: ['Chest pain'],
+            reported_product_problems: ['Battery exploded'],
+            number_tobacco_products: 2,
+            number_health_problems: 1,
+            number_product_problems: 1,
+            report_source: 'Consumer',
+          },
+        ],
+      }),
+    );
+
+    const items = [...renderCommonMark(text).matchAll(/<li>([\s\S]*?)<\/li>/g)].map((m) => m[1]);
+    expect(items).toEqual(['Electronic cigarette', 'Cigar']);
+    for (const label of ['Health problems', 'Product problems', 'Counts', 'Report source']) {
+      expect(text).toContain(`**${label}:**`);
+    }
   });
 
   it('format handles sparse payload — all optional fields absent', () => {

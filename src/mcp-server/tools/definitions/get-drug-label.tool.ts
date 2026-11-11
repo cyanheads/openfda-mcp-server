@@ -27,9 +27,13 @@ import {
 import {
   assertSearchDelimitersBalanced,
   assertSkipWithinCeiling,
+  META_LIMIT_DESCRIPTION,
   malformedSearchError,
   nonBlankString,
+  pageLimit,
+  pageSizeNotice,
   phrasePlusHint,
+  resolvePageSize,
   SEARCH_SYNTAX_NOTE,
   SKIP_DESCRIPTION,
   searchExpression,
@@ -207,14 +211,10 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       .describe(
         'Sort expression — a field path optionally suffixed with :asc or :desc (any letter case; :ascending and :descending are also accepted, and every direction is sent as asc or desc); comma-separate for multi-field sort. Example: effective_time:desc. Field paths take only letters, digits, underscores, and dots; any other character or direction is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
       ),
-    limit: z
-      .number()
-      .min(1)
-      .max(1000)
-      .default(5)
-      .describe(
-        'Maximum number of results to return (1-1000). Default 5. Labels are large, and the cost of a sections selection is the section summed across every record on the page — so it scales with this limit. Lower it before widening a selection.',
-      ),
+    limit: pageLimit(
+      ENDPOINT,
+      'Labels per page. Labels are large, and the cost of a sections selection is the section summed across every record on the page — so it scales with this limit. Lower it before widening a selection.',
+    ),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     sections: z
       .array(nonBlankString().describe('A top-level label section name.'))
@@ -229,7 +229,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       .object({
         total: z.number().describe('Total matching results in the dataset.'),
         skip: z.number().describe('Number of results skipped.'),
-        limit: z.number().describe('Maximum results returned per request.'),
+        limit: z.number().describe(META_LIMIT_DESCRIPTION),
         lastUpdated: z.string().describe('Date the dataset was last updated.'),
         totalUnverified: totalUnverifiedField,
       })
@@ -274,7 +274,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       .string()
       .optional()
       .describe(
-        'Guidance for this page: how to broaden filters or correct field names when results are empty or paging overshot, the sized re-call example when a page overflowed to its section outline, section names no record carried, and the serialized size when a sections selection exceeds the inline budget. Absent when nothing needs saying.',
+        'Guidance for this page: how to broaden filters or correct field names when results are empty or paging overshot, the sized re-call example when a page overflowed to its section outline, section names no record carried, the serialized size when a sections selection exceeds the inline budget, and the requested value, the cap applied, and the next skip when limit exceeded the 1000-record cap. Absent when nothing needs saying.',
       ),
   },
 
@@ -318,18 +318,20 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
   async handler(input, ctx) {
     assertSkipWithinCeiling(input.skip, ctx);
     assertSearchDelimitersBalanced(input.search, ctx);
+    const size = resolvePageSize(input.limit, ENDPOINT, ctx);
 
     const service = getOpenFdaService();
-    const response = await service.query(
+    const queried = await service.query(
       ENDPOINT,
       {
         search: input.search,
         sort: input.sort,
-        limit: input.limit,
+        limit: size.limit,
         skip: input.skip,
       },
       ctx,
     );
+    const response = { ...queried, meta: { ...queried.meta, limit: size.limit } };
 
     ctx.log.info('Drug label lookup completed', {
       search: input.search,
@@ -339,22 +341,28 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
 
     ctx.enrich({ totalResults: response.meta.total, effectiveQuery: input.search });
 
-    /** Page-level guidance, composed with any outline guidance below — `notice` is last-wins. */
-    let pageNotice: string | undefined;
+    const morePages =
+      response.results.length > 0 &&
+      response.meta.skip + response.results.length < response.meta.total;
+    let pageLead: string | undefined;
     if (response.results.length === 0) {
       const fieldHint = formatFieldHint('drug/label');
       const plusHint = phrasePlusHint(input.search, response.meta.total);
-      pageNotice = emptyResultMessage(
+      pageLead = emptyResultMessage(
         response.meta.skip,
         response.meta.total,
-        `No labels matched search: ${codeLiteral(input.search)}. Try broader terms or check field names (e.g. openfda.brand_name, openfda.generic_name, openfda.manufacturer_name). ${fieldHint}${plusHint ? ` ${plusHint}` : ''}`,
+        `No labels matched search: ${codeLiteral(input.search)}. Try broader terms or check field names (e.g. openfda.brand_name, openfda.generic_name, openfda.manufacturer_name). openFDA fills the openfda block only on labels it linked to a product, so when an openfda field finds nothing, search the label's own product text with spl_product_data_elements (e.g. spl_product_data_elements:"lisinopril"). ${fieldHint}${plusHint ? ` ${plusHint}` : ''}`,
         response.meta.totalUnverified,
       );
-    } else if (response.meta.skip + response.results.length < response.meta.total) {
-      pageNotice = `${response.meta.total} labels matched; this page returned ${response.results.length}. Page with skip (e.g. skip=${response.meta.skip + response.results.length}) or narrow the search.`;
+    } else if (morePages) {
+      pageLead = `${response.meta.total} labels matched; this page returned ${response.results.length}. Page with skip (e.g. skip=${response.meta.skip + response.results.length}) or narrow the search.`;
+    }
+    /** Page guidance, joined with the section or outline guidance below (`notice` is last-wins). */
+    const pageNotice = [pageLead, pageSizeNotice(size, response)].filter(Boolean).join(' ');
+    if (morePages) {
       ctx.enrich.truncated({
         shown: response.results.length,
-        cap: input.limit,
+        cap: size.limit,
         guidance: pageNotice,
       });
     }

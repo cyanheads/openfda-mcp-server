@@ -49,6 +49,84 @@ describe('openfda_search_device_clearances', () => {
     expect(mockQuery.mock.calls[0]![0]).toBe('device/pma');
   });
 
+  // #92 — the pathway picks the page size an omitted limit gets and the cap a larger one is clamped to.
+  it.each([
+    ['510k', 'device/510k', 10, 175],
+    ['pma', 'device/pma', 25, 575],
+  ] as const)(
+    'pages the %s pathway on %s at default %i and cap %i',
+    async (pathway, endpoint, fallback, cap) => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 0, skip: 0, limit: 0, lastUpdated: '' },
+        results: [],
+      });
+
+      const omitted = await searchDeviceClearancesTool.handler(
+        searchDeviceClearancesTool.input.parse({ pathway }),
+        ctx,
+      );
+      const above = await searchDeviceClearancesTool.handler(
+        searchDeviceClearancesTool.input.parse({ pathway, limit: 5_000 }),
+        ctx,
+      );
+
+      expect(mockQuery.mock.calls.map(([path, params]) => [path, params.limit])).toEqual([
+        [endpoint, fallback],
+        [endpoint, cap],
+      ]);
+      expect([omitted.meta.limit, above.meta.limit]).toEqual([fallback, cap]);
+    },
+  );
+
+  // #88 — a bare browse is newest first by decision date, on either pathway.
+  describe('default sort (#88)', () => {
+    const EMPTY = { meta: { total: 0, skip: 0, limit: 0, lastUpdated: '' }, results: [] };
+
+    it.each(['510k', 'pma'] as const)(
+      'sends the %s pathway with neither search nor sort as decision_date:desc',
+      async (pathway) => {
+        mockQuery.mockResolvedValue(EMPTY);
+
+        await searchDeviceClearancesTool.handler(
+          searchDeviceClearancesTool.input.parse({ pathway }),
+          ctx,
+        );
+
+        expect(mockQuery.mock.calls[0]![1]).toMatchObject({ sort: 'decision_date:desc' });
+      },
+    );
+
+    it('sends no sort when the call names a search alone', async () => {
+      mockQuery.mockResolvedValue(EMPTY);
+
+      await searchDeviceClearancesTool.handler(
+        searchDeviceClearancesTool.input.parse({ pathway: '510k', search: 'product_code:"DXN"' }),
+        ctx,
+      );
+
+      expect(mockQuery.mock.calls[0]![1]).toMatchObject({ sort: undefined });
+    });
+
+    it('sends an explicit sort as given', async () => {
+      mockQuery.mockResolvedValue(EMPTY);
+
+      await searchDeviceClearancesTool.handler(
+        searchDeviceClearancesTool.input.parse({ pathway: 'pma', sort: 'decision_date:asc' }),
+        ctx,
+      );
+
+      expect(mockQuery.mock.calls[0]![1]).toMatchObject({ sort: 'decision_date:asc' });
+    });
+
+    it('states the default in the search and sort descriptions', () => {
+      const shape = searchDeviceClearancesTool.input.shape;
+      expect(shape.search.description).toContain(
+        'Omit to browse newest first, sorted by decision_date:desc.',
+      );
+      expect(shape.sort.description).toContain('defaults to decision_date:desc');
+    });
+  });
+
   it('populates enrichment.totalResults', async () => {
     mockQuery.mockResolvedValue({
       meta: { total: 7, skip: 0, limit: 10, lastUpdated: '2026-01-01' },

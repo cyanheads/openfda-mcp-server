@@ -316,21 +316,21 @@ function makeCanvas() {
 const META_CASES = [
   ['a miss', 0, 0, { limit: 2 }, 2],
   ['a window past the end of the match', 5, 0, { limit: 3, skip: 7 }, 3],
-  ['a short page the budget did not bound', 3, 0, { limit: 10 }, 10],
-  ['a full page the budget did not bound', 50, 0, { limit: 10 }, 10],
-  ['a page the budget bounded', 40, 10_000, { limit: 10 }, 2],
-  ['a lone record over the budget that dropped nothing', 1, 70_000, { limit: 10 }, 10],
+  ['a short page', 3, 0, { limit: 10 }, 10],
+  ['a full page', 50, 0, { limit: 10 }, 10],
+  ['a full page of heavy records', 40, 10_000, { limit: 10 }, 10],
+  ['a page holding one oversized record', 1, 70_000, { limit: 10 }, 10],
+  // `drug/enforcement` caps a page at 1000 records (#92).
+  ['a limit above the endpoint cap', 1_200, 0, { limit: 5_000 }, 1_000],
 ] as const;
 
 /**
- * Every tool hands its own `limit` to the shared staging path, so each runs the
- * two windows the bug misreported (a miss, a short page); the full set of windows
- * runs once, on the tool the bug was reported against. `canvas-spill.test.ts`
- * tables the same windows at the `canvasResult` seam.
+ * Every tool hands its own resolved page size to the shared staging path, so each
+ * runs the two windows the bug misreported (a miss, a short page); the full set of
+ * windows runs once, on the tool the bug was reported against.
+ * `canvas-spill.test.ts` tables the same windows at the `canvasResult` seam.
  */
-const WIRING_CASES = META_CASES.filter(
-  ([name]) => name === 'a miss' || name === 'a short page the budget did not bound',
-);
+const WIRING_CASES = META_CASES.filter(([name]) => name === 'a miss' || name === 'a short page');
 
 describe.each(
   STAGING_TOOLS.map(
@@ -361,5 +361,47 @@ describe.each(
     // The #68 header prints meta.limit into content[] on every page, empty or not.
     expect(header(staged)).toBe(header(plain));
     expect(header(staged)).toContain(`limit: ${limit})`);
+  });
+});
+
+/* --- #88: a bare staged browse sends the newest-first sort on every request --- */
+
+/**
+ * A window past the probe forces all three requests a stage makes — the probe,
+ * the inline window, and a drain page — each of which must carry the sort.
+ */
+describe.each(
+  (
+    [
+      [searchAdverseEventsTool, { category: 'drug' }, 'receivedate:desc'],
+      [searchAdverseEventsTool, { category: 'food' }, 'date_created:desc'],
+      [searchAdverseEventsTool, { category: 'device' }, 'date_received:desc'],
+      [searchRecallsTool, { category: 'drug' }, 'report_date:desc'],
+      [searchRecallsTool, { category: 'device', endpoint: 'recall' }, 'event_date_initiated:desc'],
+      [searchDeviceClearancesTool, { pathway: 'pma' }, 'decision_date:desc'],
+      [searchAnimalEventsTool, {}, 'original_receive_date:desc'],
+      [searchTobaccoReportsTool, {}, 'date_submitted:desc'],
+      [searchDrugApprovalsTool, {}, 'submissions.submission_status_date:desc'],
+    ] as const
+  ).map(([tool, input, sort]) => [tool.name, input, tool, sort] as const),
+)('%s %j — staged default sort (#88)', (_name, baseInput, tool, sort) => {
+  it(`stages a bare browse with ${sort} on the probe, the window, and the drain`, async () => {
+    const svc = makeSvc(250);
+    await setMock('@/services/openfda/openfda-service.js', svc);
+    await setMock('@/services/canvas/canvas-accessor.js', makeCanvas());
+
+    const staged = await runToolContract(tool, {
+      ...baseInput,
+      limit: 10,
+      skip: 150,
+      stage: true,
+    } as never);
+
+    expect(staged.isError).toBeFalsy();
+    expect((staged.structuredContent as { staged_rows?: number }).staged_rows).toBe(250);
+    expect(svc.query.mock.calls.map(([, params]) => params.skip)).toEqual([0, 150, 100]);
+    for (const [, params] of svc.query.mock.calls) {
+      expect(params).toMatchObject({ sort });
+    }
   });
 });

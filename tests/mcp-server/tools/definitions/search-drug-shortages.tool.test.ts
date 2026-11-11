@@ -40,6 +40,22 @@ describe('openfda_search_drug_shortages', () => {
     expect(result.results[0]!.generic_name).toBe('Carboplatin Injection');
   });
 
+  // #92 — the endpoint's default page size reaches the request and meta.limit.
+  it('pages drug/shortages at its default of 25 when limit is omitted', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 0, skip: 0, limit: 0, lastUpdated: '' },
+      results: [],
+    });
+
+    const result = await searchDrugShortagesTool.handler(
+      searchDrugShortagesTool.input.parse({}),
+      ctx,
+    );
+
+    expect(mockQuery.mock.calls[0]![1]).toMatchObject({ limit: 25 });
+    expect(result.meta.limit).toBe(25);
+  });
+
   it('passes search, sort, limit, skip to service', async () => {
     mockQuery.mockResolvedValue({
       meta: { total: 5, skip: 0, limit: 5, lastUpdated: '2026-01-01' },

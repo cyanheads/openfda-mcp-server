@@ -28,6 +28,13 @@
           "isRequired": false
         },
         {
+          "name": "OPENFDA_CLAMP_LIMITS",
+          "description": "Clamp a limit above its endpoint's cap to that cap, with a notice naming the requested value and the cap. On by default; set to 'false' to reject such a limit instead and advertise the cap as the schema maximum.",
+          "format": "string",
+          "isRequired": false,
+          "default": "true"
+        },
+        {
           "name": "CANVAS_PROVIDER_TYPE",
           "description": "DataCanvas staging, on by default: stage=true or a canvas_id on an openfda_search_* tool or openfda_lookup_ndc stages the matched records as a SQL table for the openfda_dataframe_* tools. The DuckDB binding ships with the server. Set to 'none' to disable.",
           "format": "string",
@@ -140,6 +147,13 @@
           "format": "string",
           "isRequired": false,
           "default": "none"
+        },
+        {
+          "name": "OPENFDA_CLAMP_LIMITS",
+          "description": "Clamp a limit above its endpoint's cap to that cap, with a notice naming the requested value and the cap. On by default; set to 'false' to reject such a limit instead and advertise the cap as the schema maximum.",
+          "format": "string",
+          "isRequired": false,
+          "default": "true"
         },
         {
           "name": "CANVAS_PROVIDER_TYPE",

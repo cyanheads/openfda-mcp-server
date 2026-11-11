@@ -1,8 +1,7 @@
 /**
  * @fileoverview MCP tool for looking up drugs in the openFDA NDC (National Drug
- * Code) Directory. A record grows with its packaging list and `limit` reaches 1000,
- * so the inline page is bounded by a serialized-byte budget and discloses any records
- * it withheld along with the routes to them.
+ * Code) Directory. A record grows with its packaging list, and a page holding a
+ * record over 24,000 bytes names its largest fields.
  * @module mcp-server/tools/definitions/lookup-ndc
  */
 
@@ -24,8 +23,12 @@ import {
   assertSkipWithinCeiling,
   fieldSelection,
   fieldsDescription,
+  META_LIMIT_DESCRIPTION,
   malformedSearchError,
+  pageLimit,
+  pageSizeNotice,
   phrasePlusHint,
+  resolvePageSize,
   SEARCH_SYNTAX_NOTE,
   SKIP_DESCRIPTION,
   searchExpression,
@@ -46,11 +49,10 @@ import {
 } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import {
-  boundedPage,
-  META_LIMIT_DESCRIPTION,
-  PAGE_BUDGET_NOTE,
-  pageBudgetNotice,
-  pageBudgetOutputShape,
+  inlinePage,
+  OVERSIZED_RECORD_BYTES,
+  oversizedRecordNotice,
+  oversizedRecordOutputShape,
 } from '@/services/openfda/page-budget.js';
 import {
   projectionNotice,
@@ -94,21 +96,17 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
 
   input: z.object({
     search: searchExpression().describe(
-      `openFDA search query. Examples: product_ndc:"0363-0218", brand_name:"aspirin", generic_name:"metformin", openfda.manufacturer_name:"walgreen", active_ingredients.name:"ASPIRIN". ${SEARCH_SYNTAX_NOTE}`,
+      `openFDA search query. Examples: product_ndc:"0363-0218", brand_name:"aspirin", generic_name:"metformin", labeler_name:"walgreen", active_ingredients.name:"ASPIRIN". ${SEARCH_SYNTAX_NOTE}`,
     ),
     sort: sortExpression()
       .optional()
       .describe(
         'Sort expression — a field path optionally suffixed with :asc or :desc (any letter case; :ascending and :descending are also accepted, and every direction is sent as asc or desc); comma-separate for multi-field sort. Example: listing_expiration_date:desc. Field paths take only letters, digits, underscores, and dots; any other character or direction is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
       ),
-    limit: z
-      .number()
-      .min(1)
-      .max(1000)
-      .default(10)
-      .describe(
-        `Maximum number of records to return (1-1000, default 10). ${PAGE_BUDGET_NOTE} A record grows with its packaging list, so a product with many package configurations is several times the size of one with a single package.`,
-      ),
+    limit: pageLimit(
+      'drug/ndc',
+      'Records per page. A record grows with its packaging list, so a product with many package configurations is several times the size of one with a single package.',
+    ),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     fields: fieldSelection()
       .optional()
@@ -134,7 +132,7 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
       .describe(
         'NDC directory records — product_ndc, brand_name, generic_name, labeler_name, dosage_form, route, marketing_category, active_ingredients[], packaging[], listing_expiration_date.',
       ),
-    ...pageBudgetOutputShape,
+    ...oversizedRecordOutputShape,
     ...projectionOutputShape,
     ...canvasOutputShape,
   }),
@@ -148,7 +146,7 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
       .string()
       .optional()
       .describe(
-        'Canvas staging disclosure when the call staged, the fields projection and any requested path no record carries, the byte-budget disclosure when the inline page was bounded or one record exceeds it (with the routes to the withheld records and the largest fields of the oversized record), and guidance when results are empty — how to broaden filters or correct field names.',
+        `Canvas staging disclosure when the call staged, the limit clamp when limit exceeded the cap (requested value, cap, next skip), the fields projection and any requested path no record carries, the size and largest fields when a record on the page exceeds ${OVERSIZED_RECORD_BYTES} bytes, and guidance when results are empty — how to broaden filters or correct field names.`,
       ),
   },
 
@@ -195,6 +193,7 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
   async handler(input, ctx) {
     assertSkipWithinCeiling(input.skip, ctx);
     assertSearchDelimitersBalanced(input.search, ctx);
+    const size = resolvePageSize(input.limit, 'drug/ndc', ctx);
 
     const emptyNotice = (skip: number, total: number, totalUnverified?: boolean) =>
       emptyResultMessage(
@@ -221,7 +220,7 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
         sort: input.sort,
         canvasId: input.canvas_id,
         schema: NDC_CANVAS_SCHEMA,
-        limit: input.limit,
+        limit: size.limit,
         skip: input.skip,
         projection,
         ctx,
@@ -232,8 +231,9 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
         [
           spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
           phrasePlusHint(input.search, spill.total),
+          pageSizeNotice(size, staged),
           projectionNotice(staged),
-          pageBudgetNotice(staged),
+          oversizedRecordNotice(staged),
           stagingNotice(spill),
         ]
           .filter(Boolean)
@@ -243,15 +243,18 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
     }
 
     const service = getOpenFdaService();
-    const response = await service.query('drug/ndc', input, ctx);
+    const response = await service.query(
+      'drug/ndc',
+      { search: input.search, sort: input.sort, limit: size.limit, skip: input.skip },
+      ctx,
+    );
 
-    const page = boundedPage(response, projection);
+    const page = inlinePage(response, size.limit, projection);
 
     ctx.log.info('NDC lookup completed', {
       search: input.search,
       total: response.meta.total,
       returned: page.results.length,
-      pageOmitted: page.page_omitted,
     });
 
     ctx.enrich({ totalResults: response.meta.total, effectiveQuery: input.search });
@@ -260,8 +263,9 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
         ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
         : undefined,
       phrasePlusHint(input.search, response.meta.total),
+      pageSizeNotice(size, page),
       projectionNotice(page),
-      pageBudgetNotice(page),
+      oversizedRecordNotice(page),
     ].filter(Boolean);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
@@ -323,6 +327,8 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
           // Marketing dates and the sample flag.
           lines.push(...formatRemainingFields(p, new Set(['package_ndc', 'description'])));
         }
+        // A blank line ends the list; without it the next line continues the last item.
+        lines.push('');
       }
 
       if (r.listing_expiration_date)

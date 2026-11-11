@@ -348,16 +348,16 @@ describe('resultHeader', () => {
 describe('searchLead', () => {
   const META = { total: 0, skip: 0, limit: 0, lastUpdated: '2026-06-01' };
 
-  it('opens with the header alone when nothing staged and the page was not bounded', () => {
+  it('opens with the header alone when nothing staged and no record was oversized', () => {
     expect(searchLead({ meta: META, results: [] })).toEqual([`${resultHeader(META, 0)}\n`]);
   });
 
-  it('orders header, page-budget line, then staging line', () => {
+  it('orders header, oversized-record line, then staging line', () => {
     const lead = searchLead({
-      meta: { ...META, total: 9, limit: 1 },
-      results: [{}],
+      meta: { ...META, total: 9, limit: 5 },
+      results: [{}, {}, {}, {}, {}],
       page_bytes: 70_000,
-      page_omitted: 4,
+      page_largest_fields: [{ path: 'blob', bytes: 60_002 }],
       canvas_id: 'cv_1',
       canvas_table: 'spilled_ab12cd34',
       spilled: true,
@@ -365,7 +365,9 @@ describe('searchLead', () => {
     });
     expect(lead).toHaveLength(3);
     expect(lead[0]).toMatch(/^\*\*9 total results\*\*/);
-    expect(lead[1]).toMatch(/^> Inline page bounded to 1 of the 5 records requested/);
+    expect(lead[1]).toMatch(
+      /^> Oversized record: this page of 5 records serializes to 70000 bytes/,
+    );
     expect(lead[2]).toMatch(/^> Staged 9 of 9 matched rows/);
     for (const line of lead) expect(line.endsWith('\n')).toBe(true);
   });
@@ -381,7 +383,7 @@ describe('searchLead', () => {
     expect(lead[1]).toBe('> Canvas `cv_1` acquired; no rows staged (spilled=false, 0 matched).\n');
   });
 
-  it('places the fields projection line after the header and before the page-budget line (#66)', () => {
+  it('places the fields projection line after the header and before the oversized-record line (#66)', () => {
     const record = { report_id: 'r-1', code_info: 'c'.repeat(30_000) };
     const lead = searchLead({
       meta: { ...META, total: 1, limit: 10 },
@@ -395,7 +397,7 @@ describe('searchLead', () => {
       /^> Records projected to the requested fields \(`code_info`, `missing\.leaf`\)/,
     );
     expect(lead[1]).toContain('No record in this page carries `missing.leaf`');
-    expect(lead[2]).toMatch(/^> Inline page exceeds the 24000-byte budget/);
+    expect(lead[2]).toMatch(/^> Oversized record: the one record on this page serializes to/);
     expect(lead[2]).toContain('code_info (30002 bytes)');
   });
 

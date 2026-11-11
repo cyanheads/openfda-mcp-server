@@ -9,8 +9,18 @@
 import {
   ADMINISTRATION_ROUTES,
   codeList,
+  DECHALLENGE_OUTCOMES,
+  DOSAGE_INTERVAL_UNITS,
+  DOSE_UNITS,
+  DRUG_ACTIONS,
+  EXPEDITED_REPORT_FLAGS,
+  ONSET_AGE_UNITS,
   PATIENT_AGE_GROUPS,
   REACTION_OUTCOMES,
+  RECHALLENGE_OUTCOMES,
+  REPORT_TYPES,
+  REPORTER_QUALIFICATIONS,
+  TREATMENT_DURATION_UNITS,
 } from '@/mcp-server/tools/drug-event-codes.js';
 
 /**
@@ -92,6 +102,12 @@ const FIELD_CATALOG: Record<string, FieldGroup[]> = {
           note: `Age group code: ${codeList(PATIENT_AGE_GROUPS)}`,
         },
         { path: 'patient.patientweight', type: 'float', countable: 'bare', note: 'Weight in kg' },
+        {
+          path: 'patient.patientonsetageunit',
+          type: 'string',
+          countable: 'none',
+          note: `Unit of patient.patientonsetage: ${codeList(ONSET_AGE_UNITS)}`,
+        },
       ],
     },
     {
@@ -155,6 +171,71 @@ const FIELD_CATALOG: Record<string, FieldGroup[]> = {
           type: 'string',
           countable: 'exact',
           note: 'OpenFDA manufacturer',
+        },
+        {
+          path: 'patient.drug.actiondrug',
+          type: 'string',
+          countable: 'bare',
+          note: `Action taken with the drug: ${codeList(DRUG_ACTIONS)}`,
+        },
+        {
+          path: 'patient.drug.drugadditional',
+          type: 'string',
+          countable: 'bare',
+          note: `Dechallenge — did the reaction abate once the drug was stopped or reduced: ${codeList(DECHALLENGE_OUTCOMES)}; openFDA also stores 4, which FDA's field reference leaves undefined`,
+        },
+        {
+          path: 'patient.drug.drugrecurreadministration',
+          type: 'string',
+          countable: 'bare',
+          note: `Rechallenge — did the reaction recur when the drug was given again: ${codeList(RECHALLENGE_OUTCOMES)}`,
+        },
+        {
+          path: 'patient.drug.drugtreatmentdurationunit',
+          type: 'string',
+          countable: 'none',
+          note: `Unit of patient.drug.drugtreatmentduration: ${codeList(TREATMENT_DURATION_UNITS)}`,
+        },
+        {
+          path: 'patient.drug.drugintervaldosagedefinition',
+          type: 'string',
+          countable: 'bare',
+          note: `Unit of patient.drug.drugintervaldosageunitnumb: ${codeList(DOSAGE_INTERVAL_UNITS)}; openFDA also stores 807, which FDA's field reference labels trimester like 811`,
+        },
+        {
+          path: 'patient.drug.drugstructuredosageunit',
+          type: 'string',
+          countable: 'none',
+          note: `Unit of patient.drug.drugstructuredosagenumb: ${codeList(DOSE_UNITS)}; openFDA also stores codes 005 and above, which FDA's field reference leaves unlabelled`,
+        },
+        {
+          path: 'patient.drug.drugcumulativedosageunit',
+          type: 'string',
+          countable: 'none',
+          note: `Unit of patient.drug.drugcumulativedosagenumb: ${codeList(DOSE_UNITS)}; openFDA also stores codes 005 and above, which FDA's field reference leaves unlabelled`,
+        },
+      ],
+    },
+    {
+      label: 'Report source',
+      fields: [
+        {
+          path: 'reporttype',
+          type: 'string',
+          countable: 'bare',
+          note: `Circumstances of the report: ${codeList(REPORT_TYPES)}`,
+        },
+        {
+          path: 'primarysource.qualification',
+          type: 'string',
+          countable: 'bare',
+          note: `Who submitted the report: ${codeList(REPORTER_QUALIFICATIONS)}`,
+        },
+        {
+          path: 'fulfillexpeditecriteria',
+          type: 'string',
+          countable: 'bare',
+          note: `Expedited (15-day) report: ${codeList(EXPEDITED_REPORT_FLAGS)}; openFDA also stores 3, 4, and 5, which FDA's field reference leaves undefined`,
         },
       ],
     },
@@ -225,6 +306,12 @@ const FIELD_CATALOG: Record<string, FieldGroup[]> = {
           type: 'string',
           countable: 'none',
           note: 'Active ingredient names/strengths',
+        },
+        {
+          path: 'spl_product_data_elements',
+          type: 'string',
+          countable: 'none',
+          note: "The label's own product text (product names and ingredients); search it when an openfda.* field finds nothing, since openFDA fills the openfda block only on labels it linked to a product",
         },
       ],
     },
@@ -396,7 +483,23 @@ const FIELD_CATALOG: Record<string, FieldGroup[]> = {
           countable: 'bare',
           note: 'Application number (e.g. NDA012345, ANDA000001)',
         },
-        { path: 'sponsor_name', type: 'string', countable: 'bare', note: 'Sponsor/applicant name' },
+        {
+          path: 'sponsor_name',
+          type: 'string',
+          countable: 'bare',
+          note: 'Sponsor/applicant name, stored uppercase — a quoted value must match (sponsor_name:"PFIZER"; "pfizer" matches nothing)',
+        },
+      ],
+    },
+    {
+      label: 'Products',
+      fields: [
+        {
+          path: 'products.brand_name',
+          type: 'string',
+          countable: 'exact',
+          note: 'Brand name of each product in the application (e.g. "ELIQUIS"), matched in any letter case; set on nearly every application, including those without an openfda block',
+        },
       ],
     },
     {
@@ -431,7 +534,12 @@ const FIELD_CATALOG: Record<string, FieldGroup[]> = {
     {
       label: 'OpenFDA identifiers',
       fields: [
-        { path: 'openfda.brand_name', type: 'string', countable: 'exact', note: 'Brand name' },
+        {
+          path: 'openfda.brand_name',
+          type: 'string',
+          countable: 'exact',
+          note: 'Brand name, on harmonized applications only — search products.brand_name to reach the rest',
+        },
         { path: 'openfda.generic_name', type: 'string', countable: 'exact', note: 'Generic name' },
         { path: 'openfda.product_type', type: 'string', countable: 'exact', note: 'Product type' },
         {
@@ -936,6 +1044,17 @@ const FIELD_CATALOG: Record<string, FieldGroup[]> = {
           type: 'string',
           countable: 'exact',
           note: 'Root cause category description',
+        },
+      ],
+    },
+    {
+      label: 'Dates',
+      fields: [
+        {
+          path: 'event_date_initiated',
+          type: 'date',
+          countable: 'bare',
+          note: 'Date the firm initiated the recall — stored YYYY-MM-DD; query as YYYYMMDD (e.g. [20240101 TO 20241231]); the default newest-first sort',
         },
       ],
     },

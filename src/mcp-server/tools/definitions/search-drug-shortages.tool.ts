@@ -1,8 +1,6 @@
 /**
  * @fileoverview Tool for searching FDA drug shortage records via the drug/shortages
- * endpoint. Records are small, but `limit` reaches 1000, so the inline page is bounded
- * by a serialized-byte budget and discloses any records it withheld along with the
- * routes to them.
+ * endpoint. Records are small, so `limit` reaches openFDA's 1000-record page maximum.
  * @module mcp-server/tools/definitions/search-drug-shortages
  */
 
@@ -24,8 +22,12 @@ import {
   assertSkipWithinCeiling,
   fieldSelection,
   fieldsDescription,
+  META_LIMIT_DESCRIPTION,
   malformedSearchError,
+  pageLimit,
+  pageSizeNotice,
   phrasePlusHint,
+  resolvePageSize,
   SEARCH_SYNTAX_NOTE,
   SKIP_DESCRIPTION,
   searchExpression,
@@ -46,11 +48,10 @@ import {
 } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import {
-  boundedPage,
-  META_LIMIT_DESCRIPTION,
-  PAGE_BUDGET_NOTE,
-  pageBudgetNotice,
-  pageBudgetOutputShape,
+  inlinePage,
+  OVERSIZED_RECORD_BYTES,
+  oversizedRecordNotice,
+  oversizedRecordOutputShape,
 } from '@/services/openfda/page-budget.js';
 import {
   projectionNotice,
@@ -100,12 +101,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       .describe(
         'Sort expression — a field path optionally suffixed with :asc or :desc (any letter case; :ascending and :descending are also accepted, and every direction is sent as asc or desc); comma-separate for multi-field sort. Example: update_date:desc. Field paths take only letters, digits, underscores, and dots; any other character or direction is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
       ),
-    limit: z
-      .number()
-      .min(1)
-      .max(1000)
-      .default(10)
-      .describe(`Maximum number of records to return (1-1000, default 10). ${PAGE_BUDGET_NOTE}`),
+    limit: pageLimit('drug/shortages', 'Records per page.'),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     fields: fieldSelection()
       .optional()
@@ -131,7 +127,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       .describe(
         'Drug shortage records. Key fields: generic_name, status ("Current", "To Be Discontinued", or "Resolved"), availability, therapeutic_category, dosage_form, presentation, package_ndc, company_name, contact_info, initial_posting_date, update_date, update_type. openfda block contains brand_name, product_ndc, rxcui, spl_set_id for cross-linking.',
       ),
-    ...pageBudgetOutputShape,
+    ...oversizedRecordOutputShape,
     ...projectionOutputShape,
     ...canvasOutputShape,
   }),
@@ -146,7 +142,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       .string()
       .optional()
       .describe(
-        'Canvas staging disclosure when the call staged, the fields projection and any requested path no record carries, the byte-budget disclosure when the inline page was bounded or one record exceeds it (with the routes to the withheld records and the largest fields of the oversized record), and guidance when results are empty — how to broaden filters or correct field names.',
+        `Canvas staging disclosure when the call staged, the limit clamp when limit exceeded the cap (requested value, cap, next skip), the fields projection and any requested path no record carries, the size and largest fields when a record on the page exceeds ${OVERSIZED_RECORD_BYTES} bytes, and guidance when results are empty — how to broaden filters or correct field names.`,
       ),
   },
 
@@ -193,6 +189,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
   async handler(input, ctx) {
     assertSkipWithinCeiling(input.skip, ctx);
     assertSearchDelimitersBalanced(input.search, ctx);
+    const size = resolvePageSize(input.limit, 'drug/shortages', ctx);
 
     const emptyNotice = (skip: number, total: number, totalUnverified?: boolean) =>
       emptyResultMessage(
@@ -219,7 +216,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
         sort: input.sort,
         canvasId: input.canvas_id,
         schema: DRUG_SHORTAGES_CANVAS_SCHEMA,
-        limit: input.limit,
+        limit: size.limit,
         skip: input.skip,
         projection,
         ctx,
@@ -231,8 +228,9 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
         [
           spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
           phrasePlusHint(input.search, spill.total),
+          pageSizeNotice(size, staged),
           projectionNotice(staged),
-          pageBudgetNotice(staged),
+          oversizedRecordNotice(staged),
           stagingNotice(spill),
         ]
           .filter(Boolean)
@@ -247,19 +245,18 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       {
         search: input.search,
         sort: input.sort,
-        limit: input.limit,
+        limit: size.limit,
         skip: input.skip,
       },
       ctx,
     );
 
-    const page = boundedPage(response, projection);
+    const page = inlinePage(response, size.limit, projection);
 
     ctx.log.info('Drug shortage search completed', {
       search: input.search,
       total: response.meta.total,
       returned: page.results.length,
-      pageOmitted: page.page_omitted,
     });
 
     ctx.enrich({ totalResults: response.meta.total });
@@ -269,8 +266,9 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
         ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
         : undefined,
       phrasePlusHint(input.search, response.meta.total),
+      pageSizeNotice(size, page),
       projectionNotice(page),
-      pageBudgetNotice(page),
+      oversizedRecordNotice(page),
     ].filter(Boolean);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 

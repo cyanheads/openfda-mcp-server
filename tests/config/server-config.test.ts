@@ -83,4 +83,29 @@ describe('getServerConfig', { timeout: 20_000 }, () => {
     const { getServerConfig } = await import('@/config/server-config.js');
     expect(getServerConfig().dataframeDropEnabled).toBe(true);
   });
+
+  // #92 — the limit clamp is on unless an operator turns it off.
+  it('clamps limits by default', async () => {
+    vi.stubEnv('OPENFDA_API_KEY', '');
+    const { getServerConfig } = await import('@/config/server-config.js');
+    expect(getServerConfig().clampLimits).toBe(true);
+  });
+
+  it.each([
+    ['false', false],
+    ['0', false],
+    ['true', true],
+  ])('reads OPENFDA_CLAMP_LIMITS=%s strictly as %s', async (value, expected) => {
+    vi.stubEnv('OPENFDA_API_KEY', '');
+    vi.stubEnv('OPENFDA_CLAMP_LIMITS', value);
+    const { getServerConfig } = await import('@/config/server-config.js');
+    expect(getServerConfig().clampLimits).toBe(expected);
+  });
+
+  it('rejects an OPENFDA_CLAMP_LIMITS value that is not a boolean word', async () => {
+    vi.stubEnv('OPENFDA_API_KEY', '');
+    vi.stubEnv('OPENFDA_CLAMP_LIMITS', 'maybe');
+    const { getServerConfig } = await import('@/config/server-config.js');
+    expect(() => getServerConfig()).toThrow(/OPENFDA_CLAMP_LIMITS/);
+  });
 });

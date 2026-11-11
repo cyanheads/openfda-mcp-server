@@ -5,6 +5,7 @@
  * @module tests/mcp-server/tools/definitions/dataframe-query.tool.test
  */
 
+import { assertNoSystemCatalogs } from '@cyanheads/mcp-ts-core/canvas';
 import {
   JsonRpcErrorCode,
   type McpError,
@@ -15,6 +16,7 @@ import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testi
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { dataframeQueryTool } from '@/mcp-server/tools/definitions/dataframe-query.tool.js';
 import { codeLiteralsIn, renderCommonMark } from '../../../helpers/commonmark.js';
+import { textOf } from '../../../helpers/content.js';
 
 vi.mock('@/services/canvas/canvas-accessor.js', () => {
   let _canvas: unknown;
@@ -220,14 +222,16 @@ describe('openfda_dataframe_query — row cap disclosure (#29)', () => {
 
 describe('openfda_dataframe_query — canvas error mapping (#28)', () => {
   it('maps a non-SELECT rejection to invalid_query without naming internal canvas APIs', async () => {
+    // The gate's own shape since framework 0.13.19: every non-SELECT is refused
+    // before it is prepared, so statementType is always 'UNKNOWN'.
     await setFailingCanvas(
-      validationError(
-        'Canvas query must be SELECT; got INSERT. Mutations must use registerTable, drop, or clear.',
-        {
-          reason: 'non_select_statement',
-          statementType: 'INSERT',
+      validationError('Canvas query must be SELECT.', {
+        reason: 'non_select_statement',
+        statementType: 'UNKNOWN',
+        recovery: {
+          hint: 'Rewrite as a single SELECT — this surface is read-only and cannot create, alter, or drop tables.',
         },
-      ),
+      }),
     );
     const err = await contractError({
       canvas_id: 'cv_abc1234',
@@ -360,5 +364,101 @@ describe('openfda_dataframe_query — canvas error mapping (#28)', () => {
         ctx,
       ),
     ).rejects.toThrow('socket hang up');
+  });
+});
+
+describe('openfda_dataframe_query — system catalog refusals', () => {
+  /**
+   * The canvas runs the gate's own catalog layer whenever the tool asks for it,
+   * so each refusal carries the gate's real `data` (`catalog` included).
+   */
+  beforeEach(async () => {
+    const instance = {
+      canvasId: 'cv_abc1234',
+      query: vi.fn(async (sql: string, options?: { denySystemCatalogs?: boolean }) => {
+        if (options?.denySystemCatalogs) assertNoSystemCatalogs(sql);
+        return { rows: [], rowCount: 0 };
+      }),
+    };
+    await setCanvasMock({ acquire: vi.fn().mockResolvedValue(instance) });
+  });
+
+  async function refusal(query: string) {
+    const result = await runToolContract(dataframeQueryTool, { canvas_id: 'cv_abc1234', query });
+    expect(result.isError).toBe(true);
+    const err = (result.structuredContent as unknown as { error: ErrorEnvelope }).error;
+    return { err, html: renderCommonMark(textOf(result.content)) };
+  }
+
+  it.each([
+    ['a column alias', 'SELECT count(*) AS pg_class FROM spilled_x', 'pg_class'],
+    ['a quoted column alias', 'SELECT count(*) AS "pg_class" FROM spilled_x', 'pg_class'],
+    ['a table alias', 'SELECT pg_type.recall_number FROM spilled_x AS pg_type', 'pg_type'],
+    [
+      'a CTE',
+      'WITH duckdb_tables AS (SELECT recall_number FROM spilled_x) SELECT count(*) AS n FROM duckdb_tables',
+      'duckdb_tables',
+    ],
+    [
+      'a CTE with a column list',
+      'WITH RECURSIVE duckdb_views(n) AS (SELECT 1) SELECT n FROM duckdb_views',
+      'duckdb_views',
+    ],
+    [
+      'a MATERIALIZED CTE',
+      'WITH duckdb_tables AS MATERIALIZED (SELECT 1) SELECT * FROM duckdb_tables',
+      'duckdb_tables',
+    ],
+    [
+      'a NOT MATERIALIZED CTE',
+      'WITH duckdb_tables AS NOT MATERIALIZED (SELECT 1) SELECT * FROM duckdb_tables',
+      'duckdb_tables',
+    ],
+  ])('names %s spelled like a catalog and says to rename it', async (_shape, query, name) => {
+    const { err, html } = await refusal(query);
+
+    expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
+    expect(err.data).toMatchObject({
+      reason: 'invalid_query',
+      canvas_reason: 'system_catalog_access',
+      catalog: name,
+    });
+    expect(err.message).toBe(
+      `SQL rejected: ${name} is spelled like a DuckDB system catalog, and the read-only gate refuses that name even as an alias or CTE name.`,
+    );
+    expect(recoveryHint(err)).toBe(
+      `Rename the column alias, table alias, or CTE named ${name}, then rerun the query.`,
+    );
+    expect(codeLiteralsIn(html)).toEqual([name, name]);
+  });
+
+  it.each([
+    ['a metadata view', 'SELECT * FROM pg_class', 'pg_class'],
+    ['a catalog schema', 'SELECT table_name FROM information_schema.tables', 'information_schema'],
+    ['a metadata function', 'SELECT * FROM duckdb_tables()', 'duckdb_tables'],
+    [
+      'a metadata view beside a CTE whose name ends in it',
+      'WITH my_pg_class AS (SELECT 1) SELECT * FROM pg_class',
+      'pg_class',
+    ],
+    [
+      'a metadata view beside an alias its name begins',
+      'SELECT count(*) AS pg_class_n FROM pg_class',
+      'pg_class',
+    ],
+  ])('keeps a read of %s refused as a system catalog read', async (_shape, query, name) => {
+    const { err, html } = await refusal(query);
+
+    expect(err.data).toMatchObject({
+      reason: 'invalid_query',
+      canvas_reason: 'system_catalog_access',
+      catalog: name,
+    });
+    expect(err.message).toBe(
+      `SQL rejected: ${name} names a DuckDB system catalog, and system catalog tables are not queryable through this tool.`,
+    );
+    expect(recoveryHint(err)).toContain('openfda_dataframe_describe');
+    expect(`${err.message} ${recoveryHint(err)}`).not.toMatch(/rename/i);
+    expect(codeLiteralsIn(html)).toEqual([name]);
   });
 });

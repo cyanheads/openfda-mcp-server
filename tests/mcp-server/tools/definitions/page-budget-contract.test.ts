@@ -1,24 +1,33 @@
 /**
- * @fileoverview The inline byte-budget contract every multi-row search tool shares
- * (#39). Driven at the public tool boundary — `input.parse()` then `handler()`, then
- * `format()` on what the handler returned — because the defect was the size of the
- * payload a caller actually receives, which no helper-level assertion can see.
+ * @fileoverview The page-size contract every multi-row search tool shares (#92).
+ * `limit` is the page size: a page holds `limit` records, fewer only where the
+ * match ends, staged or not, whatever the records weigh. Above the selected
+ * endpoint's cap the page holds the cap's worth and the notice names the
+ * requested value, the cap, and the next `skip` on both surfaces; with
+ * `OPENFDA_CLAMP_LIMITS=false` the value is rejected before any upstream request.
+ * A page holding a record that serializes above 24,000 bytes on its own reports
+ * its size and that record's largest fields (#66); any other page carries neither.
  *
- * Every case measures the real serialized payload rather than trusting a reported
- * figure, and the fixtures are padded so the overflow branch genuinely runs: a
- * 10 KB record at the default `limit: 10` is a 100 KB window against a 24,000-byte
- * budget.
+ * Driven at the public tool boundary — the assembled `CallToolResult`
+ * (`runToolContract`), so the enrichment trailer and input-schema rejection are
+ * part of what is checked, or `input.parse()` then `handler()` where the handler's
+ * own return or log is the observable — because each defect (#39's unholdable
+ * default pages, the page cut below `limit` that replaced them) was in the payload
+ * a caller receives. Every size is measured on the real serialized payload rather
+ * than read off a reported figure.
  *
- * The `fields` projection and the disclosure of a lone over-budget record (#66) are
- * asserted on the assembled `CallToolResult` (`runToolContract`), so the
- * enrichment trailer and input-schema rejection are part of what is checked.
+ * Each tool runs at the endpoint its minimal input selects, and only that
+ * endpoint's cap appears here: the default and cap of every endpoint are tabled
+ * once in `schema-utils.test.ts`, and each tool's own test file wires its
+ * selection.
  * @module tests/mcp-server/tools/definitions/page-budget-contract.test
  */
 
 import { Buffer } from 'node:buffer';
 import type { Context } from '@cyanheads/mcp-ts-core';
-import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { createMockContext, runToolContract } from '@cyanheads/mcp-ts-core/testing';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/canvas/canvas-accessor.js', () => {
   let _canvas: unknown;
@@ -44,6 +53,7 @@ vi.mock('@/services/openfda/openfda-service.js', () => {
   };
 });
 
+import { resetServerConfig } from '@/config/server-config.js';
 import { lookupNdcTool } from '@/mcp-server/tools/definitions/lookup-ndc.tool.js';
 import { searchAdverseEventsTool } from '@/mcp-server/tools/definitions/search-adverse-events.tool.js';
 import { searchAnimalEventsTool } from '@/mcp-server/tools/definitions/search-animal-events.tool.js';
@@ -52,7 +62,6 @@ import { searchDrugApprovalsTool } from '@/mcp-server/tools/definitions/search-d
 import { searchDrugShortagesTool } from '@/mcp-server/tools/definitions/search-drug-shortages.tool.js';
 import { searchRecallsTool } from '@/mcp-server/tools/definitions/search-recalls.tool.js';
 import { searchTobaccoReportsTool } from '@/mcp-server/tools/definitions/search-tobacco-reports.tool.js';
-import { PAGE_BUDGET_BYTES } from '@/services/openfda/page-budget.js';
 
 async function setCanvasMock(c: unknown) {
   const mod = await import('@/services/canvas/canvas-accessor.js');
@@ -63,8 +72,13 @@ async function setSvcMock(s: unknown) {
   (mod as unknown as { __setMock: (s: unknown) => void }).__setMock(s);
 }
 
-/** Paged service stub whose records are padded with `recordBytes` repeats of `pad`. */
-function makeSvc(total: number, recordBytes: number, pad = 'x') {
+/**
+ * Paged service stub over `total` records, record `i` padded with `recordBytes`
+ * (or `recordBytes(i)`) repeats of `pad`, echoing the requested window into
+ * `meta` the way openFDA and the service do.
+ */
+function makeSvc(total: number, recordBytes: number | ((i: number) => number), pad = 'x') {
+  const padding = typeof recordBytes === 'number' ? () => recordBytes : recordBytes;
   return {
     query: vi.fn(async (_endpoint: string, params: { limit?: number; skip?: number }) => {
       const skip = params.skip ?? 0;
@@ -72,14 +86,14 @@ function makeSvc(total: number, recordBytes: number, pad = 'x') {
       const end = Math.min(skip + limit, total);
       const results: Record<string, unknown>[] = [];
       for (let i = skip; i < end; i++) {
-        results.push({ report_id: `rec-${i}`, blob: pad.repeat(recordBytes) });
+        results.push({ report_id: `rec-${i}`, blob: pad.repeat(padding(i)) });
       }
       return { meta: { total, skip, limit, lastUpdated: '2026-06-01' }, results };
     }),
   };
 }
 
-function makeCanvas(canvasId = 'cv_budget') {
+function makeCanvas(canvasId = 'cv_pagesize') {
   const instance = {
     canvasId,
     isNew: true,
@@ -93,25 +107,31 @@ function makeCanvas(canvasId = 'cv_budget') {
   return { canvas: { acquire: vi.fn().mockResolvedValue(instance) }, instance };
 }
 
-/** Minimal valid input per multi-row search tool, before defaults are applied. */
+/**
+ * Minimal valid input per multi-row search tool, before defaults are applied;
+ * the endpoint that input selects and that endpoint's cap; and the tool's
+ * largest cap, which strict mode advertises as the schema `maximum`.
+ */
 const SEARCH_TOOLS = [
-  [searchAdverseEventsTool, { category: 'drug' }],
-  [searchAnimalEventsTool, {}],
-  [searchDeviceClearancesTool, { pathway: '510k' }],
-  [searchDrugApprovalsTool, {}],
-  [searchDrugShortagesTool, {}],
-  [searchRecallsTool, { category: 'drug' }],
-  [searchTobaccoReportsTool, {}],
-  [lookupNdcTool, { search: 'aspirin' }],
+  [searchAdverseEventsTool, { category: 'drug' }, 'drug/event', 25, 1000],
+  [searchAnimalEventsTool, {}, 'animalandveterinary/event', 450, 450],
+  [searchDeviceClearancesTool, { pathway: '510k' }, 'device/510k', 175, 575],
+  [searchDrugApprovalsTool, {}, 'drug/drugsfda', 375, 375],
+  [searchDrugShortagesTool, {}, 'drug/shortages', 1000, 1000],
+  [searchRecallsTool, { category: 'drug' }, 'drug/enforcement', 1000, 1000],
+  [searchTobaccoReportsTool, {}, 'tobacco/problem', 1000, 1000],
+  [lookupNdcTool, { search: 'aspirin' }, 'drug/ndc', 1000, 1000],
 ] as const;
 
 type SearchTool = (typeof SEARCH_TOOLS)[number][0];
+
+/** Serialized size above which a record is disclosed as oversized (`OVERSIZED_RECORD_BYTES`). */
+const OVERSIZED_BYTES = 24_000;
 
 /** Shape the handlers return — `results` is a dynamic record array on every tool. */
 interface PageResult {
   meta: { lastUpdated: string; limit: number; skip: number; total: number };
   page_bytes?: number;
-  page_omitted?: number;
   results: Record<string, unknown>[];
 }
 
@@ -136,144 +156,281 @@ function formatText(tool: SearchTool, result: unknown): string {
     .join('\n');
 }
 
-/**
- * Blob padding that puts a whole page within a few dozen bytes of the budget, so
- * the boundary case below actually straddles the threshold. Every other fixture
- * here sits an order of magnitude clear of it in one direction or the other,
- * which leaves the comparison itself — headroom, an off-by-one, a shrunk
- * constant — free to move without failing anything.
- */
-const NEAR_BUDGET_RECORD_BYTES = 2_148;
-
-/**
- * The largest page of `recordBytes`-padded records that still serializes inside
- * the budget, derived by serializing the stub's own records rather than by
- * re-running the accumulator under test — so this pins the payload's real size,
- * not the helper's opinion of it.
- */
-async function fittingLimit(recordBytes: number): Promise<number> {
-  const { results } = await makeSvc(1_000, recordBytes).query('probe', { limit: 200, skip: 0 });
-  let fit = 0;
-  while (
-    fit < results.length &&
-    JSON.stringify(results.slice(0, fit + 1)).length <= PAGE_BUDGET_BYTES
-  )
-    fit++;
-  return fit;
+/** The mock logger's record of every line a handler logged. */
+function logCalls(ctx: Context): { data?: unknown; level: string; msg: string }[] {
+  return (ctx.log as unknown as { calls: { data?: unknown; level: string; msg: string }[] }).calls;
 }
 
-describe.each(SEARCH_TOOLS.map(([tool, input]) => [tool.name, tool, input] as const))(
-  '%s — inline byte-budget contract (#39)',
-  (_name, tool, baseInput) => {
+type WireResult = Awaited<ReturnType<typeof runToolContract>>;
+
+function wireText(result: WireResult): string {
+  return result.content
+    .filter((block) => block.type === 'text')
+    .map((block) => block.text)
+    .join('\n');
+}
+
+function wireStructured(result: WireResult): PageResult & {
+  notice?: string;
+  page_largest_fields?: { bytes: number; path: string }[];
+  projected_fields?: string[];
+  staged_rows?: number;
+} {
+  return result.structuredContent as never;
+}
+
+/** The error envelope a failed call carries on `structuredContent`. */
+function errorOf(result: WireResult): {
+  code: number;
+  data?: { cap?: number; reason?: string; recovery?: { hint?: string } };
+  message: string;
+} {
+  return (result.structuredContent as { error: never }).error;
+}
+
+/** UTF-8 bytes of the serialized value — what it occupies on the wire. */
+const wireBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), 'utf8');
+
+/** The oversized-record line `format()` rendered into `content[]`, without its quote marker. */
+function oversizedLine(text: string): string | undefined {
+  return text
+    .split('\n')
+    .find((line) => line.startsWith('> Oversized record'))
+    ?.slice(2);
+}
+
+/** The clamp disclosure for a `limit` of 5000 at an endpoint's cap, up to its next-page clause. */
+const clampHead = (kind: string, cap: number) =>
+  `limit=5000 is above the ${cap}-record cap for ${kind}, so ${cap} was applied.`;
+
+describe.each(
+  SEARCH_TOOLS.map(
+    ([tool, input, kind, cap, maximum]) => [tool.name, tool, input, kind, cap, maximum] as const,
+  ),
+)('%s — page-size contract (#92)', (_name, tool, baseInput, kind, cap, maximum) => {
+  const run = (extra: Record<string, unknown> = {}) =>
+    runToolContract(tool, { ...baseInput, ...extra } as never);
+
+  beforeEach(async () => {
+    await setCanvasMock(undefined);
+  });
+
+  it('returns limit records however heavy the page is, with meta.limit equal to it', async () => {
+    // Ten 10 KB records: a 100 KB page, and no record oversized on its own.
+    const svc = makeSvc(5_000, 10_000);
+    await setSvcMock(svc);
+    const result = await run({ limit: 10 });
+    const structured = wireStructured(result);
+
+    expect(svc.query.mock.calls[0]?.[1]).toMatchObject({ limit: 10, skip: 0 });
+    expect(structured.results).toHaveLength(10);
+    expect(structured.meta.limit).toBe(10);
+    expect(wireText(result).split('\n')[0]).toContain('(returned: 10, skip: 0, limit: 10)');
+    expect(structured).not.toHaveProperty('page_bytes');
+    expect(structured).not.toHaveProperty('page_omitted');
+    expect(structured.notice).toBeUndefined();
+  });
+
+  it('returns the same window when staged, and stages the whole match (#18, #30)', async () => {
+    await setSvcMock(makeSvc(40, 10_000));
+    const { canvas } = makeCanvas();
+    await setCanvasMock(canvas);
+    const structured = wireStructured(await run({ limit: 10, stage: true }));
+
+    expect(structured.results.map((record) => record.report_id)).toEqual(
+      Array.from({ length: 10 }, (_, i) => `rec-${i}`),
+    );
+    expect(structured.meta.limit).toBe(10);
+    expect(structured).not.toHaveProperty('page_omitted');
+    expect(structured.staged_rows).toBe(40);
+  });
+
+  it('applies the cap to a larger limit, naming the requested value, the cap, and the next skip on both surfaces', async () => {
+    const svc = makeSvc(7 + cap * 2, 50);
+    await setSvcMock(svc);
+    const result = await run({ limit: 5_000, skip: 7 });
+    const structured = wireStructured(result);
+    // The next page starts after this one's `cap` records, from the requested offset.
+    const notice = `${clampHead(kind, cap)} The next page starts at skip=${7 + cap}.`;
+
+    expect(result.isError).toBeFalsy();
+    expect(svc.query.mock.calls[0]?.[1]).toMatchObject({ limit: cap, skip: 7 });
+    expect(structured.results).toHaveLength(cap);
+    expect(structured.meta.limit).toBe(cap);
+    expect(structured.notice).toBe(notice);
+    expect(wireText(result)).toContain(`> ${notice}`);
+  });
+
+  it('logs the clamp once, naming the endpoint, the requested value, and the cap', async () => {
+    await setSvcMock(makeSvc(cap * 2, 50));
+    const { ctx } = await call(tool, baseInput, { limit: 5_000 });
+
+    expect(
+      logCalls(ctx).filter((line) => line.msg === 'Clamped limit to the endpoint cap'),
+    ).toEqual([
+      {
+        level: 'info',
+        msg: 'Clamped limit to the endpoint cap',
+        data: { endpoint: kind, requested: 5_000, cap },
+      },
+    ]);
+  });
+
+  it('joins the clamp to the past-the-end note when the window starts beyond the match', async () => {
+    await setSvcMock(makeSvc(40, 50));
+    const structured = wireStructured(await run({ limit: 5_000, skip: 40 }));
+    const notice = String(structured.notice);
+
+    expect(structured.results).toEqual([]);
+    expect(structured.meta.limit).toBe(cap);
+    expect(notice).toContain('40 matched, so the offset is past the end of the result set');
+    expect(notice).toContain(clampHead(kind, cap));
+  });
+
+  it('joins the clamp to the staging disclosure when the call staged', async () => {
+    await setSvcMock(makeSvc(cap + 30, 50));
+    const { canvas } = makeCanvas();
+    await setCanvasMock(canvas);
+    const structured = wireStructured(await run({ limit: 5_000, stage: true }));
+    const notice = String(structured.notice);
+
+    expect(structured.results).toHaveLength(cap);
+    expect(structured.meta.limit).toBe(cap);
+    expect(notice).toContain(`${clampHead(kind, cap)} The next page starts at skip=${cap}.`);
+    expect(notice).toContain(`Staged ${cap + 30} of ${cap + 30} matched records`);
+  });
+
+  it('discloses an oversized record on a page of several, returning every record whole', async () => {
+    // The second of three records serializes past 24,000 bytes on its own.
+    await setSvcMock(makeSvc(3, (i) => (i === 1 ? 30_000 : 200)));
+    const result = await run({ limit: 3 });
+    const structured = wireStructured(result);
+
+    expect(structured.results).toHaveLength(3);
+    expect(structured.results[1]?.blob).toHaveLength(30_000);
+    expect(structured.page_bytes).toBe(wireBytes(structured.results));
+    expect(structured.page_largest_fields).toEqual([{ path: 'blob', bytes: 30_002 }]);
+    expect(structured.notice).toContain(
+      `Oversized record: this page of 3 records serializes to ${structured.page_bytes} bytes, and at least one record on it exceeds 24000 bytes on its own. The largest record's largest field is blob (30002 bytes).`,
+    );
+    expect(oversizedLine(wireText(result))).toBe(structured.notice);
+  });
+
+  it('carries neither disclosure field when every record serializes under 24,000 bytes', async () => {
+    // Ten 23 KB records: 230 KB of page, and no record oversized on its own.
+    const svc = makeSvc(5_000, 23_000);
+    await setSvcMock(svc);
+    const { result } = await call(tool, baseInput, { limit: 10 });
+    const upstream = (await svc.query.mock.results[0]?.value) as PageResult;
+
+    expect(Object.keys(result).sort()).toEqual(['meta', 'results']);
+    expect(result).toEqual({ meta: upstream.meta, results: upstream.results });
+    expect(formatText(tool, result)).not.toContain('Oversized record');
+  });
+
+  it('never empties or trims a page of oversized records (#31)', async () => {
+    await setSvcMock(makeSvc(900, 200_000));
+    const { result } = await call(tool, baseInput, { limit: 5 });
+    const text = formatText(tool, result);
+
+    expect(result.results).toHaveLength(5);
+    for (const record of result.results) expect(record.blob).toHaveLength(200_000);
+    expect(result.page_bytes).toBe(wireBytes(result.results));
+    expect(text).not.toMatch(/^No .*(found|results)\.$/im);
+    expect(text).toContain('> Oversized record: this page of 5 records');
+  });
+
+  describe('with OPENFDA_CLAMP_LIMITS=false', () => {
+    beforeEach(() => {
+      vi.stubEnv('OPENFDA_CLAMP_LIMITS', 'false');
+      resetServerConfig();
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+      resetServerConfig();
+    });
+
+    it(`rejects a limit above the tool's largest cap at the schema, before any upstream request`, async () => {
+      const svc = makeSvc(5_000, 50);
+      await setSvcMock(svc);
+      const result = await run({ limit: maximum + 1 });
+
+      expect(result.isError).toBe(true);
+      expect(errorOf(result).code).toBe(JsonRpcErrorCode.InvalidParams);
+      expect(errorOf(result).message).toContain(
+        `limit: Too big: expected number to be <=${maximum}`,
+      );
+      expect(svc.query).not.toHaveBeenCalled();
+    });
+
+    it("returns the selected endpoint's cap without a notice", async () => {
+      await setSvcMock(makeSvc(cap + 5, 50));
+      const structured = wireStructured(await run({ limit: cap }));
+
+      expect(structured.results).toHaveLength(cap);
+      expect(structured.meta.limit).toBe(cap);
+      expect(structured.notice).toBeUndefined();
+    });
+  });
+});
+
+/**
+ * The three tools whose endpoint follows another input, each at a selection whose
+ * cap sits below the tool's largest — the range where strict mode answers with
+ * the typed reason rather than the schema `maximum`.
+ */
+const MULTI_ENDPOINT_TOOLS = [
+  [searchAdverseEventsTool, { category: 'drug' }, 'drug/event', 25],
+  [searchRecallsTool, { category: 'device', endpoint: 'recall' }, 'device/recall', 50],
+  [searchDeviceClearancesTool, { pathway: '510k' }, 'device/510k', 175],
+] as const;
+
+describe.each(
+  MULTI_ENDPOINT_TOOLS.map(
+    ([tool, input, kind, cap]) => [tool.name, tool, input, kind, cap] as const,
+  ),
+)(
+  '%s — limit_above_cap with OPENFDA_CLAMP_LIMITS=false (#92)',
+  (_name, tool, baseInput, kind, cap) => {
     beforeEach(async () => {
+      vi.stubEnv('OPENFDA_CLAMP_LIMITS', 'false');
+      resetServerConfig();
       await setCanvasMock(undefined);
     });
 
-    it('returns a payload the caller can hold when the requested window cannot fit', async () => {
-      await setSvcMock(makeSvc(5_000, 10_000));
-      const { result } = await call(tool, baseInput);
-
-      // Measured on the payload, not read off the reported figure.
-      const actual = JSON.stringify(result.results).length;
-      expect(actual).toBeLessThanOrEqual(PAGE_BUDGET_BYTES);
-      expect(result.page_bytes).toBe(actual);
-      expect(result.results.length).toBeGreaterThan(0);
-      expect(result.results.length).toBeLessThan(10);
-      expect(result.page_omitted).toBe(10 - result.results.length);
+    afterEach(() => {
+      vi.unstubAllEnvs();
+      resetServerConfig();
     });
 
-    it('reports a page size it actually sent', async () => {
-      await setSvcMock(makeSvc(5_000, 10_000));
-      const { result } = await call(tool, baseInput);
-      expect(result.meta.limit).toBe(result.results.length);
+    const declared = () => tool.errors?.find((entry) => entry.reason === 'limit_above_cap');
+
+    it('declares the reason as service-raised', () => {
+      expect(declared()).toMatchObject({
+        code: JsonRpcErrorCode.ValidationError,
+        thrownBy: 'service',
+      });
     });
 
-    it('keeps a page that lands just inside the budget, and drops one record past it', async () => {
-      await setSvcMock(makeSvc(5_000, NEAR_BUDGET_RECORD_BYTES));
-      const fit = await fittingLimit(NEAR_BUDGET_RECORD_BYTES);
-
-      const { result: inside } = await call(tool, baseInput, { limit: fit });
-      const insideBytes = JSON.stringify(inside.results).length;
-      /*
-       * Fails loudly if the fixture ever drifts away from the threshold, rather
-       * than passing on a page that no longer tests it.
-       */
-      expect(insideBytes).toBeGreaterThan(PAGE_BUDGET_BYTES - 100);
-      expect(insideBytes).toBeLessThanOrEqual(PAGE_BUDGET_BYTES);
-      expect(inside.results).toHaveLength(fit);
-      expect(inside.page_omitted).toBeUndefined();
-      expect(inside.page_bytes).toBeUndefined();
-
-      const { result: over } = await call(tool, baseInput, { limit: fit + 1 });
-      expect(over.results).toHaveLength(fit);
-      expect(over.page_omitted).toBe(1);
-      expect(over.page_bytes).toBe(JSON.stringify(over.results).length);
-    });
-
-    it('names the real counts and every route to the withheld records, on both surfaces', async () => {
-      await setSvcMock(makeSvc(5_000, 10_000));
-      const { ctx, result } = await call(tool, baseInput);
-      const kept = result.results.length;
-      const text = formatText(tool, result);
-      /* `notice` is what carries the prose to structuredContent readers. */
-      const notice = String(getEnrichment(ctx).notice ?? '');
-
-      for (const surface of [text, notice]) {
-        expect(surface).toContain(`${kept} of the ${kept + (result.page_omitted ?? 0)} records`);
-        expect(surface).toContain(String(result.page_bytes));
-        // The next window starts where this one stopped, so the offset is runnable.
-        expect(surface).toContain(`skip=${kept}`);
-        expect(surface).toContain('lower limit');
-        expect(surface).toContain('openfda_dataframe_query');
-        expect(surface).toContain('openfda_count_values');
-      }
-      expect(result.page_omitted).toBe(10 - kept);
-    });
-
-    it('never empties the page, even when one record exceeds the budget alone (#31)', async () => {
-      await setSvcMock(makeSvc(900, 200_000));
-      const { result } = await call(tool, baseInput, { limit: 5 });
-      const text = formatText(tool, result);
-
-      expect(result.results).toHaveLength(1);
-      // The oversized record is returned whole — never trimmed to fit.
-      expect(result.results[0]?.blob).toHaveLength(200_000);
-      expect(result.page_bytes).toBeGreaterThan(PAGE_BUDGET_BYTES);
-      expect(text).not.toMatch(/^No .*(found|results)\.$/im);
-      expect(text).toContain('one record exceeds the budget on its own');
-    });
-
-    it('leaves a page that fits exactly as it was before the budget existed', async () => {
-      const svc = makeSvc(5_000, 200);
+    it("rejects a limit above the selected endpoint's cap with the typed reason, before any upstream request", async () => {
+      const svc = makeSvc(5_000, 50);
       await setSvcMock(svc);
-      const { result } = await call(tool, baseInput);
-      const upstream = (await svc.query.mock.results[0]?.value) as PageResult;
+      const result = await runToolContract(tool, { ...baseInput, limit: cap + 1 } as never);
+      const error = errorOf(result);
 
-      expect(Object.keys(result).sort()).toEqual(['meta', 'results']);
-      expect(result).toEqual({ meta: upstream.meta, results: upstream.results });
-      expect(result.results).toHaveLength(10);
-      expect(result.meta.limit).toBe(10);
-      expect(formatText(tool, result)).not.toContain('Inline page bounded');
-    });
-
-    it('bounds the staged page identically, so the two modes agree on a window (#18, #30)', async () => {
-      await setSvcMock(makeSvc(40, 10_000));
-      const { result: plain } = await call(tool, baseInput);
-
-      const { canvas } = makeCanvas();
-      await setCanvasMock(canvas);
-      const { result: staged } = await call(tool, baseInput, { stage: true });
-
-      expect(staged.results.length).toBe(plain.results.length);
-      expect(staged.page_omitted).toBe(plain.page_omitted);
-      expect(staged.page_bytes).toBe(plain.page_bytes);
-      // Staging still drains the whole match — the budget bounds the page, not the table.
-      expect((staged as { staged_rows?: number }).staged_rows).toBe(40);
+      expect(result.isError).toBe(true);
+      expect(error.code).toBe(JsonRpcErrorCode.ValidationError);
+      expect(error.data?.reason).toBe('limit_above_cap');
+      expect(error.data?.cap).toBe(cap);
+      expect(error.message).toBe(`limit=${cap + 1} exceeds the ${cap} cap for ${kind}.`);
+      expect(error.data?.recovery?.hint).toBe(declared()?.recovery);
+      expect(svc.query).not.toHaveBeenCalled();
     });
   },
 );
 
-/* --- #66: fields projection and the lone over-budget record --- */
+/* --- #66: fields projection and the lone oversized record --- */
 
 /** The identity key each tool's projected records keep, for the record shape it serves. */
 const IDENTITY_KEY: Record<string, string> = {
@@ -344,36 +501,8 @@ function makeCapturingCanvas() {
   return { canvas: { acquire: vi.fn().mockResolvedValue(instance) }, rows };
 }
 
-type WireResult = Awaited<ReturnType<typeof runToolContract>>;
-
-function wireText(result: WireResult): string {
-  return result.content
-    .filter((block) => block.type === 'text')
-    .map((block) => block.text)
-    .join('\n');
-}
-
-function wireStructured(result: WireResult): PageResult & {
-  notice?: string;
-  page_largest_fields?: { bytes: number; path: string }[];
-  projected_fields?: string[];
-} {
-  return result.structuredContent as never;
-}
-
-/** UTF-8 bytes of the serialized value — what it occupies on the wire. */
-const wireBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), 'utf8');
-
-/** The page-budget line `format()` rendered into `content[]`, without its quote marker. */
-function budgetLine(text: string): string | undefined {
-  return text
-    .split('\n')
-    .find((line) => line.startsWith('> Inline page'))
-    ?.slice(2);
-}
-
 describe.each(SEARCH_TOOLS.map(([tool, input]) => [tool.name, tool, input] as const))(
-  '%s — fields projection and the lone over-budget record (#66)',
+  '%s — fields projection and the lone oversized record (#66)',
   (name, tool, baseInput) => {
     const idKey = IDENTITY_KEY[name] as string;
     const run = (extra: Record<string, unknown> = {}) =>
@@ -383,32 +512,37 @@ describe.each(SEARCH_TOOLS.map(([tool, input]) => [tool.name, tool, input] as co
       await setCanvasMock(undefined);
     });
 
-    it('discloses a lone record that exceeds the budget on its own, naming its largest field', async () => {
-      await setSvcMock(makeSvc(1, 200_000));
+    it('discloses a lone record that serializes above 24,000 bytes on its own, naming its largest field', async () => {
+      const svc = makeSvc(1, 200_000);
+      await setSvcMock(svc);
       const result = await run();
       const structured = wireStructured(result);
       const text = wireText(result);
+      const pageBytes = structured.page_bytes ?? 0;
 
       expect(result.isError).toBeFalsy();
       expect(structured.results).toHaveLength(1);
       expect(structured.results[0]?.blob).toHaveLength(200_000);
-      // Measured on the payload: the overrun is reported, and nothing was dropped.
-      expect(structured.page_bytes).toBe(JSON.stringify(structured.results).length);
-      expect(structured.page_bytes).toBeGreaterThan(PAGE_BUDGET_BYTES);
-      expect(structured.page_omitted).toBeUndefined();
-      expect(structured.meta.limit).toBe(10);
+      // Measured on the payload: the record's size is reported, and it came back whole.
+      expect(pageBytes).toBe(JSON.stringify(structured.results).length);
+      expect(pageBytes).toBeGreaterThan(OVERSIZED_BYTES);
+      expect(structured).not.toHaveProperty('page_omitted');
+      // meta.limit is the page size the call applied, not the one record the match held.
+      expect(structured.meta.limit).toBe(svc.query.mock.calls[0]?.[1]?.limit);
 
       // `blob` serializes to its 200,000 characters plus two quotes.
       for (const surface of [text, String(structured.notice)]) {
-        expect(surface).toContain(`at ${structured.page_bytes} bytes`);
+        expect(surface).toContain(
+          `the one record on this page serializes to ${pageBytes - 2} bytes, over 24000 (page_bytes ${pageBytes})`,
+        );
         expect(surface).toContain('blob (200002 bytes)');
         expect(surface).toContain('Re-call with fields');
         expect(surface).toContain('openfda_describe_fields');
       }
-      expect(text).toMatch(/^> Inline page exceeds the 24000-byte budget/m);
+      expect(text).toMatch(/^> Oversized record: /m);
     });
 
-    it('discloses the lone over-budget record identically when the call staged', async () => {
+    it('discloses the lone oversized record identically when the call staged', async () => {
       await setSvcMock(makeSvc(1, 200_000));
       const { canvas } = makeCapturingCanvas();
       await setCanvasMock(canvas);
@@ -416,7 +550,7 @@ describe.each(SEARCH_TOOLS.map(([tool, input]) => [tool.name, tool, input] as co
 
       expect(structured.results).toHaveLength(1);
       expect(structured.page_bytes).toBe(JSON.stringify(structured.results).length);
-      expect(structured.page_omitted).toBeUndefined();
+      expect(structured).not.toHaveProperty('page_omitted');
       expect(String(structured.notice)).toContain('blob (200002 bytes)');
       expect(structured.page_largest_fields).toEqual([{ path: 'blob', bytes: 200_002 }]);
     });
@@ -428,11 +562,13 @@ describe.each(SEARCH_TOOLS.map(([tool, input]) => [tool.name, tool, input] as co
       const structured = wireStructured(result);
       const text = wireText(result);
 
-      // Unprojected, one record is ~80 KB; projected, all three fit, so nothing is disclosed.
+      // Unprojected, one record is ~80 KB; projected, none is oversized, so nothing is disclosed.
       expect(structured.results).toHaveLength(3);
       expect(structured.page_bytes).toBeUndefined();
-      expect(structured.page_omitted).toBeUndefined();
-      expect(JSON.stringify(structured.results).length).toBeLessThanOrEqual(PAGE_BUDGET_BYTES);
+      expect(structured).not.toHaveProperty('page_omitted');
+      for (const record of structured.results) {
+        expect(wireBytes(record)).toBeLessThanOrEqual(OVERSIZED_BYTES);
+      }
       expect(structured.projected_fields).toEqual(REPRO_FIELDS);
       expect(structured.results[0]).toEqual({
         [idKey]: 'id-0',
@@ -488,6 +624,9 @@ describe.each(SEARCH_TOOLS.map(([tool, input]) => [tool.name, tool, input] as co
       expect(structured.projected_fields).toEqual(REPRO_FIELDS);
       expect(structured.results).toHaveLength(3);
       expect(structured.results[0]).not.toHaveProperty('companynumb');
+      // Measured after projection, as on the plain path: each ~80 KB record projects under 24,000 bytes.
+      expect(structured).not.toHaveProperty('page_bytes');
+      expect(structured).not.toHaveProperty('page_largest_fields');
       // The table received the records as openFDA sent them.
       expect(rows).toHaveLength(3);
       expect(rows[0]).toEqual(heavyRecord(idKey, 0));
@@ -497,11 +636,11 @@ describe.each(SEARCH_TOOLS.map(([tool, input]) => [tool.name, tool, input] as co
 
 /**
  * The mechanisms behind the per-tool wiring above are one shared implementation —
- * UTF-8 sizing, the largest-field drill, the one-record route gate, empty and
+ * UTF-8 sizing, the largest-field drill, the lone-record coverage claim, empty and
  * absent projections — tabled in `page-budget.test.ts` and
  * `record-projection.test.ts`. These cases run them end to end through one tool.
  */
-describe('fields projection and the over-budget disclosure, end to end (#66)', () => {
+describe('fields projection and the oversized-record disclosure, end to end (#66)', () => {
   const run = (extra: Record<string, unknown> = {}) =>
     runToolContract(searchRecallsTool, { category: 'drug', ...extra } as never);
 
@@ -526,30 +665,34 @@ describe('fields projection and the over-budget disclosure, end to end (#66)', (
 
     expect(walks).toBe(1);
     expect(structured.page_largest_fields).toEqual([{ path: 'blob', bytes: 200_002 }]);
-    expect(budgetLine(wireText(result))).toBe(structured.notice);
+    expect(oversizedLine(wireText(result))).toBe(structured.notice);
   });
 
-  it('measures the page in UTF-8 bytes, so non-ASCII text is bounded at its wire size', async () => {
-    // 6,000 two-byte characters per record: two records fit in 24,000 code units, not in 24,000 bytes.
-    await setSvcMock(makeSvc(50, 6_000, 'é'));
-    const result = await run();
+  it('measures records in UTF-8 bytes, so non-ASCII text is disclosed at its wire size', async () => {
+    // 13,000 two-byte characters: under 24,000 UTF-16 code units, over 24,000 bytes.
+    await setSvcMock(makeSvc(50, 13_000, 'é'));
+    const result = await run({ limit: 3 });
     const structured = wireStructured(result);
+    const [first] = structured.results;
 
-    expect(wireBytes(structured.results)).toBeLessThanOrEqual(PAGE_BUDGET_BYTES);
+    expect(JSON.stringify(first).length).toBeLessThan(OVERSIZED_BYTES);
+    expect(wireBytes(first)).toBeGreaterThan(OVERSIZED_BYTES);
+    expect(structured.results).toHaveLength(3);
     expect(structured.page_bytes).toBe(wireBytes(structured.results));
-    expect(structured.results).toHaveLength(1);
-    expect(structured.page_omitted).toBe(9);
+    expect(structured.page_largest_fields).toEqual([{ path: 'blob', bytes: 26_002 }]);
     for (const surface of [wireText(result), String(structured.notice)]) {
-      expect(surface).toContain(`${structured.page_bytes} bytes against a`);
+      expect(surface).toContain(
+        `this page of 3 records serializes to ${structured.page_bytes} bytes`,
+      );
     }
   });
 
-  it('measures the projected page, so a projection that still overruns is bounded and disclosed', async () => {
+  it('measures the projected records, so a projection that still carries an oversized field is disclosed whole', async () => {
     await setSvcMock(makeHeavySvc('recall_number', 3));
-    const structured = wireStructured(await run({ fields: ['patient.drug.openfda'] }));
+    const structured = wireStructured(await run({ fields: ['patient.drug.openfda'], limit: 3 }));
 
-    expect(structured.results).toHaveLength(1);
-    expect(structured.page_omitted).toBe(2);
+    expect(structured.results).toHaveLength(3);
+    expect(structured).not.toHaveProperty('page_omitted');
     expect(structured.page_bytes).toBe(JSON.stringify(structured.results).length);
     /*
      * The drill stops at the deepest path that still holds the excess: each

@@ -50,6 +50,94 @@ describe('openfda_search_recalls', () => {
     expect(mockQuery.mock.calls[0]![0]).toBe('device/recall');
   });
 
+  // #92 — category and endpoint pick the page size an omitted limit gets and the cap a larger one is clamped to.
+  it.each([
+    ['drug', 'enforcement', 'drug/enforcement', 25, 1000],
+    ['food', 'enforcement', 'food/enforcement', 25, 1000],
+    ['device', 'enforcement', 'device/enforcement', 10, 125],
+    ['device', 'recall', 'device/recall', 10, 50],
+  ] as const)(
+    'pages %s %s records on %s at default %i and cap %i',
+    async (category, endpoint, path, fallback, cap) => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 0, skip: 0, limit: 0, lastUpdated: '' },
+        results: [],
+      });
+
+      const omitted = await searchRecallsTool.handler(
+        searchRecallsTool.input.parse({ category, endpoint }),
+        ctx,
+      );
+      const above = await searchRecallsTool.handler(
+        searchRecallsTool.input.parse({ category, endpoint, limit: 5_000 }),
+        ctx,
+      );
+
+      expect(mockQuery.mock.calls.map(([called, params]) => [called, params.limit])).toEqual([
+        [path, fallback],
+        [path, cap],
+      ]);
+      expect([omitted.meta.limit, above.meta.limit]).toEqual([fallback, cap]);
+    },
+  );
+
+  // #88 — a bare browse is newest first; the endpoint picks the date it sorts on.
+  describe('default sort (#88)', () => {
+    const EMPTY = { meta: { total: 0, skip: 0, limit: 0, lastUpdated: '' }, results: [] };
+
+    it.each([
+      ['drug', 'enforcement', 'report_date:desc'],
+      ['food', 'enforcement', 'report_date:desc'],
+      ['device', 'enforcement', 'report_date:desc'],
+      ['device', 'recall', 'event_date_initiated:desc'],
+    ] as const)(
+      'sends %s %s with neither search nor sort as %s',
+      async (category, endpoint, sort) => {
+        mockQuery.mockResolvedValue(EMPTY);
+
+        await searchRecallsTool.handler(searchRecallsTool.input.parse({ category, endpoint }), ctx);
+
+        expect(mockQuery.mock.calls[0]![1]).toMatchObject({ sort });
+      },
+    );
+
+    it('sends no sort when the call names a search alone', async () => {
+      mockQuery.mockResolvedValue(EMPTY);
+
+      await searchRecallsTool.handler(
+        searchRecallsTool.input.parse({ category: 'drug', search: 'recalling_firm:"pfizer"' }),
+        ctx,
+      );
+
+      expect(mockQuery.mock.calls[0]![1]).toMatchObject({ sort: undefined });
+    });
+
+    it('sends an explicit sort as given', async () => {
+      mockQuery.mockResolvedValue(EMPTY);
+
+      await searchRecallsTool.handler(
+        searchRecallsTool.input.parse({
+          category: 'device',
+          endpoint: 'recall',
+          sort: 'event_date_posted:asc',
+        }),
+        ctx,
+      );
+
+      expect(mockQuery.mock.calls[0]![1]).toMatchObject({ sort: 'event_date_posted:asc' });
+    });
+
+    it('states both defaults in the search and sort descriptions', () => {
+      const shape = searchRecallsTool.input.shape;
+      expect(shape.search.description).toContain(
+        'Omit to browse newest first, sorted by report_date:desc (event_date_initiated:desc on the device recall endpoint).',
+      );
+      expect(shape.sort.description).toContain(
+        'defaults to report_date:desc (event_date_initiated:desc on the device recall endpoint)',
+      );
+    });
+  });
+
   it('rejects recall endpoint for non-device categories', async () => {
     await expect(
       searchRecallsTool.handler(

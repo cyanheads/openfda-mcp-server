@@ -17,7 +17,9 @@
  * @module scripts/openfda-mirror
  */
 
+import { config as frameworkConfig } from '@cyanheads/mcp-ts-core/config';
 import type { MirrorLogger } from '@cyanheads/mcp-ts-core/mirror';
+import { logger } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
 import {
   closeMirrors,
@@ -62,6 +64,11 @@ if (!mode || !(MODES as readonly string[]).includes(mode)) {
   report(`Usage: bun run scripts/openfda-mirror.ts <${MODES.join('|')}> [dataset...]`);
   process.exit(1);
 }
+
+// This script runs outside createApp(), so nothing else initializes the
+// framework logger: the store's and the framework's own records would wait in a
+// bounded buffer and be discarded at exit. 'stdio' writes JSON lines to stderr.
+await logger.initialize(frameworkConfig.logLevel, 'stdio');
 
 const targets = parseTargets(rest);
 const config = getServerConfig();

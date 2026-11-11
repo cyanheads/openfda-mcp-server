@@ -33,8 +33,6 @@ const SQL_REJECTION_DETAIL: Record<string, string> = {
     'the query calls a function the read-only gate blocks (file readers, engine-setting reads, or SQL run from a string)',
   [SQL_GATE_REASONS.deniedFunctionInPlan]:
     'the query plan calls a table function that reads outside the canvas',
-  [SQL_GATE_REASONS.systemCatalogAccess]:
-    'system catalog tables are not queryable through this tool',
   [DUCKDB_ERROR_REASONS.sqlParseError]: 'the statement could not be parsed as SQL',
   [DUCKDB_ERROR_REASONS.sqlReadOnly]:
     'the statement is not read-only, or names a file where a staged table belongs',
@@ -50,14 +48,32 @@ const SQL_EXECUTION_HINT =
   'Staged scalars are text: wrap the conversion in TRY_CAST, or filter out the rows the message names before converting them.';
 
 /** Structured payload the canvas layer attaches to its `McpError`s. */
-function canvasErrorData(err: unknown): {
-  reason?: string;
+interface CanvasErrorData {
   binderMessage?: string;
+  /** The system catalog name a `system_catalog_access` refusal matched. */
+  catalog?: string;
+  reason?: string;
   tableName?: string;
-} {
-  return err instanceof McpError
-    ? ((err.data ?? {}) as { reason?: string; binderMessage?: string; tableName?: string })
-    : {};
+}
+
+function canvasErrorData(err: unknown): CanvasErrorData {
+  return err instanceof McpError ? ((err.data ?? {}) as CanvasErrorData) : {};
+}
+
+/**
+ * Whether `sql` itself defines `name` — as a column, table, or subquery alias
+ * (`AS name`), or as a CTE or named window (`name [(cols)] AS (`). The gate's
+ * catalog scan matches names, not their role, so it refuses such an alias as it
+ * refuses a catalog read. Only the refusal's wording depends on this: a name in
+ * a string literal or comment can read as an alias, and a bare alias (no `AS`)
+ * reads as a catalog read. `name` is a `\w+` identifier, so it needs no escaping.
+ */
+function definesName(sql: string, name: string): boolean {
+  const id = `"?${name}"?`;
+  return new RegExp(
+    String.raw`\bAS\s+${id}(?![\w"])|(?<![\w."])${id}\s*(?:\([^()]*\)\s*)?AS\s*(?:(?:NOT\s+)?MATERIALIZED\s*)?\(`,
+    'i',
+  ).test(sql);
 }
 
 /** The DuckDB engine message behind a canvas execution failure, without the canvas prefix. */
@@ -150,7 +166,7 @@ export const dataframeQueryTool = tool('openfda_dataframe_query', {
         denySystemCatalogs: true,
       });
     } catch (err) {
-      const { reason, binderMessage, tableName } = canvasErrorData(err);
+      const { reason, binderMessage, tableName, catalog } = canvasErrorData(err);
       if (reason === 'canvas_not_found') {
         throw ctx.fail(
           'canvas_not_found',
@@ -176,6 +192,28 @@ export const dataframeQueryTool = tool('openfda_dataframe_query', {
           recovery: { hint: SQL_EXECUTION_HINT },
           canvas_reason: reason,
         });
+      }
+      if (reason === SQL_GATE_REASONS.systemCatalogAccess && typeof catalog === 'string') {
+        if (definesName(input.query, catalog)) {
+          throw ctx.fail(
+            'invalid_query',
+            `SQL rejected: ${catalog} is spelled like a DuckDB system catalog, and the read-only gate refuses that name even as an alias or CTE name.`,
+            {
+              recovery: {
+                hint: `Rename the column alias, table alias, or CTE named ${catalog}, then rerun the query.`,
+              },
+              canvas_reason: reason,
+              catalog,
+            },
+            { literals: [catalog] },
+          );
+        }
+        throw ctx.fail(
+          'invalid_query',
+          `SQL rejected: ${catalog} names a DuckDB system catalog, and system catalog tables are not queryable through this tool.`,
+          { canvas_reason: reason, catalog },
+          { literals: [catalog] },
+        );
       }
       if (reason && reason in SQL_REJECTION_DETAIL) {
         throw ctx.fail('invalid_query', `SQL rejected: ${SQL_REJECTION_DETAIL[reason]}.`, {

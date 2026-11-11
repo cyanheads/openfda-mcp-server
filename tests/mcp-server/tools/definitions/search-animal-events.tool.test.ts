@@ -12,6 +12,7 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 
 import { searchAnimalEventsTool } from '@/mcp-server/tools/definitions/search-animal-events.tool.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import { renderCommonMark } from '../../../helpers/commonmark.js';
 import { textOf } from '../../../helpers/content.js';
 
 const mockQuery = vi.fn();
@@ -38,6 +39,65 @@ describe('openfda_search_animal_events', () => {
 
     expect(mockQuery.mock.calls[0]![0]).toBe('animalandveterinary/event');
     expect(result.results).toHaveLength(1);
+  });
+
+  // #92 — the endpoint's default page size reaches the request and meta.limit.
+  it('pages animalandveterinary/event at its default of 25 when limit is omitted', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 0, skip: 0, limit: 0, lastUpdated: '' },
+      results: [],
+    });
+
+    const result = await searchAnimalEventsTool.handler(
+      searchAnimalEventsTool.input.parse({}),
+      ctx,
+    );
+
+    expect(mockQuery.mock.calls[0]![1]).toMatchObject({ limit: 25 });
+    expect(result.meta.limit).toBe(25);
+  });
+
+  // #88 — a bare browse is newest first by receive date.
+  describe('default sort (#88)', () => {
+    const EMPTY = { meta: { total: 0, skip: 0, limit: 0, lastUpdated: '' }, results: [] };
+
+    it('sends original_receive_date:desc with neither search nor sort', async () => {
+      mockQuery.mockResolvedValue(EMPTY);
+
+      await searchAnimalEventsTool.handler(searchAnimalEventsTool.input.parse({}), ctx);
+
+      expect(mockQuery.mock.calls[0]![1]).toMatchObject({ sort: 'original_receive_date:desc' });
+    });
+
+    it('sends no sort when the call names a search alone', async () => {
+      mockQuery.mockResolvedValue(EMPTY);
+
+      await searchAnimalEventsTool.handler(
+        searchAnimalEventsTool.input.parse({ search: 'animal.species:"Dog"' }),
+        ctx,
+      );
+
+      expect(mockQuery.mock.calls[0]![1]).toMatchObject({ sort: undefined });
+    });
+
+    it('sends an explicit sort as given', async () => {
+      mockQuery.mockResolvedValue(EMPTY);
+
+      await searchAnimalEventsTool.handler(
+        searchAnimalEventsTool.input.parse({ sort: 'original_receive_date:asc' }),
+        ctx,
+      );
+
+      expect(mockQuery.mock.calls[0]![1]).toMatchObject({ sort: 'original_receive_date:asc' });
+    });
+
+    it('states the default in the search and sort descriptions', () => {
+      const shape = searchAnimalEventsTool.input.shape;
+      expect(shape.search.description).toContain(
+        'Omit to browse newest first, sorted by original_receive_date:desc.',
+      );
+      expect(shape.sort.description).toContain('defaults to original_receive_date:desc');
+    });
   });
 
   it('passes search, sort, limit, skip to service', async () => {
@@ -225,6 +285,45 @@ describe('openfda_search_animal_events', () => {
     expect(text).toContain('Fluralaner 13.64% 12-Week Chew');
     expect(text).toContain('Recovered/Normal');
     expect(text).toContain('Veterinarian');
+  });
+
+  /**
+   * Under CommonMark a line right after a list item, with no blank line between,
+   * continues that item — so the record fields after the drug list rendered
+   * inside the last drug's `<li>`. Each drug's own fields still belong in it.
+   */
+  it('ends the drug list before the record fields that follow it, under CommonMark', () => {
+    const text = textOf(
+      searchAnimalEventsTool.format!({
+        meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-11-10' },
+        results: [
+          {
+            unique_aer_id_number: 'USA-USFDACVM-2026-US-000001',
+            original_receive_date: '20261020',
+            serious_ae: 'true',
+            drug: [
+              { active_ingredients: [{ name: 'Fluralaner' }], route: 'Oral', lot_number: 'L1' },
+              { active_ingredients: [{ name: 'Moxidectin' }], route: 'Topical', lot_number: 'L2' },
+            ],
+            outcome: [{ medical_status: 'Recovered/Normal', number_of_animals_affected: '1' }],
+            primary_reporter: 'Veterinarian',
+            type_of_information: 'Safety Issue',
+            foreign_or_domestic: 'Domestic',
+            number_of_animals_affected: '1',
+            receiver: { organization: 'FDA-CVM' },
+          },
+        ],
+      }),
+    );
+
+    const items = [...renderCommonMark(text).matchAll(/<li>([\s\S]*?)<\/li>/g)].map((m) => m[1]);
+    expect(items).toHaveLength(2);
+    expect(items[0]).toContain('Lot number:</strong> L1');
+    expect(items[1]).toContain('Lot number:</strong> L2');
+    for (const label of ['Outcome', 'Reporter', 'Type', 'Origin', 'Animals', 'Receiver']) {
+      expect(items.join('\n')).not.toContain(`${label}:</strong>`);
+      expect(text).toContain(`**${label}:**`);
+    }
   });
 
   // #67 — the animal, animal-details, received, and reactions lines carry upstream text.

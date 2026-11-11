@@ -7,6 +7,7 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 
 import { lookupNdcTool } from '@/mcp-server/tools/definitions/lookup-ndc.tool.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import { renderCommonMark } from '../../../helpers/commonmark.js';
 import { textOf } from '../../../helpers/content.js';
 
 const mockQuery = vi.fn();
@@ -33,6 +34,22 @@ describe('openfda_lookup_ndc', () => {
 
     expect(mockQuery.mock.calls[0]![0]).toBe('drug/ndc');
     expect(result.results[0]!.brand_name).toBe('Aspirin');
+  });
+
+  // #92 — the endpoint's default page size reaches the request and meta.limit.
+  it('pages drug/ndc at its default of 25 when limit is omitted', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 0, skip: 0, limit: 0, lastUpdated: '' },
+      results: [],
+    });
+
+    const result = await lookupNdcTool.handler(
+      lookupNdcTool.input.parse({ search: 'product_ndc:"0363-0218"' }),
+      ctx,
+    );
+
+    expect(mockQuery.mock.calls[0]![1]).toMatchObject({ limit: 25 });
+    expect(result.meta.limit).toBe(25);
   });
 
   it('populates enrichment.totalResults and effectiveQuery', async () => {
@@ -147,5 +164,51 @@ describe('openfda_lookup_ndc', () => {
       expect(text).toContain(p.description);
     }
     expect(text).not.toContain('...');
+  });
+
+  /**
+   * Under CommonMark a line right after a list item, with no blank line between,
+   * continues that item — so the listing date and the product's remaining
+   * fields rendered inside the last package's `<li>`. Each package's own fields
+   * still belong in its item.
+   */
+  it('ends the packaging list before the product fields that follow it, under CommonMark', () => {
+    const text = textOf(
+      lookupNdcTool.format!({
+        meta: { total: 1, skip: 0, limit: 25, lastUpdated: '2026-11-10' },
+        results: [
+          {
+            product_ndc: '0363-0218',
+            brand_name: 'Aspirin',
+            labeler_name: 'Walgreen Co',
+            packaging: [
+              { package_ndc: '0363-0218-01', description: '100 TABLET in 1 BOTTLE', sample: false },
+              { package_ndc: '0363-0218-02', description: '300 TABLET in 1 BOTTLE', sample: true },
+            ],
+            listing_expiration_date: '20271231',
+            marketing_start_date: '19900101',
+          },
+        ],
+      }),
+    );
+
+    const items = [...renderCommonMark(text).matchAll(/<li>([\s\S]*?)<\/li>/g)].map(
+      (m) => m[1] ?? '',
+    );
+    expect(items).toHaveLength(2);
+    expect(items[0]).toContain('Sample:</strong> false');
+    expect(items[1]).toContain('Sample:</strong> true');
+    for (const label of ['Listing expires', 'Marketing start date']) {
+      expect(items.join('\n')).not.toContain(`${label}:</strong>`);
+      expect(text).toContain(`**${label}:**`);
+    }
+  });
+
+  // The record's own labeler field is on every NDC record; openfda.manufacturer_name
+  // only on those openFDA harmonized.
+  it('leads its manufacturer example with labeler_name, not an openfda.* path', () => {
+    const description = lookupNdcTool.input.shape.search.description ?? '';
+    expect(description).toContain('labeler_name:"walgreen"');
+    expect(description).not.toContain('openfda.manufacturer_name');
   });
 });

@@ -10,7 +10,8 @@ import { spawnSync } from 'node:child_process';
 import { z } from '@cyanheads/mcp-ts-core';
 import { createFetchMock, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import type { AnyToolDefinition } from '@cyanheads/mcp-ts-core/tools';
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetServerConfig } from '@/config/server-config.js';
 import { countValuesTool } from '@/mcp-server/tools/definitions/count-values.tool.js';
 import { dataframeDescribeTool } from '@/mcp-server/tools/definitions/dataframe-describe.tool.js';
 import { dataframeQueryTool } from '@/mcp-server/tools/definitions/dataframe-query.tool.js';
@@ -59,7 +60,7 @@ describe('openfda_count_values input schema', () => {
     expect(input.limit).toBe(1);
   });
 
-  it('accepts limit=1000 (maximum)', () => {
+  it('accepts limit=1000 (cap)', () => {
     const input = countValuesTool.input.parse({
       endpoint: 'drug/event',
       count: 'field',
@@ -74,9 +75,19 @@ describe('openfda_count_values input schema', () => {
     ).toThrow();
   });
 
-  it('rejects limit=1001 (above maximum)', () => {
+  // #92 — above the cap is the handler's to clamp, not the schema's to reject.
+  it('admits limit=1001 so the handler can clamp it to the cap', () => {
+    const input = countValuesTool.input.parse({
+      endpoint: 'drug/event',
+      count: 'field',
+      limit: 1001,
+    });
+    expect(input.limit).toBe(1001);
+  });
+
+  it('rejects a fractional limit', () => {
     expect(() =>
-      countValuesTool.input.parse({ endpoint: 'drug/event', count: 'field', limit: 1001 }),
+      countValuesTool.input.parse({ endpoint: 'drug/event', count: 'field', limit: 2.5 }),
     ).toThrow();
   });
 
@@ -124,7 +135,7 @@ describe('openfda_search_adverse_events input schema', () => {
   it('accepts valid minimal input', () => {
     const input = searchAdverseEventsTool.input.parse({ category: 'drug' });
     expect(input.category).toBe('drug');
-    expect(input.limit).toBe(10); // default
+    expect(input.limit).toBeUndefined(); // the handler applies the category's default (#92)
     expect(input.skip).toBe(0); // default
   });
 
@@ -146,8 +157,10 @@ describe('openfda_search_adverse_events input schema', () => {
     expect(() => searchAdverseEventsTool.input.parse({ category: 'drug', limit: 0 })).toThrow();
   });
 
-  it('rejects limit above 1000', () => {
-    expect(() => searchAdverseEventsTool.input.parse({ category: 'drug', limit: 1001 })).toThrow();
+  // #92 — above the cap is the handler's to clamp, not the schema's to reject.
+  it('admits limit=1001 so the handler can clamp it to the cap', () => {
+    const input = searchAdverseEventsTool.input.parse({ category: 'drug', limit: 1001 });
+    expect(input.limit).toBe(1001);
   });
 
   it('rejects skip below 0', () => {
@@ -177,6 +190,7 @@ describe('openfda_search_recalls input schema', () => {
     const input = searchRecallsTool.input.parse({ category: 'drug' });
     expect(input.category).toBe('drug');
     expect(input.endpoint).toBe('enforcement'); // default
+    expect(input.limit).toBeUndefined(); // the handler applies the category and endpoint's default (#92)
   });
 
   it('rejects missing category', () => {
@@ -237,13 +251,19 @@ describe('openfda_get_drug_label input schema', () => {
     expect(() => getDrugLabelTool.input.parse({ search: 'aspirin', limit: 0 })).toThrow();
   });
 
-  it('accepts limit=1000 (max)', () => {
+  it('accepts limit=1000 (cap)', () => {
     const input = getDrugLabelTool.input.parse({ search: 'aspirin', limit: 1000 });
     expect(input.limit).toBe(1000);
   });
 
-  it('rejects limit=1001', () => {
-    expect(() => getDrugLabelTool.input.parse({ search: 'aspirin', limit: 1001 })).toThrow();
+  // #92 — above the cap is the handler's to clamp, not the schema's to reject.
+  it('admits limit=1001 so the handler can clamp it to the cap', () => {
+    const input = getDrugLabelTool.input.parse({ search: 'aspirin', limit: 1001 });
+    expect(input.limit).toBe(1001);
+  });
+
+  it('rejects a fractional limit', () => {
+    expect(() => getDrugLabelTool.input.parse({ search: 'aspirin', limit: 2.5 })).toThrow();
   });
 
   it('rejects skip=-1', () => {
@@ -267,7 +287,7 @@ describe('openfda_lookup_ndc input schema', () => {
   it('accepts valid input', () => {
     const input = lookupNdcTool.input.parse({ search: 'product_ndc:"0363-0218"' });
     expect(input.search).toBe('product_ndc:"0363-0218"');
-    expect(input.limit).toBe(10);
+    expect(input.limit).toBe(25);
     expect(input.skip).toBe(0);
   });
 
@@ -280,9 +300,13 @@ describe('openfda_lookup_ndc input schema', () => {
     expect(() => lookupNdcTool.input.parse({ search: 'x', limit: 1000 })).not.toThrow();
   });
 
-  it('rejects out-of-range limit', () => {
+  it('rejects limit below 1', () => {
     expect(() => lookupNdcTool.input.parse({ search: 'x', limit: 0 })).toThrow();
-    expect(() => lookupNdcTool.input.parse({ search: 'x', limit: 1001 })).toThrow();
+  });
+
+  // #92 — above the cap is the handler's to clamp, not the schema's to reject.
+  it('admits limit=1001 so the handler can clamp it to the cap', () => {
+    expect(lookupNdcTool.input.parse({ search: 'x', limit: 1001 }).limit).toBe(1001);
   });
 
   it('rejects negative skip but admits over-ceiling skip for the handler (#27)', () => {
@@ -296,7 +320,7 @@ describe('openfda_lookup_ndc input schema', () => {
 describe('openfda_search_drug_approvals input schema', () => {
   it('accepts empty input (all optional)', () => {
     const input = searchDrugApprovalsTool.input.parse({});
-    expect(input.limit).toBe(10);
+    expect(input.limit).toBe(25);
     expect(input.skip).toBe(0);
     expect(input.search).toBeUndefined();
   });
@@ -308,9 +332,13 @@ describe('openfda_search_drug_approvals input schema', () => {
     expect(input.search).toBe('sponsor_name:"PFIZER"');
   });
 
-  it('rejects out-of-range limit', () => {
+  it('rejects limit below 1', () => {
     expect(() => searchDrugApprovalsTool.input.parse({ limit: 0 })).toThrow();
-    expect(() => searchDrugApprovalsTool.input.parse({ limit: 1001 })).toThrow();
+  });
+
+  // #92 — above the cap is the handler's to clamp, not the schema's to reject.
+  it('admits limit=1001 so the handler can clamp it to the cap', () => {
+    expect(searchDrugApprovalsTool.input.parse({ limit: 1001 }).limit).toBe(1001);
   });
 
   it('rejects negative skip but admits over-ceiling skip for the handler (#27)', () => {
@@ -325,7 +353,7 @@ describe('openfda_search_device_clearances input schema', () => {
   it('accepts valid minimal input with pathway', () => {
     const input = searchDeviceClearancesTool.input.parse({ pathway: '510k' });
     expect(input.pathway).toBe('510k');
-    expect(input.limit).toBe(10);
+    expect(input.limit).toBeUndefined(); // the handler applies the pathway's default (#92)
   });
 
   it('rejects missing pathway', () => {
@@ -356,7 +384,7 @@ describe('openfda_search_device_clearances input schema', () => {
 describe('openfda_search_animal_events input schema', () => {
   it('accepts empty input (all optional)', () => {
     const input = searchAnimalEventsTool.input.parse({});
-    expect(input.limit).toBe(10);
+    expect(input.limit).toBe(25);
     expect(input.skip).toBe(0);
     expect(input.search).toBeUndefined();
     expect(input.sort).toBeUndefined();
@@ -375,8 +403,9 @@ describe('openfda_search_animal_events input schema', () => {
     expect(() => searchAnimalEventsTool.input.parse({ limit: 0 })).toThrow();
   });
 
-  it('rejects limit above 1000', () => {
-    expect(() => searchAnimalEventsTool.input.parse({ limit: 1001 })).toThrow();
+  // #92 — above the cap is the handler's to clamp, not the schema's to reject.
+  it('admits limit=1001 so the handler can clamp it to the cap', () => {
+    expect(searchAnimalEventsTool.input.parse({ limit: 1001 }).limit).toBe(1001);
   });
 
   it('accepts limit=1 and limit=1000 boundaries', () => {
@@ -403,7 +432,7 @@ describe('openfda_search_animal_events input schema', () => {
 describe('openfda_search_tobacco_reports input schema', () => {
   it('accepts empty input (all optional)', () => {
     const input = searchTobaccoReportsTool.input.parse({});
-    expect(input.limit).toBe(10);
+    expect(input.limit).toBe(25);
     expect(input.skip).toBe(0);
     expect(input.search).toBeUndefined();
     expect(input.sort).toBeUndefined();
@@ -422,8 +451,9 @@ describe('openfda_search_tobacco_reports input schema', () => {
     expect(() => searchTobaccoReportsTool.input.parse({ limit: 0 })).toThrow();
   });
 
-  it('rejects limit above 1000', () => {
-    expect(() => searchTobaccoReportsTool.input.parse({ limit: 1001 })).toThrow();
+  // #92 — above the cap is the handler's to clamp, not the schema's to reject.
+  it('admits limit=1001 so the handler can clamp it to the cap', () => {
+    expect(searchTobaccoReportsTool.input.parse({ limit: 1001 }).limit).toBe(1001);
   });
 
   it('accepts limit=1 and limit=1000 boundaries', () => {
@@ -443,6 +473,68 @@ describe('openfda_search_tobacco_reports input schema', () => {
     const input = searchTobaccoReportsTool.input.parse({ skip: 25000 });
     expect(input.skip).toBe(25000);
   });
+});
+
+// ── Search-tool limit: clamp by default, schema maximum in strict mode (#92) ──
+
+/**
+ * Each search tool's `limit` as `tools/list` advertises it and as the schema
+ * parses it, in both modes. Clamping (the default) advertises `minimum: 1`, no
+ * `maximum`, and a `default` only where one endpoint fixes it; with
+ * `OPENFDA_CLAMP_LIMITS=false` the tool's largest cap is the advertised and
+ * enforced `maximum`. The default and cap of each endpoint are tabled in
+ * `schema-utils.test.ts`; this pins which of them each tool advertises.
+ */
+describe('search-tool limit schema (#92)', () => {
+  /** Tool, minimal input, advertised default (absent where another input picks the endpoint), largest cap. */
+  const SEARCH_TOOLS = [
+    [searchAdverseEventsTool, { category: 'drug' }, undefined, 1000],
+    [searchAnimalEventsTool, {}, 25, 450],
+    [searchDeviceClearancesTool, { pathway: '510k' }, undefined, 575],
+    [searchDrugApprovalsTool, {}, 25, 375],
+    [searchDrugShortagesTool, {}, 25, 1000],
+    [searchRecallsTool, { category: 'drug' }, undefined, 1000],
+    [searchTobaccoReportsTool, {}, 25, 1000],
+    [lookupNdcTool, { search: 'x' }, 25, 1000],
+  ] as const;
+
+  const rows = SEARCH_TOOLS.map(
+    ([tool, input, fallback, maximum]) => [tool.name, tool, input, fallback, maximum] as const,
+  );
+
+  const advertisedLimit = (tool: AnyToolDefinition) =>
+    (
+      z.toJSONSchema(tool.input, { io: 'input' }) as {
+        properties: Record<string, Record<string, unknown>>;
+      }
+    ).properties.limit;
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    resetServerConfig();
+  });
+
+  it.each(rows)(
+    '%s advertises minimum 1, no maximum, and its default only when one endpoint fixes it',
+    (_name, tool, _input, fallback) => {
+      const limit = advertisedLimit(tool);
+      expect(limit).toMatchObject({ type: 'integer', minimum: 1 });
+      expect(limit).not.toHaveProperty('maximum');
+      expect(limit?.default).toBe(fallback);
+    },
+  );
+
+  it.each(rows)(
+    '%s advertises and enforces its largest cap as maximum with OPENFDA_CLAMP_LIMITS=false',
+    (_name, tool, input, _fallback, maximum) => {
+      vi.stubEnv('OPENFDA_CLAMP_LIMITS', 'false');
+      resetServerConfig();
+
+      expect(advertisedLimit(tool)?.maximum).toBe(maximum);
+      expect(tool.input.parse({ ...input, limit: maximum }).limit).toBe(maximum);
+      expect(tool.input.safeParse({ ...input, limit: maximum + 1 }).success).toBe(false);
+    },
+  );
 });
 
 // ── Blank required free-text inputs (#25) ─────────────────────────────────────

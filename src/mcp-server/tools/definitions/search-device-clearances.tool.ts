@@ -1,14 +1,15 @@
 /**
  * @fileoverview Tool for searching FDA device premarket notifications (510(k)
  * clearances and PMA approvals). 510(k) records carry a summary narrative and run
- * several kilobytes each, so the inline page is bounded by a serialized-byte budget
- * and discloses any records it withheld along with the routes to them.
+ * several kilobytes each, so `limit`'s default and cap follow the pathway, and a
+ * page holding a record over 24,000 bytes names its largest fields.
  * @module mcp-server/tools/definitions/search-device-clearances
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { CanvasIdSchema, type ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { sortOrNewest } from '@/mcp-server/tools/default-sort.js';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
   emptyPageBody,
@@ -23,8 +24,13 @@ import {
   assertSkipWithinCeiling,
   fieldSelection,
   fieldsDescription,
+  limitAboveCapError,
+  META_LIMIT_DESCRIPTION,
   malformedSearchError,
+  pageLimitBy,
+  pageSizeNotice,
   phrasePlusHint,
+  resolvePageSize,
   SEARCH_SYNTAX_NOTE,
   SKIP_DESCRIPTION,
   searchExpression,
@@ -45,11 +51,10 @@ import {
 } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import {
-  boundedPage,
-  META_LIMIT_DESCRIPTION,
-  PAGE_BUDGET_NOTE,
-  pageBudgetNotice,
-  pageBudgetOutputShape,
+  inlinePage,
+  OVERSIZED_RECORD_BYTES,
+  oversizedRecordNotice,
+  oversizedRecordOutputShape,
 } from '@/services/openfda/page-budget.js';
 import {
   projectionNotice,
@@ -64,6 +69,9 @@ import {
  * number.
  */
 const IDENTITY_KEYS = ['k_number', 'pma_number', 'supplement_number'] as const;
+
+/** The sort a bare browse sends on either pathway: newest FDA decision first. */
+const NEWEST_FIRST = 'decision_date:desc';
 
 /**
  * Canvas table projection covering both 510(k) and PMA records (one pathway per
@@ -103,21 +111,21 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
     search: searchExpression()
       .optional()
       .describe(
-        `openFDA search query. Examples: applicant:"medtronic", advisory_committee_description:"cardiovascular", product_code:"DXN", openfda.device_name:"catheter". Omit to browse recent. ${SEARCH_SYNTAX_NOTE}`,
+        `openFDA search query. Examples: applicant:"medtronic", advisory_committee_description:"cardiovascular", product_code:"DXN", openfda.device_name:"catheter". Omit to browse newest first, sorted by ${NEWEST_FIRST}. ${SEARCH_SYNTAX_NOTE}`,
       ),
     sort: sortExpression()
       .optional()
       .describe(
-        'Sort expression — a field path optionally suffixed with :asc or :desc (any letter case; :ascending and :descending are also accepted, and every direction is sent as asc or desc); comma-separate for multi-field sort. Example: decision_date:desc. Field paths take only letters, digits, underscores, and dots; any other character or direction is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
+        `Sort expression — a field path optionally suffixed with :asc or :desc (any letter case; :ascending and :descending are also accepted, and every direction is sent as asc or desc); comma-separate for multi-field sort. Omitted with no search, defaults to ${NEWEST_FIRST}, newest first; omitted with a search, results come in openFDA's relevance order. Field paths take only letters, digits, underscores, and dots; any other character or direction is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.`,
       ),
-    limit: z
-      .number()
-      .min(1)
-      .max(1000)
-      .default(10)
-      .describe(
-        `Maximum number of records to return (1-1000, default 10). ${PAGE_BUDGET_NOTE} A 510(k) record carries a summary narrative and is several times the size of a PMA record.`,
-      ),
+    limit: pageLimitBy(
+      'pathway',
+      [
+        ['510k', 'device/510k'],
+        ['pma', 'device/pma'],
+      ],
+      'Records per page.',
+    ),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     fields: fieldSelection()
       .optional()
@@ -143,7 +151,7 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       .describe(
         '510(k) or PMA records — 510(k) carries k_number, device_name, applicant, product_code, decision_date, decision_description, advisory_committee_description; PMA carries pma_number, trade_name, generic_name, supplement_number plus shared applicant/product_code/decision_date/decision_description.',
       ),
-    ...pageBudgetOutputShape,
+    ...oversizedRecordOutputShape,
     ...projectionOutputShape,
     ...canvasOutputShape,
   }),
@@ -158,11 +166,12 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       .string()
       .optional()
       .describe(
-        'Canvas staging disclosure when the call staged, the fields projection and any requested path no record carries, the byte-budget disclosure when the inline page was bounded or one record exceeds it (with the routes to the withheld records and the largest fields of the oversized record), and guidance when results are empty — how to broaden filters or correct field names.',
+        `Canvas staging disclosure when the call staged, the limit clamp when limit exceeded the pathway's cap (requested value, cap, next skip), the fields projection and any requested path no record carries, the size and largest fields when a record on the page exceeds ${OVERSIZED_RECORD_BYTES} bytes, and guidance when results are empty — how to broaden filters or correct field names.`,
       ),
   },
 
   errors: [
+    limitAboveCapError,
     canvasDisabledError,
     canvasNotFoundError,
     canvasCapacityExhaustedError,
@@ -206,7 +215,9 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
     assertSkipWithinCeiling(input.skip, ctx);
     assertSearchDelimitersBalanced(input.search, ctx);
 
-    const endpoint = `device/${input.pathway}`;
+    const endpoint = `device/${input.pathway}` as const;
+    const size = resolvePageSize(input.limit, endpoint, ctx);
+    const sort = sortOrNewest(input, NEWEST_FIRST);
     const emptyNotice = (skip: number, total: number, totalUnverified?: boolean) =>
       emptyResultMessage(
         skip,
@@ -229,10 +240,10 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       const spill = await spillSearch({
         endpoint,
         search: input.search,
-        sort: input.sort,
+        sort,
         canvasId: input.canvas_id,
         schema: DEVICE_CLEARANCES_CANVAS_SCHEMA,
-        limit: input.limit,
+        limit: size.limit,
         skip: input.skip,
         projection,
         ctx,
@@ -244,8 +255,9 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
         [
           spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
           phrasePlusHint(input.search, spill.total),
+          pageSizeNotice(size, staged),
           projectionNotice(staged),
-          pageBudgetNotice(staged),
+          oversizedRecordNotice(staged),
           stagingNotice(spill),
         ]
           .filter(Boolean)
@@ -259,20 +271,19 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
       endpoint,
       {
         search: input.search,
-        sort: input.sort,
-        limit: input.limit,
+        sort,
+        limit: size.limit,
         skip: input.skip,
       },
       ctx,
     );
 
-    const page = boundedPage(response, projection);
+    const page = inlinePage(response, size.limit, projection);
 
     ctx.log.info('Device clearance search completed', {
       pathway: input.pathway,
       total: response.meta.total,
       returned: page.results.length,
-      pageOmitted: page.page_omitted,
     });
 
     ctx.enrich({ totalResults: response.meta.total });
@@ -282,8 +293,9 @@ export const searchDeviceClearancesTool = tool('openfda_search_device_clearances
         ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
         : undefined,
       phrasePlusHint(input.search, response.meta.total),
+      pageSizeNotice(size, page),
       projectionNotice(page),
-      pageBudgetNotice(page),
+      oversizedRecordNotice(page),
     ].filter(Boolean);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 

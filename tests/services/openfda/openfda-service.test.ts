@@ -1,22 +1,29 @@
 import type { Context } from '@cyanheads/mcp-ts-core';
-import { McpError } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
+import { withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Records the options the service hands `fetchWithTimeout` so the log-severity
 // opt-out (`expectedStatuses`) is assertable — the severity itself is decided
 // inside the framework helper, against its module-level logger.
-const { fetchOptionsSpy } = vi.hoisted(() => ({ fetchOptionsSpy: vi.fn() }));
+const { fetchOptionsSpy, singleAttempt } = vi.hoisted(() => ({
+  fetchOptionsSpy: vi.fn(),
+  singleAttempt: (
+    fn: (attempt: { signal: AbortSignal; remainingMs: number }) => Promise<unknown>,
+  ) => fn({ signal: new AbortController().signal, remainingMs: Number.POSITIVE_INFINITY }),
+}));
 
 // Keep the real `fetchWithTimeout` so classification runs against the actual
 // helper (it throws the status-mapped McpError the service reclassifies); only
 // collapse `withRetry` to a single attempt so a reclassified error surfaces
-// directly instead of retrying against the stubbed fetch.
+// directly instead of retrying against the stubbed fetch. The deadline suite
+// below restores the real `withRetry`, whose clock is what it tests.
 vi.mock('@cyanheads/mcp-ts-core/utils', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@cyanheads/mcp-ts-core/utils')>();
   return {
     ...actual,
-    withRetry: vi.fn((fn: () => Promise<unknown>) => fn()),
+    withRetry: vi.fn(singleAttempt),
     fetchWithTimeout: (...args: Parameters<typeof actual.fetchWithTimeout>) => {
       fetchOptionsSpy(args[3]);
       return actual.fetchWithTimeout(...args);
@@ -24,7 +31,7 @@ vi.mock('@cyanheads/mcp-ts-core/utils', async (importOriginal) => {
   };
 });
 
-import { OpenFdaService } from '@/services/openfda/openfda-service.js';
+import { OPENFDA_CALL_DEADLINE_MS, OpenFdaService } from '@/services/openfda/openfda-service.js';
 
 describe('OpenFdaService', () => {
   let service: OpenFdaService;
@@ -376,6 +383,17 @@ describe('OpenFdaService', () => {
       expect(err.message).toMatch(/pagination limit reached/i);
     });
 
+    // The retry ladder honors `data.retryAfter`, so the rate-limit error keeps it.
+    it('carries openFDA’s Retry-After on the rate-limit error', async () => {
+      mockFetch.mockResolvedValue({
+        ...mockResponse(429, { error: { message: 'Too many requests' } }),
+        headers: new Headers({ 'retry-after': '30' }),
+      });
+
+      const err = (await service.query('drug/event', {}, ctx).catch((e: unknown) => e)) as McpError;
+      expect(err.data).toMatchObject({ reason: 'rate_limited', retryAfter: '30' });
+    });
+
     it('throws McpError on 429', async () => {
       mockFetch.mockResolvedValue(mockResponse(429, { error: { message: 'Too many requests' } }));
 
@@ -459,6 +477,202 @@ describe('OpenFdaService', () => {
       const err = await service.query('drug/event', {}, ctx).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(McpError);
       expect((err as McpError).message).toMatch(/418/);
+    });
+
+    // The framework keeps the captured upstream body off the client envelope, so
+    // the pass-through error carries openFDA's own reason in its message instead.
+    it('carries the openFDA error text in the message of an unexpected-status error', async () => {
+      mockFetch.mockResolvedValue(mockResponse(418, { error: { message: "I'm a teapot" } }));
+
+      const err = (await service.query('drug/event', {}, ctx).catch((e: unknown) => e)) as McpError;
+      expect(err.message).toBe("openFDA returned HTTP 418: I'm a teapot");
+      expect(err.data).toMatchObject({ status: 418 });
+    });
+
+    // A proxy in front of openFDA answers some failures with an HTML page: its
+    // markup is no reason, so the message keeps the page's title or the status.
+    it('names an HTML error page by its title, never its markup', async () => {
+      mockFetch.mockResolvedValue(
+        mockResponse(
+          414,
+          '<html>\r\n<head><title>414 Request-URI Too Large</title></head>\r\n<body>\r\n<center><h1>414 Request-URI Too Large</h1></center>\r\n<hr><center>openresty</center>\r\n</body>\r\n</html>',
+        ),
+      );
+
+      const err = (await service.query('drug/event', {}, ctx).catch((e: unknown) => e)) as McpError;
+      expect(err.message).toBe('openFDA returned HTTP 414: 414 Request-URI Too Large');
+    });
+
+    it('falls back to the status for an HTML error page with no title', async () => {
+      mockFetch.mockResolvedValue(mockResponse(502, '<html>502 Bad Gateway</html>'));
+
+      const err = (await service.query('drug/event', {}, ctx).catch((e: unknown) => e)) as McpError;
+      expect(err.message).toBe('openFDA upstream error: HTTP 502');
+    });
+  });
+
+  /*
+   * Four 15 s attempts plus backoff run ~65–69 s, past the 60 s request timeout
+   * MCP SDK clients default to. One deadline bounds every attempt, every backoff,
+   * and the side requests a call makes, under the real `withRetry` on fake timers.
+   */
+  describe('call deadline', () => {
+    /** A fetch that never answers — it rejects only when its signal aborts. */
+    const hangUntilAborted = (_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+      });
+    /** Whether `promise` has settled, sampled without awaiting it. */
+    const track = (promise: Promise<unknown>) => {
+      const state = { settled: false };
+      promise.then(
+        () => (state.settled = true),
+        () => (state.settled = true),
+      );
+      return state;
+    };
+
+    let random: { mockRestore: () => void };
+
+    beforeEach(async () => {
+      const actual = await vi.importActual<typeof import('@cyanheads/mcp-ts-core/utils')>(
+        '@cyanheads/mcp-ts-core/utils',
+      );
+      vi.mocked(withRetry).mockImplementation(actual.withRetry);
+      vi.useFakeTimers();
+      // Jitter at its midpoint, so backoff is exactly 1 s, 2 s, 4 s.
+      random = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    });
+
+    afterEach(() => {
+      vi.mocked(withRetry).mockImplementation(singleAttempt);
+      vi.useRealTimers();
+      random.mockRestore();
+    });
+
+    it('defaults to 50 s for one call', () => {
+      expect(OPENFDA_CALL_DEADLINE_MS).toBe(50_000);
+    });
+
+    it('settles a call whose every attempt times out inside the default deadline', async () => {
+      mockFetch.mockImplementation(hangUntilAborted);
+
+      const pending = service
+        .query('drug/event', { search: 'patient.drug.medicinalproduct:"x"' }, ctx)
+        .catch((e: unknown) => e);
+      const state = track(pending);
+      await vi.advanceTimersByTimeAsync(50_000);
+
+      expect(state.settled).toBe(true);
+      const err = (await pending) as McpError;
+      expect(err).toBeInstanceOf(McpError);
+      expect(err.code).toBe(JsonRpcErrorCode.Timeout);
+      expect(err.data).toMatchObject({ reason: 'retry_deadline_exceeded', deadlineMs: 50_000 });
+      // 15 s, 1 s, 15 s, 2 s, 15 s — the 4 s backoff would outlast the 2 s left.
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('cuts the first attempt at a caller deadline shorter than the attempt timeout', async () => {
+      mockFetch.mockImplementation(hangUntilAborted);
+
+      const pending = service
+        .query('drug/event', {}, ctx, { deadlineAtMs: Date.now() + 5_000 })
+        .catch((e: unknown) => e);
+      const state = track(pending);
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(state.settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(state.settled).toBe(true);
+      const err = (await pending) as McpError;
+      expect(err.code).toBe(JsonRpcErrorCode.Timeout);
+      expect(err.data).toMatchObject({ reason: 'retry_deadline_exceeded', deadlineMs: 5_000 });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('sends no request once its deadline has passed', async () => {
+      mockFetch.mockImplementation(hangUntilAborted);
+
+      const pending = service
+        .query('drug/event', {}, ctx, { deadlineAtMs: Date.now() })
+        .catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(1);
+      const err = (await pending) as McpError;
+
+      expect(err).toBeInstanceOf(McpError);
+      expect(err.code).toBe(JsonRpcErrorCode.Timeout);
+      expect(err.data).toMatchObject({ reason: 'retry_deadline_exceeded' });
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('keeps a caller cancel a cancellation, never a deadline expiry', async () => {
+      mockFetch.mockImplementation(hangUntilAborted);
+      const controller = new AbortController();
+
+      const pending = service
+        .query('drug/event', {}, createMockContext({ signal: controller.signal }), {
+          deadlineAtMs: Date.now() + 5_000,
+        })
+        .catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(1_000);
+      controller.abort();
+      const err = (await pending) as McpError;
+
+      expect(err).toBeInstanceOf(McpError);
+      expect(err.code).toBe(JsonRpcErrorCode.RequestCancelled);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('bounds the past-end total recovery by the same deadline', async () => {
+      mockFetch.mockImplementation(async (url: string, init?: RequestInit) =>
+        new URL(url).searchParams.get('limit') === '0'
+          ? hangUntilAborted(url, init)
+          : mockResponse(404, { error: { code: 'NOT_FOUND', message: 'No matches found!' } }),
+      );
+
+      const pending = service.query(
+        'drug/enforcement',
+        { search: 'openfda.generic_name:"metformin"', limit: 1, skip: 39 },
+        ctx,
+        { deadlineAtMs: Date.now() + 5_000 },
+      );
+      const state = track(pending);
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      // Its own 15 s attempt timeout would have held the call open three times longer.
+      expect(state.settled).toBe(true);
+      expect((await pending).meta).toMatchObject({ total: 0, skip: 39, totalUnverified: true });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('bounds the "Nothing to count" confirm by the same deadline', async () => {
+      // The scoped count answers `Nothing to count`; the unscoped confirm never answers.
+      mockFetch.mockImplementation(async (url: string, init?: RequestInit) =>
+        new URL(url).searchParams.has('search')
+          ? mockResponse(404, { error: { code: 'NOT_FOUND', message: 'Nothing to count' } })
+          : hangUntilAborted(url, init),
+      );
+
+      const pending = service
+        .query(
+          'drug/enforcement',
+          {
+            count: 'openfda.generic_name.exact',
+            search: '_missing_:openfda.generic_name',
+            limit: 5,
+          },
+          ctx,
+          { deadlineAtMs: Date.now() + 5_000 },
+        )
+        .catch((e: unknown) => e);
+      const state = track(pending);
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(state.settled).toBe(true);
+      const err = (await pending) as McpError;
+      expect(err.code).toBe(JsonRpcErrorCode.Timeout);
+      expect(err.data).toMatchObject({ reason: 'retry_deadline_exceeded', deadlineMs: 5_000 });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
     });
   });
 

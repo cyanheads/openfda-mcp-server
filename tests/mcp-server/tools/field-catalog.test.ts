@@ -7,7 +7,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  type Countable,
   countVerdict,
+  formatFieldHint,
   getCatalogedEndpoints,
   getFieldGroups,
 } from '@/mcp-server/tools/field-catalog.js';
@@ -160,6 +162,55 @@ describe('field catalog', () => {
       expect(fieldOf('drug/event', path).note).toContain(fragment);
     });
 
+    // #90 fold-in — the coded drug/event fields format() labels are cataloged
+    // with notes built from the same code tables, each count form probed live
+    // (2026-11-10: the unit fields answer 5xx bare and "Nothing to count" .exact).
+    describe('drug/event coded fields (#90)', () => {
+      it.each<[string, Countable, string[]]>([
+        [
+          'patient.patientonsetageunit',
+          'none',
+          ['patient.patientonsetage', '800 = decade', '802 = month', '805 = hour'],
+        ],
+        ['patient.drug.actiondrug', 'bare', ['1 = drug withdrawn', '6 = not applicable']],
+        ['patient.drug.drugadditional', 'bare', ['1 = yes', '3 = does not apply', 'also stores 4']],
+        ['patient.drug.drugrecurreadministration', 'bare', ['1 = yes', '3 = unknown']],
+        ['patient.drug.drugtreatmentdurationunit', 'none', ['801 = year', '806 = minute']],
+        [
+          'patient.drug.drugintervaldosagedefinition',
+          'bare',
+          ['804 = day', '810 = cyclical', '813 = total', '807'],
+        ],
+        [
+          'patient.drug.drugstructuredosageunit',
+          'none',
+          ['004 = µg (micrograms)', '005 and above'],
+        ],
+        [
+          'patient.drug.drugcumulativedosageunit',
+          'none',
+          ['003 = mg (milligrams)', '005 and above'],
+        ],
+        ['reporttype', 'bare', ['1 = spontaneous', '4 = not available to sender (unknown)']],
+        [
+          'primarysource.qualification',
+          'bare',
+          ['1 = physician', '5 = consumer or non-health professional'],
+        ],
+        ['fulfillexpeditecriteria', 'bare', ['1 = yes', '2 = no', 'also stores 3, 4, and 5']],
+      ])('catalogs %s, counted %s, with its code meanings', (path, countable, fragments) => {
+        const field = fieldOf('drug/event', path);
+        expect(field.countable).toBe(countable);
+        for (const fragment of fragments) expect(field.note).toContain(fragment);
+      });
+
+      it('keeps the six fields the empty-result hint names', () => {
+        expect(formatFieldHint('drug/event')).toContain(
+          'drug/event: safetyreportid, receivedate, serious, primarysource.reportercountry, patient.patientsex, patient.patientagegroup.',
+        );
+      });
+    });
+
     // #80 — openFDA serves one current record per SPL set; no set_id reaches an earlier revision.
     it('drug/label set_id says openFDA holds only the current revision', () => {
       const { note } = fieldOf('drug/label', 'set_id');
@@ -203,6 +254,70 @@ describe('field catalog', () => {
       ).toEqual({
         kind: 'countable',
       });
+    });
+  });
+
+  // #89 — openFDA fills openfda.* on harmonized Drugs@FDA applications only;
+  // products.brand_name is on nearly every one. The bare path is analyzed text:
+  // `count=products.brand_name` answers illegal_argument_exception, `.exact` counts.
+  describe('drug/drugsfda products.brand_name (#89)', () => {
+    it('says sponsor_name is stored uppercase, which a quoted value must match', () => {
+      const field = (getFieldGroups('drug/drugsfda') ?? [])
+        .flatMap((g) => g.fields)
+        .find((f) => f.path === 'sponsor_name');
+      expect(field?.note).toContain('stored uppercase');
+    });
+
+    it('catalogs products.brand_name, counted as .exact', () => {
+      const field = (getFieldGroups('drug/drugsfda') ?? [])
+        .flatMap((g) => g.fields)
+        .find((f) => f.path === 'products.brand_name');
+      expect(field).toMatchObject({ type: 'string', countable: 'exact' });
+      expect(countVerdict('drug/drugsfda', 'products.brand_name')).toEqual({
+        kind: 'wrong_form',
+        use: 'products.brand_name.exact',
+      });
+    });
+
+    it('sits among the six fields the empty-result hint names', () => {
+      expect(formatFieldHint('drug/drugsfda')).toMatch(
+        /^Key searchable fields for drug\/drugsfda: (?:[\w.]+, ){0,5}products\.brand_name[,.]/,
+      );
+    });
+  });
+
+  /**
+   * A field a notice recommends or a tool sorts on by default is one
+   * openfda_describe_fields lists: the label no-match notice names
+   * `spl_product_data_elements` (#89), and a bare device recall browse sorts on
+   * `event_date_initiated` (#88). Count forms probed live 2026-11-10.
+   */
+  describe('fields a notice or default sort names', () => {
+    it('catalogs drug/label spl_product_data_elements, which counts in neither form', () => {
+      for (const expression of ['spl_product_data_elements', 'spl_product_data_elements.exact']) {
+        expect(countVerdict('drug/label', expression).kind).toBe('none');
+      }
+    });
+
+    it('catalogs device/recall event_date_initiated as a date counted bare', () => {
+      expect(countVerdict('device/recall', 'event_date_initiated')).toEqual({ kind: 'countable' });
+      expect(countVerdict('device/recall', 'event_date_initiated.exact')).toEqual({
+        kind: 'wrong_form',
+        use: 'event_date_initiated',
+      });
+      const field = (getFieldGroups('device/recall') ?? [])
+        .flatMap((g) => g.fields)
+        .find((f) => f.path === 'event_date_initiated');
+      expect(field?.type).toBe('date');
+    });
+
+    it('leaves the label and device recall empty-result hints unchanged', () => {
+      expect(formatFieldHint('drug/label')).toContain(
+        'drug/label: openfda.brand_name, openfda.generic_name, openfda.manufacturer_name, openfda.product_type, openfda.route, openfda.application_number.',
+      );
+      expect(formatFieldHint('device/recall')).toContain(
+        'device/recall: product_res_number, res_event_number, recall_status, openfda.device_class, recalling_firm, product_description.',
+      );
     });
   });
 

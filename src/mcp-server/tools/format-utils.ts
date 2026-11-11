@@ -4,8 +4,8 @@
  */
 
 import { markdown } from '@cyanheads/mcp-ts-core/utils';
-import { AGGREGATE_ROUTE } from '@/services/openfda/canvas-spill.js';
-import { type PageBudgetFields, pageBudgetLine } from '@/services/openfda/page-budget.js';
+import { AGGREGATE_ROUTE, stagingStopCause } from '@/services/openfda/canvas-spill.js';
+import { type OversizedRecordFields, oversizedRecordLine } from '@/services/openfda/page-budget.js';
 import { type ProjectionFields, projectionLine } from '@/services/openfda/record-projection.js';
 
 /**
@@ -377,7 +377,7 @@ export function canvasStagingLine(total: number, result: CanvasResultFields): st
   }
   const staged = result.staged_rows ?? 0;
   const cut = result.truncated
-    ? ` Truncated: staging stopped at its size budget, so the table holds the first ${staged} records — narrow the query for a complete set.${AGGREGATE_ROUTE}`
+    ? ` Truncated: staging stopped at ${stagingStopCause(staged)}, so the table holds the first ${staged} records — narrow the query for a complete set.${AGGREGATE_ROUTE}`
     : '';
   return `> Staged ${staged} of ${total} matched rows on canvas table \`${result.canvas_table}\` (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled}) — openfda_dataframe_describe for its columns, then openfda_dataframe_query for SQL.${cut}`;
 }
@@ -439,21 +439,21 @@ export function resultHeader(meta: ResultMeta, returned: number, kind?: string):
 /**
  * The lines that open a search tool's `content[]` on every branch, in order: the
  * metadata header, then the disclosures that hold regardless of row count — the
- * `fields` projection line, the page-budget line, then the canvas staging line
- * whenever the call staged. The branch body (the no-match line, the past-the-end
- * note, or the records) follows. Each entry is one line — the dataset date and
- * the page-budget field paths come from upstream — ending in a newline, so
- * joining on `\n` separates the blocks with a blank line.
+ * `fields` projection line, the oversized-record line, then the canvas staging
+ * line whenever the call staged. The branch body (the no-match line, the
+ * past-the-end note, or the records) follows. Each entry is one line — the
+ * dataset date and the oversized record's field paths come from upstream —
+ * ending in a newline, so joining on `\n` separates the blocks with a blank line.
  */
 export function searchLead(
   result: CanvasResultFields &
-    PageBudgetFields &
+    OversizedRecordFields &
     ProjectionFields & { meta: ResultMeta; results: unknown[] },
 ): string[] {
   return [
     resultHeader(result.meta, result.results.length),
     projectionLine(result),
-    pageBudgetLine(result),
+    oversizedRecordLine(result),
     canvasStagingLine(result.meta.total, result),
   ]
     .filter((line) => line !== null)

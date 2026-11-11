@@ -7,9 +7,10 @@
  * @module tests/mcp-server/tools/definitions/count-values.truncation.test
  */
 
+import { z } from '@cyanheads/mcp-ts-core';
 import { createFetchMock, runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetServerConfig } from '@/config/server-config.js';
 import { countValuesTool } from '@/mcp-server/tools/definitions/count-values.tool.js';
 import { initOpenFdaService } from '@/services/openfda/openfda-service.js';
 
@@ -539,5 +540,177 @@ describe('openfda_count_values — date-bucket counts', () => {
     const structured = result.structuredContent as unknown as CountStructured;
     expect(structured.results).toEqual([]);
     expect(structured.notice).toMatch(/nothing matched/i);
+  });
+});
+
+/*
+ * #92 — a limit above the 1000-term cap returns the cap's worth with a notice;
+ * the clamp itself is tabled in schema-utils.test.ts. The look-ahead runs on the
+ * applied size, and the clamp disclosure joins whichever notice the call raises.
+ */
+describe('openfda_count_values — limit above the cap', () => {
+  const CLAMP = 'limit=5000 is above the 1000-term cap for a count, so 1000 was applied.';
+
+  beforeAll(() => {
+    initOpenFdaService();
+  });
+
+  beforeEach(() => {
+    http.reset();
+    http.install();
+  });
+
+  afterEach(() => {
+    http.restore();
+  });
+
+  it('returns 1000 terms and names the clamp beside the 1000-term maximum, on both surfaces', async () => {
+    http.route({ match: () => true, respond: tally(1000) });
+
+    const result = await runToolContract(countValuesTool, {
+      endpoint: 'drug/event',
+      count: 'patient.reaction.reactionmeddrapt.exact',
+      limit: 5000,
+    });
+
+    expect(sentLimit()).toBe('1000');
+    const structured = result.structuredContent as unknown as CountStructured;
+    expect(structured.results).toHaveLength(1000);
+    expect(structured.notice).toMatch(/^The term list reached openFDA's 1000-term maximum/);
+    expect(structured.notice?.endsWith(` ${CLAMP}`)).toBe(true);
+    const text = textOfResult(result);
+    expect(tableRows(text)).toHaveLength(1000);
+    expect(text).toContain(CLAMP);
+    expect(text).toMatch(/1000-term maximum/);
+  });
+
+  it('names the clamp alone when the list it returns is complete', async () => {
+    http.route({ match: () => true, respond: tally(7) });
+
+    const result = await runToolContract(countValuesTool, {
+      endpoint: 'drug/event',
+      count: 'serious',
+      limit: 5000,
+    });
+
+    const structured = result.structuredContent as unknown as CountStructured;
+    expect(structured.results).toHaveLength(7);
+    expect(structured.truncated).toBeUndefined();
+    expect(structured.notice).toBe(CLAMP);
+    expect(textOfResult(result)).toContain(CLAMP);
+  });
+
+  it('joins the clamp to a truncated date ranking, with the cap applied', async () => {
+    http.route({ match: () => true, respond: dateBuckets(risingBuckets(1200)) });
+
+    const result = await runToolContract(countValuesTool, {
+      endpoint: 'device/510k',
+      count: 'decision_date',
+      limit: 5000,
+    });
+
+    const structured = result.structuredContent as unknown as CountStructured;
+    expect(structured.results).toHaveLength(1000);
+    expect(structured.truncated).toBe(true);
+    expect(structured.cap).toBe(1000);
+    expect(structured.notice).toMatch(/^Showing the 1000 dates with the most records of the 1200/);
+    expect(structured.notice?.endsWith(` ${CLAMP}`)).toBe(true);
+  });
+
+  it('joins the clamp to the sparse-row note when nothing else needs saying', async () => {
+    http.route({
+      match: () => true,
+      respond: dateBuckets([{ time: '20240103', count: 50 }, { time: '20240110' }]),
+    });
+
+    const result = await runToolContract(countValuesTool, {
+      endpoint: 'drug/enforcement',
+      count: 'report_date',
+      limit: 5000,
+    });
+
+    const structured = result.structuredContent as unknown as CountStructured;
+    expect(structured.notice).toBe(
+      `openFDA returned 1 count row with no value or no numeric count; it is left out of the tally. ${CLAMP}`,
+    );
+  });
+
+  it('joins the clamp to the zero-term notice', async () => {
+    http.route({ match: () => true, respond: NO_MATCHES });
+
+    const result = await runToolContract(countValuesTool, {
+      endpoint: 'drug/event',
+      count: 'serious',
+      search: 'patient.drug.medicinalproduct:"zzznotadrugzzz"',
+      limit: 5000,
+    });
+
+    const structured = result.structuredContent as unknown as CountStructured;
+    expect(structured.notice).toMatch(/nothing matched/i);
+    expect(structured.notice?.endsWith(` ${CLAMP}`)).toBe(true);
+  });
+
+  it('joins the clamp to the empty-tally notice for a field the matched records leave blank', async () => {
+    http.route({
+      match: () => true,
+      respond: () =>
+        Response.json(
+          { error: { code: 'NOT_FOUND', message: 'Nothing to count' } },
+          { status: 404 },
+        ),
+    });
+
+    const result = await runToolContract(countValuesTool, {
+      endpoint: 'drug/enforcement',
+      count: 'classification.exact',
+      search: '_missing_:classification',
+      limit: 5000,
+    });
+
+    const structured = result.structuredContent as unknown as CountStructured;
+    expect(structured.results).toEqual([]);
+    expect(structured.notice).toMatch(/carry no value for it, so the tally is empty/);
+    expect(structured.notice?.endsWith(` ${CLAMP}`)).toBe(true);
+  });
+
+  it('runs the look-ahead on the default when limit is omitted', async () => {
+    http.route({ match: () => true, respond: tally(1) });
+    await runToolContract(countValuesTool, { endpoint: 'drug/event', count: 'serious' });
+    expect(sentLimit()).toBe('101');
+  });
+
+  describe('with OPENFDA_CLAMP_LIMITS=false', () => {
+    beforeEach(() => {
+      vi.stubEnv('OPENFDA_CLAMP_LIMITS', 'false');
+      resetServerConfig();
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+      resetServerConfig();
+    });
+
+    it('rejects limit 1001 at the schema maximum before any request', async () => {
+      const result = await runToolContract(countValuesTool, {
+        endpoint: 'drug/event',
+        count: 'serious',
+        limit: 1001,
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({ error: { code: -32602 } });
+      expect(http.calls).toHaveLength(0);
+    });
+
+    it('advertises maximum 1000 on limit', () => {
+      const limit = z.toJSONSchema(countValuesTool.input).properties?.limit;
+      expect(limit).toMatchObject({ type: 'integer', minimum: 1, maximum: 1000 });
+    });
+  });
+
+  it('advertises no maximum on limit while clamping', () => {
+    const limit = z.toJSONSchema(countValuesTool.input).properties?.limit;
+    expect(limit).toMatchObject({ type: 'integer', minimum: 1, default: 100 });
+    expect(limit).not.toHaveProperty('maximum');
   });
 });

@@ -93,6 +93,44 @@ describe.each(PAGINATED_TOOLS.map(([tool, input]) => [tool.name, tool, input] as
   },
 );
 
+/**
+ * #92 — a limit above the cap at the ceiling is clamped, not refused, and the
+ * clamp notice says the next page lies past the ceiling rather than naming a
+ * `skip` that would fail. `openfda_get_drug_label`'s clamp is wired in its own suite.
+ */
+describe.each(
+  PAGINATED_TOOLS.filter(([tool]) => tool !== getDrugLabelTool).map(
+    ([tool, input]) => [tool.name, tool, input] as const,
+  ),
+)('%s — a clamped page at the pagination ceiling', (_name, tool, baseInput) => {
+  beforeEach(() => {
+    mockQuery.mockReset();
+    vi.mocked(getOpenFdaService).mockReturnValue({ query: mockQuery } as never);
+  });
+
+  it('pages skip=25000 at the cap and names the ceiling as the next page', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 30_000, skip: OPENFDA_MAX_SKIP, limit: 2, lastUpdated: '2026-07-01' },
+      results: [{ report_id: 'r-1' }, { report_id: 'r-2' }],
+    });
+
+    const result = await runToolContract(tool as AnyToolDefinition, {
+      ...baseInput,
+      skip: OPENFDA_MAX_SKIP,
+      limit: 5_000,
+    });
+    const { notice } = result.structuredContent as { notice?: string };
+
+    expect(result.isError).toBeFalsy();
+    expect(mockQuery.mock.calls[0]?.[1]).toMatchObject({ skip: OPENFDA_MAX_SKIP });
+    expect(mockQuery.mock.calls[0]?.[1]?.limit).toBeLessThan(5_000);
+    expect(notice).toContain('limit=5000 is above the');
+    expect(notice).toContain(
+      `The next page would start at skip=${OPENFDA_MAX_SKIP + 2}, past openFDA's ${OPENFDA_MAX_SKIP}-record pagination ceiling`,
+    );
+  });
+});
+
 describe('openfda_count_values — no skip input', () => {
   it('does not advertise a contract it cannot reach (#27)', () => {
     expect(Object.keys(countValuesTool.input.shape)).not.toContain('skip');

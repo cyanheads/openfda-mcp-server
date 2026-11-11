@@ -9,6 +9,7 @@ import {
   McpError,
   rateLimited,
   serviceUnavailable,
+  timeout,
   unauthorized,
   validationError,
 } from '@cyanheads/mcp-ts-core/errors';
@@ -18,7 +19,30 @@ import { type CountVerdict, countVerdict } from '@/mcp-server/tools/field-catalo
 import { getMirror, planMirrorLookup, runMirrorLookup } from './mirror/index.js';
 import type { OpenFdaMeta, OpenFdaQueryParams, OpenFdaResponse } from './types.js';
 
+/** Timeout for one attempt, capped at whatever the call's deadline leaves. */
 const REQUEST_TIMEOUT_MS = 15_000;
+
+/**
+ * Wall-clock budget for one `query()` call that names no deadline of its own —
+ * every attempt, every backoff, and the side requests it makes. Four 15 s
+ * attempts plus backoff run ~65–69 s, past the 60 s request timeout MCP SDK
+ * clients default to, so the caller would see a transport timeout instead of
+ * the classified error; 50 s leaves room for the tool's own work and the
+ * transport around it. A tool that chains requests passes one `deadlineAtMs`
+ * to all of them instead.
+ */
+export const OPENFDA_CALL_DEADLINE_MS = 50_000;
+
+/** Per-call options for {@link OpenFdaService.query}. */
+export interface OpenFdaQueryOptions {
+  /**
+   * Instant, in epoch milliseconds (the `Date.now()` scale), by which the call
+   * settles. Expiry fails it as `Timeout` with `data.reason:
+   * 'retry_deadline_exceeded'`; a cancel on the caller's signal stays a
+   * cancellation. Defaults to {@link OPENFDA_CALL_DEADLINE_MS} after the call starts.
+   */
+  deadlineAtMs?: number;
+}
 
 /**
  * Retry budget for a side request issued from inside the primary request's retry
@@ -26,7 +50,8 @@ const REQUEST_TIMEOUT_MS = 15_000;
  * attempt: the recovery is best-effort, so a retry only parks a backoff sleep
  * (≥750 ms at the 1 s base) on a call that would otherwise return at once; a
  * failed confirm propagates into the primary loop, which already retries the
- * whole exchange, so retrying it in place would multiply that budget.
+ * whole exchange, so retrying it in place would multiply that budget. The side
+ * request shares the primary call's deadline.
  */
 const SIDE_REQUEST_RETRY = { maxRetries: 0 } as const satisfies RetryOptions;
 
@@ -72,6 +97,9 @@ const OPENFDA_QUERY_ERROR_5XX =
  */
 const OPENFDA_NOTHING_TO_COUNT = /nothing to count/i;
 
+/** The title of an HTML error page; the captured body is a few hundred bytes at most. */
+const HTML_TITLE = /<title[^>]*>([^<]*)<\/title>/i;
+
 /**
  * openFDA's marker for aggregating an analyzed text field: Elasticsearch refuses
  * to build fielddata for it and answers HTTP 5xx with
@@ -113,15 +141,17 @@ export class OpenFdaService {
    * Execute a query against any openFDA endpoint, local mirror first when one is
    * enabled and can reproduce the query exactly (see `mirror/query.ts`), live
    * otherwise. With the mirror off — the default — this is the live path and
-   * nothing else.
+   * nothing else. The live path settles by `options.deadlineAtMs`.
    */
   async query<T = Record<string, unknown>>(
     endpoint: string,
     params: OpenFdaQueryParams,
     ctx: Context,
+    options?: OpenFdaQueryOptions,
   ): Promise<OpenFdaResponse<T>> {
+    const deadlineAtMs = options?.deadlineAtMs ?? Date.now() + OPENFDA_CALL_DEADLINE_MS;
     const mirrored = await this.queryMirror<T>(endpoint, params, ctx);
-    return mirrored ?? (await this.queryLive<T>(endpoint, params, ctx));
+    return mirrored ?? (await this.queryLive<T>(endpoint, params, ctx, deadlineAtMs));
   }
 
   /**
@@ -186,16 +216,33 @@ export class OpenFdaService {
    * non-retryable error (`query_error`) stops the retry loop while a genuine
    * `upstream_error` / `rate_limited` is retried. Returns an empty result set for
    * 404 (valid query, zero matches) — except on a count expression that does not
-   * count, which is a fixable count expression, not an empty tally. `retry` overrides the retry budget; only side requests pass it.
+   * count, which is a fixable count expression, not an empty tally.
+   *
+   * `deadlineAtMs` bounds the whole ladder: `withRetry`'s `deadlineMs` fails a
+   * backoff that would outlast it and gives every expiry one shape, and each
+   * attempt's own timeout is capped at the time left, so the in-flight request
+   * is cut at the deadline too. Side requests inherit the same instant. A call
+   * that starts with no time left sends nothing: a request given a 0 ms timeout
+   * still reaches openFDA before the timeout cuts it. `retry` overrides the retry
+   * budget; only side requests pass it.
    */
   private async queryLive<T>(
     endpoint: string,
     params: OpenFdaQueryParams,
     ctx: Context,
+    deadlineAtMs: number,
     retry?: Pick<RetryOptions, 'maxRetries'>,
   ): Promise<OpenFdaResponse<T>> {
+    // A cancelled caller keeps its cancellation; the request path below reports it.
+    if (!ctx.signal?.aborted && Date.now() >= deadlineAtMs) {
+      throw timeout(`openFDA:${endpoint} reached its deadline before the request was sent.`, {
+        reason: 'retry_deadline_exceeded',
+        endpoint,
+      });
+    }
     return await withRetry(
       async () => {
+        const remainingMs = Math.max(0, deadlineAtMs - Date.now());
         const url = this.buildUrl(endpoint, params);
         ctx.log.debug('Querying openFDA', { endpoint, params });
 
@@ -209,14 +256,16 @@ export class OpenFdaService {
           // drops that to a debug log so a handled empty result stops reading as
           // an operational failure. The thrown status-mapped McpError is unchanged,
           // so classification below is unaffected.
-          const response = await fetchWithTimeout(url, REQUEST_TIMEOUT_MS, requestContext, {
-            signal: ctx.signal,
-            expectedStatuses: [404],
-          });
+          const response = await fetchWithTimeout(
+            url,
+            Math.min(REQUEST_TIMEOUT_MS, remainingMs),
+            requestContext,
+            { signal: ctx.signal, expectedStatuses: [404] },
+          );
           const data = (await response.json()) as Record<string, unknown>;
           return this.normalizeResponse<T>(data, endpoint);
         } catch (error) {
-          return await this.classifyError<T>(error, endpoint, params, ctx);
+          return await this.classifyError<T>(error, endpoint, params, ctx, deadlineAtMs);
         }
       },
       {
@@ -224,6 +273,7 @@ export class OpenFdaService {
         context: ctx,
         baseDelayMs: 1_000,
         signal: ctx.signal,
+        deadlineMs: Math.max(0, deadlineAtMs - Date.now()),
         ...retry,
       },
     );
@@ -285,10 +335,11 @@ export class OpenFdaService {
     endpoint: string,
     params: OpenFdaQueryParams,
     ctx: Context,
+    deadlineAtMs: number,
   ): Promise<OpenFdaResponse<T>> {
     if (!(error instanceof McpError)) throw error;
 
-    const data = error.data as { status?: number; body?: string } | undefined;
+    const data = error.data as { status?: number; body?: string; retryAfter?: string } | undefined;
     // No HTTP status → timeout / abort / network error from fetchWithTimeout; it is
     // already classified (ServiceUnavailable / Timeout — retryable). Let it bubble.
     if (data?.status === undefined) throw error;
@@ -310,10 +361,17 @@ export class OpenFdaService {
         // Only a count query can produce this marker; keyed on `params.count` so
         // the error can always name the expression it is telling the caller to fix.
         if (OPENFDA_NOTHING_TO_COUNT.test(body)) {
-          return await this.resolveNothingToCount<T>(endpoint, params, params.count, verdict, ctx);
+          return await this.resolveNothingToCount<T>(
+            endpoint,
+            params,
+            params.count,
+            verdict,
+            ctx,
+            deadlineAtMs,
+          );
         }
       } else if ((params.skip ?? 0) > 0) {
-        return await this.resolvePastEnd<T>(endpoint, params, ctx);
+        return await this.resolvePastEnd<T>(endpoint, params, ctx, deadlineAtMs);
       }
       return this.emptyResult<T>(endpoint, params);
     }
@@ -323,7 +381,12 @@ export class OpenFdaService {
         this.apiKey
           ? 'openFDA rate limit exceeded (240 req/min or 120K/day with key). Retry after a brief wait.'
           : 'openFDA rate limit exceeded (240 req/min or 1K/day without key). Configure OPENFDA_API_KEY to increase to 120K/day.',
-        { reason: 'rate_limited', endpoint },
+        // `withRetry` waits out a `retryAfter` it can afford and fails fast on one it cannot.
+        {
+          reason: 'rate_limited',
+          endpoint,
+          ...(data.retryAfter !== undefined && { retryAfter: data.retryAfter }),
+        },
       );
     }
 
@@ -381,8 +444,15 @@ export class OpenFdaService {
     }
 
     // Unexpected HTTP status (e.g. 418) — fetchWithTimeout already produced a typed
-    // McpError; propagate it unchanged rather than inventing a classification.
-    throw error;
+    // McpError; keep its code and data rather than inventing a classification. The
+    // captured body stays off the client envelope, so openFDA's own error text rides
+    // in the message, as it does on every classified branch above.
+    throw new McpError(
+      error.code,
+      `openFDA returned HTTP ${status}${body ? `: ${message}` : ''}`,
+      error.data,
+      { cause: error },
+    );
   }
 
   /**
@@ -427,10 +497,11 @@ export class OpenFdaService {
     count: string,
     verdict: Extract<CountVerdict, { kind: 'countable' | 'uncataloged' }>,
     ctx: Context,
+    deadlineAtMs: number,
   ): Promise<OpenFdaResponse<T>> {
     if (!params.search) throw this.notAggregatableError(endpoint, count);
     if (verdict.kind === 'uncataloged') {
-      await this.queryLive(endpoint, { count, limit: 1 }, ctx, SIDE_REQUEST_RETRY);
+      await this.queryLive(endpoint, { count, limit: 1 }, ctx, deadlineAtMs, SIDE_REQUEST_RETRY);
     }
     return this.emptyResult<T>(endpoint, params, { nothingToCount: true });
   }
@@ -451,6 +522,7 @@ export class OpenFdaService {
     endpoint: string,
     params: OpenFdaQueryParams,
     ctx: Context,
+    deadlineAtMs: number,
   ): Promise<OpenFdaResponse<T>> {
     try {
       const { total } = (
@@ -458,6 +530,7 @@ export class OpenFdaService {
           endpoint,
           { search: params.search, limit: 0, skip: 0 },
           ctx,
+          deadlineAtMs,
           SIDE_REQUEST_RETRY,
         )
       ).meta;
@@ -557,7 +630,8 @@ export class OpenFdaService {
    * Best-effort human-readable message from an openFDA error body. Prefers the
    * specific `error.details` (e.g. the parser location or the "use a keyword
    * field" hint) then `error.message`, falling back to the raw (possibly
-   * truncated) body or the bare HTTP status.
+   * truncated) body or the bare HTTP status. An HTML page — a proxy's error page,
+   * not openFDA's — contributes only its title: its markup states no reason.
    */
   private upstreamMessage(body: string, status: number): string {
     if (!body) return `HTTP ${status}`;
@@ -568,6 +642,7 @@ export class OpenFdaService {
     } catch {
       // Truncated or non-JSON body — fall through to the raw text.
     }
+    if (/^\s*</.test(body)) return HTML_TITLE.exec(body)?.[1]?.trim() || `HTTP ${status}`;
     return body;
   }
 }

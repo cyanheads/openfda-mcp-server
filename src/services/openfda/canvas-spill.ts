@@ -3,10 +3,10 @@
  * opt-in: a search only reaches this module when the caller asked for it
  * (`stage: true`, or a `canvas_id` to accumulate onto). It returns the same
  * inline page the plain search path returns — `limit`/`skip` address the matched
- * set identically in both modes, and the page carries the same inline byte budget
- * (`page-budget.ts`), so a staged call and an unstaged one never disagree about
- * what a window holds — and, alongside it, registers a bounded drain of
- * the matched set as a canvas table the agent inspects with
+ * set identically in both modes, and the page carries the same oversized-record
+ * disclosure (`page-budget.ts`), so a staged call and an unstaged one never
+ * disagree about what a window holds — and, alongside it, registers a bounded
+ * drain of the matched set as a canvas table the agent inspects with
  * openfda_dataframe_describe and queries with openfda_dataframe_query. The
  * drain is capped by a serialized-byte budget as well as openFDA's 25,000-row
  * `skip` ceiling, so a staged call on a large-record endpoint cannot run for
@@ -21,10 +21,8 @@ import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import {
-  appliedLimit,
-  boundPageToBudget,
-  type PageBudgetFields,
-  pageBudgetFields,
+  type OversizedRecordFields,
+  oversizedRecordFields,
 } from '@/services/openfda/page-budget.js';
 import {
   type ProjectionFields,
@@ -42,13 +40,23 @@ const PROBE_ROWS = 100;
 /**
  * Serialized-JSON budget for one staged drain. Record size varies by three
  * orders of magnitude across openFDA endpoints (a shortage row is ~1 KB, a
- * `drug/event` report ~65 KB), so a flat row cap either starves the small
- * endpoints or stalls the large ones — the drain measures the probe page and
- * derives its own row cap from this budget.
+ * `drug/event` report ~30 KB on average and 11–62 KB by search, 2026-11-10), so
+ * a flat row cap either starves the small endpoints or stalls the large ones —
+ * the drain measures the probe page and derives its own row cap from this budget.
  */
 export const STAGE_MAX_BYTES = 16_000_000;
 /** Serialized-JSON budget for a single upstream page, bounding per-request latency. */
 const PAGE_MAX_BYTES = 4_000_000;
+
+/**
+ * What stopped a truncated drain: the row ceiling once the table holds that
+ * many rows, otherwise the byte budget's derived row cap.
+ */
+export function stagingStopCause(stagedRows: number): string {
+  return stagedRows >= OPENFDA_MAX_ROWS
+    ? `openFDA's ${OPENFDA_MAX_ROWS}-row pagination ceiling`
+    : 'its size budget';
+}
 
 /**
  * `stage` input field shared by every search tool that can stage to DataCanvas.
@@ -149,7 +157,7 @@ export const canvasOutputShape = {
     .number()
     .optional()
     .describe(
-      'Rows written to the canvas table. Compare with meta.total: a smaller value means staging stopped at its size budget and the table holds only the first staged_rows records.',
+      "Rows written to the canvas table. Compare with meta.total: a smaller value means staging stopped at its size budget or openFDA's 25000-row pagination ceiling, and the table holds only the first staged_rows records.",
     ),
   truncated: z
     .boolean()
@@ -165,19 +173,12 @@ export interface OpenFdaSpillResult {
   canvasId: string;
   /** Dataset `last_updated` date from upstream metadata. */
   lastUpdated: string;
-  /**
-   * Page size applied to the inline page — the caller's `limit`, lowered to the
-   * records kept only when the inline byte budget dropped some, exactly as the
-   * plain search path reports it.
-   */
+  /** Page size applied to the inline page, as the plain search path reports it. */
   limit: number;
-  /**
-   * Inline page — the caller's `limit`/`skip` window over the matched set,
-   * bounded by the same inline byte budget the non-staged path applies.
-   */
+  /** Inline page — the `limit`/`skip` window over the matched set, every record whole. */
   preview: Record<string, unknown>[];
-  /** Byte-budget disclosure for `preview` — empty when the whole window fit. */
-  previewBudget: PageBudgetFields;
+  /** Oversized-record disclosure for `preview` — empty unless a record on it is oversized. */
+  previewOversized: OversizedRecordFields;
   /** Projection disclosure for `preview` — empty or absent when the call passed no `fields`. */
   previewProjection?: ProjectionFields | undefined;
   /** Pagination offset applied to the inline page. */
@@ -208,10 +209,10 @@ function newTableName(): string {
  * `getCanvas()` is defined before invoking.
  *
  * The inline page is the same `limit`/`skip` window the plain search path
- * returns, under the same `fields` projection and inline byte budget; the drain
- * always starts at offset 0, stages whole records into the table's column
- * projection, and runs until its own (much larger) byte budget, the row ceiling,
- * or the matched set is exhausted.
+ * returns, under the same `fields` projection and oversized-record disclosure;
+ * the drain always starts at offset 0, stages whole records into the table's
+ * column projection, and runs until its byte budget, the row ceiling, or the
+ * matched set is exhausted.
  */
 export async function spillSearch(opts: {
   endpoint: string;
@@ -220,7 +221,7 @@ export async function spillSearch(opts: {
   canvasId?: string | undefined;
   schema: ColumnSchema[];
   ctx: Context;
-  /** Inline page size — the caller's `limit`. */
+  /** Inline page size — the page size the call resolved (`resolvePageSize`). */
   limit: number;
   /** Inline page offset into the matched set — the caller's `skip`. */
   skip: number;
@@ -257,24 +258,22 @@ export async function spillSearch(opts: {
         .results;
 
   /*
-   * The staged page carries the same projection and inline byte budget the plain
-   * path applies — a staged call and an unstaged one must agree about what a
-   * `limit`/`skip` window holds, and staging is not a reason to hand back an
-   * unholdable page. The drain below reads the unprojected probe rows.
+   * The staged page carries the same projection and oversized-record disclosure
+   * the plain path applies — a staged call and an unstaged one must agree about
+   * what a `limit`/`skip` window holds. The drain below reads the unprojected
+   * probe rows.
    */
-  const page = boundPageToBudget(projectRecords(requested, projection));
-  const preview = page.records;
-  const previewBudget = pageBudgetFields(page);
+  const preview = projectRecords(requested, projection);
+  const previewOversized = oversizedRecordFields(preview);
   const previewProjection = projectionFields(projection);
-  const appliedPageLimit = appliedLimit(page, limit);
 
   if (probe.results.length === 0) {
     return {
       canvasId: instance.canvasId,
       lastUpdated,
-      limit: appliedPageLimit,
+      limit,
       preview,
-      previewBudget,
+      previewOversized,
       previewProjection,
       skip,
       spilled: false,
@@ -325,9 +324,9 @@ export async function spillSearch(opts: {
   return {
     canvasId: instance.canvasId,
     lastUpdated,
-    limit: appliedPageLimit,
+    limit,
     preview,
-    previewBudget,
+    previewOversized,
     previewProjection,
     skip,
     spilled: true,
@@ -347,7 +346,7 @@ export function stagingNotice(spill: OpenFdaSpillResult): string {
     return `Nothing was staged on canvas "${spill.canvasId}" — ${spill.total} records matched.`;
   }
   const cut = spill.truncated
-    ? ` Staging stopped at its size budget, so the table holds the first ${spill.stagedRows} records — narrow the query (filters, date range) for a complete set.${AGGREGATE_ROUTE}`
+    ? ` Staging stopped at ${stagingStopCause(spill.stagedRows)}, so the table holds the first ${spill.stagedRows} records — narrow the query (filters, date range) for a complete set.${AGGREGATE_ROUTE}`
     : '';
   return `Staged ${spill.stagedRows} of ${spill.total} matched records on canvas table "${spill.tableName}" (canvas_id "${spill.canvasId}"). Call openfda_dataframe_describe for the column names, then openfda_dataframe_query to run SQL over the staged set.${cut}`;
 }
@@ -366,7 +365,7 @@ export function canvasResult(spill: OpenFdaSpillResult) {
       lastUpdated: spill.lastUpdated,
     },
     results: spill.preview,
-    ...spill.previewBudget,
+    ...spill.previewOversized,
     ...spill.previewProjection,
     canvas_id: spill.canvasId,
     spilled: spill.spilled,

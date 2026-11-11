@@ -1,19 +1,35 @@
 /**
  * @fileoverview Tool definition for searching openFDA adverse event reports across
  * drugs, food, and devices. `drug/event` is the largest-record endpoint openFDA
- * serves, so the inline page is bounded by a serialized-byte budget and discloses
- * any records it withheld along with the routes to them.
+ * serves, so `limit`'s default and cap follow the category, and a page holding a
+ * report over 24,000 bytes names its largest fields. A browse with neither
+ * `search` nor `sort` leads with the category's newest reports.
  * @module mcp-server/tools/definitions/search-adverse-events
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { CanvasIdSchema, type ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { sortOrNewest } from '@/mcp-server/tools/default-sort.js';
 import {
   ADMINISTRATION_ROUTES,
+  type CodeLabelSpec,
   codeLabel,
+  DECHALLENGE_OUTCOMES,
+  DOSAGE_INTERVAL_UNITS,
+  DOSE_UNITS,
+  DRUG_ACTIONS,
+  EXPEDITED_REPORT_FLAGS,
+  ONSET_AGE_UNITS,
   PATIENT_AGE_GROUPS,
   REACTION_OUTCOMES,
+  RECEIVER_TYPES,
+  RECHALLENGE_OUTCOMES,
+  REPORT_TYPES,
+  REPORTER_QUALIFICATIONS,
+  SENDER_TYPES,
+  TREATMENT_DURATION_UNITS,
+  withCodeLabels,
 } from '@/mcp-server/tools/drug-event-codes.js';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
@@ -23,6 +39,7 @@ import {
   formatRemainingFields,
   lineContent,
   projectedRecordLines,
+  renderValue,
   searchLead,
   singleLine,
 } from '@/mcp-server/tools/format-utils.js';
@@ -31,8 +48,13 @@ import {
   assertSkipWithinCeiling,
   fieldSelection,
   fieldsDescription,
+  limitAboveCapError,
+  META_LIMIT_DESCRIPTION,
   malformedSearchError,
+  pageLimitBy,
+  pageSizeNotice,
   phrasePlusHint,
+  resolvePageSize,
   SEARCH_SYNTAX_NOTE,
   SKIP_DESCRIPTION,
   searchExpression,
@@ -53,11 +75,10 @@ import {
 } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import {
-  boundedPage,
-  META_LIMIT_DESCRIPTION,
-  PAGE_BUDGET_NOTE,
-  pageBudgetNotice,
-  pageBudgetOutputShape,
+  inlinePage,
+  OVERSIZED_RECORD_BYTES,
+  oversizedRecordNotice,
+  oversizedRecordOutputShape,
 } from '@/services/openfda/page-budget.js';
 import {
   projectionNotice,
@@ -73,13 +94,110 @@ import {
  */
 const IDENTITY_KEYS = ['safetyreportid', 'report_number', 'mdr_report_key'] as const;
 
+type Category = 'drug' | 'food' | 'device';
+
+/**
+ * The sort a browse with neither `search` nor `sort` sends: the category's
+ * received date, newest first. Reports sharing a date page in a stable order on
+ * the date alone, so no tie-breaker is added.
+ */
+const NEWEST_FIRST: Record<Category, string> = {
+  drug: 'receivedate:desc',
+  food: 'date_created:desc',
+  device: 'date_received:desc',
+};
+
+/**
+ * The product-name field an empty result points each category at. No
+ * adverse-event record carries a top-level `openfda` block: drug reports nest
+ * it under `patient.drug`, device reports under `device`, food reports have none.
+ */
+const PRODUCT_FIELD_HINT: Record<Category, string> = {
+  drug: 'patient.drug.medicinalproduct (the name as reported) or patient.drug.openfda.brand_name',
+  food: 'products.name_brand',
+  device: 'device.brand_name',
+};
+
+/**
+ * The coded drug-report fields `content[]` renders as `label (code)`, per record
+ * level. The drug's route and the reaction outcome render on their list items.
+ */
+const DRUG_CODES: CodeLabelSpec = {
+  actiondrug: DRUG_ACTIONS,
+  drugadditional: DECHALLENGE_OUTCOMES,
+  drugrecurreadministration: RECHALLENGE_OUTCOMES,
+  drugtreatmentdurationunit: TREATMENT_DURATION_UNITS,
+  drugintervaldosagedefinition: DOSAGE_INTERVAL_UNITS,
+  drugstructuredosageunit: DOSE_UNITS,
+  drugcumulativedosageunit: DOSE_UNITS,
+};
+const PATIENT_CODES: CodeLabelSpec = {
+  patientagegroup: PATIENT_AGE_GROUPS,
+  patientonsetageunit: ONSET_AGE_UNITS,
+};
+const REPORT_CODES: CodeLabelSpec = {
+  reporttype: REPORT_TYPES,
+  fulfillexpeditecriteria: EXPEDITED_REPORT_FLAGS,
+  primarysource: { qualification: REPORTER_QUALIFICATIONS },
+  sender: { sendertype: SENDER_TYPES },
+  receiver: { receivertype: RECEIVER_TYPES },
+};
+
+/** Reaction fields its list item renders; any other continues the item. */
+const REACTION_ITEM_FIELDS = new Set([
+  'reactionmeddrapt',
+  'reactionmeddraversionpt',
+  'reactionoutcome',
+]);
+
+/**
+ * A drug report's reactions, one list item each: the term, its MedDRA version
+ * when the reactions do not all share one, and its outcome (`Death — fatal (5)`).
+ * A version every reaction shares heads the list once. The list ends with a
+ * blank line so the block after it stays outside its last item.
+ */
+function reactionLines(reactions: Record<string, unknown>[]): string[] {
+  if (reactions.length === 0) return [];
+  const versions = new Set(reactions.map((rx) => renderValue(rx.reactionmeddraversionpt)));
+  const shared = versions.size === 1 ? ([...versions][0] ?? null) : null;
+  const lines = [singleLine(`**Reactions${shared ? ` (MedDRA ${shared})` : ''}:**`)];
+  for (const rx of reactions) {
+    const version = shared ? null : renderValue(rx.reactionmeddraversionpt);
+    const outcome = renderValue(codeLabel(REACTION_OUTCOMES, rx.reactionoutcome));
+    const term = renderValue(rx.reactionmeddrapt) ?? 'Unknown';
+    lines.push(
+      `- ${lineContent(`${term}${version ? ` (MedDRA ${version})` : ''}${outcome ? ` — ${outcome}` : ''}`)}`,
+    );
+    lines.push(...formatRemainingFields(rx, REACTION_ITEM_FIELDS));
+  }
+  lines.push('');
+  return lines;
+}
+
+/**
+ * A drug report's remaining patient fields, coded ones labelled, with the onset
+ * age and its unit on one line (`3 month (802)`); a unit with no age keeps a
+ * line of its own.
+ */
+function patientLines(patient: Record<string, unknown>): string[] {
+  const labelled = withCodeLabels(patient, PATIENT_CODES);
+  const rendered = new Set(['reaction', 'drug']);
+  const age = renderValue(patient.patientonsetage);
+  if (age !== null) {
+    const unit = renderValue(labelled.patientonsetageunit);
+    labelled.patientonsetage = unit === null ? age : `${age} ${unit}`;
+    rendered.add('patientonsetageunit');
+  }
+  return formatRemainingFields(labelled, rendered);
+}
+
 /**
  * Canvas table projections per category — each call stages one category, so the
  * schema is selected by `input.category`. Scalars are VARCHAR (openFDA returns
  * most values as strings; CAST in SQL for math); nested objects/arrays are JSON
  * columns. All nullable — openFDA records are sparse.
  */
-const ADVERSE_EVENT_SCHEMAS: Record<'drug' | 'food' | 'device', ColumnSchema[]> = {
+const ADVERSE_EVENT_SCHEMAS: Record<Category, ColumnSchema[]> = {
   drug: [
     { name: 'safetyreportid', type: 'VARCHAR', nullable: true },
     { name: 'receivedate', type: 'VARCHAR', nullable: true },
@@ -127,21 +245,22 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
     search: searchExpression()
       .optional()
       .describe(
-        `openFDA search query. Examples: patient.drug.medicinalproduct:"aspirin", patient.reaction.reactionmeddrapt:"nausea" AND serious:"1". Omit to browse recent. ${SEARCH_SYNTAX_NOTE}`,
+        `openFDA search query. Examples: patient.drug.medicinalproduct:"aspirin", patient.reaction.reactionmeddrapt:"nausea" AND serious:"1". Omit both search and sort to browse the newest reports first. ${SEARCH_SYNTAX_NOTE}`,
       ),
     sort: sortExpression()
       .optional()
       .describe(
-        'Sort expression — a field path optionally suffixed with :asc or :desc (any letter case; :ascending and :descending are also accepted, and every direction is sent as asc or desc); comma-separate for multi-field sort. Field paths take only letters, digits, underscores, and dots; any other character or direction is rejected before the request. Sortable date fields are category-specific: drug → receivedate:desc (or receiptdate), food → date_created:desc (or date_started), device → date_received:desc (or date_of_event). A field from another category (e.g. receivedate on food or device) causes a query error — use the field for this category.',
+        "Sort expression — a field path optionally suffixed with :asc or :desc (any letter case; :ascending and :descending are also accepted, and every direction is sent as asc or desc); comma-separate for multi-field sort. Field paths take only letters, digits, underscores, and dots; any other character or direction is rejected before the request. Sortable date fields are category-specific: drug → receivedate (or receiptdate), food → date_created (or date_started), device → date_received (or date_of_event). A field from another category (e.g. receivedate on food or device) causes a query error — use the field for this category. With search also omitted, the default is newest first: drug receivedate:desc, food date_created:desc, device date_received:desc. A search with no sort keeps openFDA's own order.",
       ),
-    limit: z
-      .number()
-      .min(1)
-      .max(1000)
-      .default(10)
-      .describe(
-        `Maximum number of records to return (1-1000, default 10). ${PAGE_BUDGET_NOTE} Drug reports are by far the largest — a single drug/event report averages tens of kilobytes where a food/event report is a few hundred bytes.`,
-      ),
+    limit: pageLimitBy(
+      'category',
+      [
+        ['drug', 'drug/event'],
+        ['food', 'food/event'],
+        ['device', 'device/event'],
+      ],
+      'Records per page.',
+    ),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     fields: fieldSelection()
       .optional()
@@ -167,7 +286,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       .describe(
         'Adverse event records — fields vary by category (drug: patient/reactions/drugs, device: device details/event type, food: products/outcomes)',
       ),
-    ...pageBudgetOutputShape,
+    ...oversizedRecordOutputShape,
     ...projectionOutputShape,
     ...canvasOutputShape,
   }),
@@ -182,11 +301,12 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       .string()
       .optional()
       .describe(
-        'Canvas staging disclosure when the call staged, the fields projection and any requested path no record carries, the byte-budget disclosure when the inline page was bounded or one record exceeds it (with the routes to the withheld records and the largest fields of the oversized record), and guidance when results are empty or paging overshot — how to broaden filters or adjust the query.',
+        `Canvas staging disclosure when the call staged, the limit clamp when limit exceeded the category's cap (requested value, cap, next skip), the fields projection and any requested path no record carries, the size and largest fields when a report on the page exceeds ${OVERSIZED_RECORD_BYTES} bytes, and guidance when results are empty or paging overshot — how to broaden filters or adjust the query.`,
       ),
   },
 
   errors: [
+    limitAboveCapError,
     canvasDisabledError,
     canvasNotFoundError,
     canvasCapacityExhaustedError,
@@ -230,12 +350,14 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
     assertSkipWithinCeiling(input.skip, ctx);
     assertSearchDelimitersBalanced(input.search, ctx);
 
-    const endpoint = `${input.category}/event`;
+    const endpoint = `${input.category}/event` as const;
+    const size = resolvePageSize(input.limit, endpoint, ctx);
+    const sort = sortOrNewest(input, NEWEST_FIRST[input.category]);
     const emptyNotice = (skip: number, total: number, totalUnverified?: boolean) =>
       emptyResultMessage(
         skip,
         total,
-        `No adverse event reports matched${input.search ? ` search: ${codeLiteral(input.search)}` : ''} in ${endpoint}. Try broadening filters or checking field names (use openfda.brand_name for product searches). ${formatFieldHint(endpoint)}`,
+        `No adverse event reports matched${input.search ? ` search: ${codeLiteral(input.search)}` : ''} in ${endpoint}. Try broadening filters or checking field names (for product searches use ${PRODUCT_FIELD_HINT[input.category]}). ${formatFieldHint(endpoint)}`,
         totalUnverified,
       );
 
@@ -253,10 +375,10 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       const spill = await spillSearch({
         endpoint,
         search: input.search,
-        sort: input.sort,
+        sort,
         canvasId: input.canvas_id,
         schema: ADVERSE_EVENT_SCHEMAS[input.category],
-        limit: input.limit,
+        limit: size.limit,
         skip: input.skip,
         projection,
         ctx,
@@ -268,8 +390,9 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
         [
           spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
           phrasePlusHint(input.search, spill.total),
+          pageSizeNotice(size, staged),
           projectionNotice(staged),
-          pageBudgetNotice(staged),
+          oversizedRecordNotice(staged),
           stagingNotice(spill),
         ]
           .filter(Boolean)
@@ -283,20 +406,19 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       endpoint,
       {
         search: input.search,
-        sort: input.sort,
-        limit: input.limit,
+        sort,
+        limit: size.limit,
         skip: input.skip,
       },
       ctx,
     );
 
-    const page = boundedPage(response, projection);
+    const page = inlinePage(response, size.limit, projection);
 
     ctx.log.info('Adverse event search completed', {
       category: input.category,
       total: response.meta.total,
       returned: page.results.length,
-      pageOmitted: page.page_omitted,
     });
 
     ctx.enrich({ totalResults: response.meta.total });
@@ -306,8 +428,9 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
         ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
         : undefined,
       phrasePlusHint(input.search, response.meta.total),
+      pageSizeNotice(size, page),
       projectionNotice(page),
-      pageBudgetNotice(page),
+      oversizedRecordNotice(page),
     ].filter(Boolean);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
@@ -353,10 +476,6 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       // Drug adverse events
       else if (r.patient) {
         const patient = r.patient;
-        const reactions = (patient.reaction ?? [])
-          .map((rx: Record<string, unknown>) => rx.reactionmeddrapt)
-          .filter(Boolean)
-          .join(', ');
 
         lines.push(singleLine(`### Report ${r.safetyreportid ?? 'N/A'}`));
         lines.push(
@@ -370,15 +489,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
               `**Patient:** Sex ${patient.patientsex === '1' ? 'Male' : patient.patientsex === '2' ? 'Female' : patient.patientsex}`,
             ),
           );
-        if (reactions) lines.push(singleLine(`**Reactions:** ${reactions}`));
-        for (const rx of (patient.reaction ?? []) as Record<string, unknown>[]) {
-          lines.push(
-            ...formatRemainingFields(
-              { ...rx, reactionoutcome: codeLabel(REACTION_OUTCOMES, rx.reactionoutcome) },
-              new Set(['reactionmeddrapt']),
-            ),
-          );
-        }
+        lines.push(...reactionLines((patient.reaction ?? []) as Record<string, unknown>[]));
 
         // Drugs — expanded with indication and route
         const drugList = (patient.drug ?? []) as Record<string, unknown>[];
@@ -407,25 +518,22 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
             );
             lines.push(
               ...formatRemainingFields(
-                d,
+                withCodeLabels(d, DRUG_CODES),
                 new Set(['medicinalproduct', 'drugindication', 'drugadministrationroute']),
               ),
             );
           }
+          // A blank line ends the list, so the fields below stay outside the last drug's item.
+          lines.push('');
         }
 
-        // Remaining patient fields (age, age group, weight, death, sex code, etc.)
-        lines.push(
-          ...formatRemainingFields(
-            { ...patient, patientagegroup: codeLabel(PATIENT_AGE_GROUPS, patient.patientagegroup) },
-            new Set(['reaction', 'drug']),
-          ),
-        );
+        // Remaining patient fields (onset age, age group, weight, death, sex code, etc.)
+        lines.push(...patientLines(patient));
 
         // Remaining top-level fields (companynumb, sender, primarysource, the
         // serious code, FDA workflow timestamps, ...).
         const renderedTop = new Set(['patient', 'safetyreportid', 'receivedate']);
-        lines.push(...formatRemainingFields(r, renderedTop));
+        lines.push(...formatRemainingFields(withCodeLabels(r, REPORT_CODES), renderedTop));
       }
       // Food adverse events
       else if (r.products || r.reactions) {
@@ -458,6 +566,8 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
               ...formatRemainingFields(p, new Set(['name_brand', 'role', 'industry_code'])),
             );
           }
+          // A blank line ends the list, so the fields below stay outside the last product's item.
+          lines.push('');
         }
 
         // Remaining top-level fields (date_created, date_started, consumer, etc.)
@@ -469,7 +579,8 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
         lines.push(`### Record`);
         lines.push(`\`\`\`json\n${JSON.stringify(r, null, 2)}\n\`\`\``);
       }
-      lines.push('');
+      // A list that closed the record already ended on a blank line.
+      if (lines.at(-1) !== '') lines.push('');
     }
 
     return [{ type: 'text' as const, text: lines.join('\n') }];
