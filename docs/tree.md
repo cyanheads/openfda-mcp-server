@@ -1,6 +1,6 @@
 # openfda-mcp-server - Directory Structure
 
-Generated on: 2026-10-26 18:36:11
+Generated on: 2026-11-11 07:36:43
 
 ```text
 openfda-mcp-server/
@@ -25,6 +25,7 @@ openfda-mcp-server/
 │   └── settings.json
 ├── changelog/
 │   ├── 0.1.x/
+│   ├── 0.10.x/
 │   ├── 0.2.x/
 │   ├── 0.3.x/
 │   ├── 0.4.x/
@@ -173,7 +174,9 @@ openfda-mcp-server/
 │   │       │   ├── search-drug-shortages.tool.ts
 │   │       │   ├── search-recalls.tool.ts
 │   │       │   └── search-tobacco-reports.tool.ts
+│   │       ├── default-sort.ts
 │   │       ├── drug-event-codes.ts
+│   │       ├── drug-profile-sections.ts
 │   │       ├── field-catalog.ts
 │   │       ├── format-utils.ts
 │   │       ├── schema-utils.ts
@@ -239,6 +242,7 @@ openfda-mcp-server/
 │   │       │   ├── search-tobacco-reports.tool.test.ts
 │   │       │   ├── tools-edge-cases.test.ts
 │   │       │   └── wire-contract.test.ts
+│   │       ├── default-sort.test.ts
 │   │       ├── drug-event-codes.test.ts
 │   │       ├── field-catalog.test.ts
 │   │       ├── format-utils.test.ts

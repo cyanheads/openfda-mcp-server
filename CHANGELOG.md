@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.10.0](changelog/0.10.x/0.10.0.md) — 2026-11-10 · ⚠️ Breaking
+
+`limit` is now the page size, with per-endpoint defaults and caps in place of a 24,000-byte page cut; a bare search browse is newest first; `openfda_drug_profile` picks the drug's own application, label, and shortage. Breaking: `page_omitted` is removed, and `openfda_dataframe_query` refuses an alias or CTE named after a DuckDB system view.
+
 ## [0.9.1](changelog/0.9.x/0.9.1.md) — 2026-10-26
 
 Search and drug_profile accuracy fixes: top-level OR on the enforcement endpoints returns the full union, URL-style + separators read as spaces, date-field counts return real dates, and drug_profile keys recalls and approval on the typed ingredient and marks failed sections unknown.
