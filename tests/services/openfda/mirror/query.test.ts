@@ -76,6 +76,13 @@ describe('planMirrorLookup — routed live', () => {
       { search: 'recall_number:"D-321-2016"', sort: 'report_date:desc' },
     ],
     ['paged past the first page', 'drug/enforcement', { search: 'event_id:"72241"', skip: 10 }],
+    // A mirror a refresh cycle behind can hold one record where live holds two,
+    // and would answer a continuation with page one again.
+    [
+      'continuing a search_after walk',
+      'drug/enforcement',
+      { search: 'recall_number:"D-321-2016"', searchAfter: { value: '0=abc', position: 1 } },
+    ],
   ];
 
   it.each(cases)('%s', (_label, endpoint, params) => {
@@ -101,6 +108,20 @@ describe('runMirrorLookup', () => {
       lastUpdated: '2026-07-22',
     });
     expect(response?.results).toEqual([ENFORCEMENT_RECORD]);
+  });
+
+  it('answers with no search_after continuation, since its one record is the whole match', async () => {
+    await using fixture = await createMirrorFixture('drug/enforcement');
+    await fixture.seed([ENFORCEMENT_RECORD, SIBLING_RECORD]);
+
+    const plan = planMirrorLookup('drug/enforcement', {
+      search: 'recall_number:"D-321-2016"',
+      limit: 1,
+    });
+    const response = await runMirrorLookup(fixture.mirror, plan!);
+
+    expect(response?.results).toHaveLength(1);
+    expect(response).not.toHaveProperty('nextSearchAfter');
   });
 
   it('reports a zero-match lookup with the dataset’s own freshness stamp', async () => {

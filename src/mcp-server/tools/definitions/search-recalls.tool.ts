@@ -1,13 +1,14 @@
 /**
  * @fileoverview Tool for searching openFDA enforcement reports and recall actions.
  * Device enforcement and recall records run several kilobytes each, so `limit`'s
- * default and cap follow the category and endpoint, and a page holding a record
- * over 24,000 bytes names its largest fields.
+ * default and cap follow the category and endpoint, a default device page leaves
+ * its lot and registrant lists out of each record (`include` returns them), and a
+ * page holding a record over 24,000 bytes names its largest fields.
  * @module mcp-server/tools/definitions/search-recalls
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { CanvasIdSchema, type ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
+import type { ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { sortOrNewest } from '@/mcp-server/tools/default-sort.js';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
@@ -21,27 +22,45 @@ import {
   singleLine,
 } from '@/mcp-server/tools/format-utils.js';
 import {
-  assertSearchDelimitersBalanced,
+  type CursorQuery,
+  cursorEndNotice,
+  cursorInput,
+  cursorOutputShape,
+  invalidCursorError,
+  nextCursorField,
+  resolveCursor,
+} from '@/mcp-server/tools/pagination-cursor.js';
+import {
   assertSkipWithinCeiling,
   fieldSelection,
   fieldsDescription,
   limitAboveCapError,
-  META_LIMIT_DESCRIPTION,
-  malformedSearchError,
   pageLimitBy,
+  pageMetaOutput,
   pageSizeNotice,
-  phrasePlusHint,
+  paginationLimitReachedError,
+  rateLimitedError,
   resolvePageSize,
-  SEARCH_SYNTAX_NOTE,
   SKIP_DESCRIPTION,
-  searchExpression,
+  searchNoticeField,
+  sortDescription,
   sortExpression,
-  totalUnverifiedField,
+  upstreamError,
 } from '@/mcp-server/tools/schema-utils.js';
+import { fieldPathsNamed } from '@/mcp-server/tools/search-clauses.js';
+import {
+  assertSearchDelimitersBalanced,
+  malformedSearchError,
+  phrasePlusHint,
+  SEARCH_SYNTAX_NOTE,
+  searchExpression,
+} from '@/mcp-server/tools/search-expression.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
+  CANVAS_DISABLED_MESSAGE,
   canvasCapacityExhaustedError,
   canvasDisabledError,
+  canvasIdInput,
   canvasNotFoundError,
   canvasOutputShape,
   canvasResult,
@@ -49,18 +68,22 @@ import {
   spillSearch,
   stageInput,
   stagingNotice,
+  varcharColumns,
 } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import {
   inlinePage,
-  OVERSIZED_RECORD_BYTES,
   oversizedRecordNotice,
   oversizedRecordOutputShape,
 } from '@/services/openfda/page-budget.js';
 import {
+  includeDescription,
+  LEFT_OUT_NOTICE_TOPIC,
+  omissionNotice,
+  omissionOutputShape,
+  pageProjection,
   projectionNotice,
   projectionOutputShape,
-  recordProjection,
 } from '@/services/openfda/record-projection.js';
 
 /**
@@ -90,7 +113,7 @@ const NEWEST_FIRST_NOTE = `${NEWEST_ENFORCEMENT} (${NEWEST_DEVICE_RECALL} on the
  * so each endpoint shape stages against its own column set.
  */
 const ENFORCEMENT_CANVAS_SCHEMA: ColumnSchema[] = [
-  ...[
+  ...varcharColumns([
     'recall_number',
     'event_id',
     'status',
@@ -115,7 +138,7 @@ const ENFORCEMENT_CANVAS_SCHEMA: ColumnSchema[] = [
     'address_1',
     'address_2',
     'postal_code',
-  ].map((name): ColumnSchema => ({ name, type: 'VARCHAR', nullable: true })),
+  ]),
   { name: 'openfda', type: 'JSON', nullable: true },
 ];
 
@@ -127,7 +150,7 @@ const ENFORCEMENT_CANVAS_SCHEMA: ColumnSchema[] = [
  * NULL here. `k_numbers`/`pma_numbers` and the openfda block are JSON columns.
  */
 const DEVICE_RECALL_CANVAS_SCHEMA: ColumnSchema[] = [
-  ...[
+  ...varcharColumns([
     'cfres_id',
     'product_res_number',
     'res_event_number',
@@ -153,7 +176,7 @@ const DEVICE_RECALL_CANVAS_SCHEMA: ColumnSchema[] = [
     'root_cause_description',
     'action',
     'distribution_pattern',
-  ].map((name): ColumnSchema => ({ name, type: 'VARCHAR', nullable: true })),
+  ]),
   { name: 'k_numbers', type: 'JSON', nullable: true },
   { name: 'pma_numbers', type: 'JSON', nullable: true },
   { name: 'openfda', type: 'JSON', nullable: true },
@@ -164,7 +187,7 @@ const Category = z.enum(['drug', 'food', 'device']).describe('Product category')
 const Endpoint = z
   .enum(['enforcement', 'recall'])
   .default('enforcement')
-  .describe('Report type. Default enforcement. The recall endpoint is only available for devices.');
+  .describe('Report type: enforcement reports, or recall (devices only).');
 
 export const searchRecallsTool = tool('openfda_search_recalls', {
   description: `Search enforcement reports and recall actions across drugs, food, and devices.${STAGING_WORKFLOW}`,
@@ -176,12 +199,15 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
     search: searchExpression()
       .optional()
       .describe(
-        `openFDA search query. Examples: classification:"Class I" (also "Class II" or "Class III"), recalling_firm:"pfizer", reason_for_recall:"undeclared allergen". Omit to browse newest first, sorted by ${NEWEST_FIRST_NOTE}. ${SEARCH_SYNTAX_NOTE}`,
+        `openFDA search query, e.g. classification:"Class I" (or "Class II", "Class III"), recalling_firm:"pfizer", reason_for_recall:"undeclared allergen". Omit to browse newest first. ${SEARCH_SYNTAX_NOTE}`,
       ),
     sort: sortExpression()
       .optional()
       .describe(
-        `Sort expression — a field path optionally suffixed with :asc or :desc (any letter case; :ascending and :descending are also accepted, and every direction is sent as asc or desc); comma-separate for multi-field sort (e.g. report_date:desc,status.exact:asc). Omitted with no search, defaults to ${NEWEST_FIRST_NOTE}, newest first; omitted with a search, results come in openFDA's relevance order. Field paths take only letters, digits, underscores, and dots; any other character or direction is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.`,
+        sortDescription({
+          example: 'report_date:desc,status.exact:asc',
+          newest: NEWEST_FIRST_NOTE,
+        }),
       ),
     limit: pageLimitBy(
       'category and endpoint',
@@ -193,32 +219,33 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       'Records per page.',
     ),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
+    cursor: cursorInput,
     fields: fieldSelection()
       .optional()
       .describe(fieldsDescription(IDENTITY_KEYS, ['recalling_firm', 'reason_for_recall'])),
+    include: fieldSelection()
+      .optional()
+      .describe(
+        includeDescription([
+          ['device enforcement', 'device/enforcement'],
+          ['device recall', 'device/recall'],
+        ]),
+      ),
     stage: stageInput,
-    canvas_id: CanvasIdSchema.optional().describe(
-      'Canvas ID returned by a prior stage=true call to this tool or another openFDA search tool (openfda_search_* or openfda_lookup_ndc). Passing one stages this search onto that canvas (same effect as stage=true) so result sets accumulate for cross-table joins. Omit to stage onto a fresh canvas.',
-    ),
+    canvas_id: canvasIdInput,
   }),
 
   output: z.object({
-    meta: z
-      .object({
-        total: z.number().describe('Total matching records'),
-        skip: z.number().describe('Pagination offset'),
-        limit: z.number().describe(META_LIMIT_DESCRIPTION),
-        lastUpdated: z.string().describe('Dataset last updated date'),
-        totalUnverified: totalUnverifiedField,
-      })
-      .describe('Response metadata'),
+    meta: pageMetaOutput,
     results: z
       .array(z.record(z.string(), z.any()))
       .describe(
-        'Enforcement or recall records. Enforcement records (every category) carry recall_number, classification, status, voluntary_mandated, recalling_firm, product_description, reason_for_recall, distribution_pattern, report_date. Device recall records name identity product_res_number and status recall_status, add res_event_number and root_cause_description, share the firm, product, reason, and distribution fields, and carry no recall hazard classification.',
+        'Enforcement records (every category) carry recall_number, classification, status, voluntary_mandated, recalling_firm, product_description, reason_for_recall, distribution_pattern, report_date. Device recall records carry product_res_number, recall_status, res_event_number, root_cause_description, and the firm, product, reason, and distribution fields, but no hazard classification.',
       ),
+    ...cursorOutputShape,
     ...oversizedRecordOutputShape,
     ...projectionOutputShape,
+    ...omissionOutputShape,
     ...canvasOutputShape,
   }),
 
@@ -228,12 +255,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       .string()
       .optional()
       .describe('Search filter applied to the recall query, as submitted to openFDA'),
-    notice: z
-      .string()
-      .optional()
-      .describe(
-        `Canvas staging disclosure when the call staged, the limit clamp when limit exceeded the endpoint's cap (requested value, cap, next skip), the fields projection and any requested path no record carries, the size and largest fields when a record on the page exceeds ${OVERSIZED_RECORD_BYTES} bytes, and guidance when results are empty — how to broaden filters or correct field names.`,
-      ),
+    notice: searchNoticeField([LEFT_OUT_NOTICE_TOPIC]),
   },
 
   errors: [
@@ -247,23 +269,8 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
     canvasDisabledError,
     canvasNotFoundError,
     canvasCapacityExhaustedError,
-    {
-      reason: 'rate_limited',
-      code: JsonRpcErrorCode.RateLimited,
-      when: 'The openFDA daily or per-minute request limit is exceeded.',
-      retryable: true,
-      recovery:
-        'Wait briefly and retry, or configure OPENFDA_API_KEY to raise the daily limit to 120K requests.',
-      thrownBy: 'service',
-    },
-    {
-      reason: 'upstream_error',
-      code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'The openFDA API returned a 5xx server error.',
-      retryable: true,
-      recovery: 'Retry after a short wait; if the error persists check api.fda.gov status.',
-      thrownBy: 'service',
-    },
+    rateLimitedError,
+    upstreamError,
     malformedSearchError,
     {
       reason: 'query_error',
@@ -273,14 +280,8 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
         'Verify field names using the openFDA field reference and correct boolean operators (AND/OR, quoted phrases).',
       thrownBy: 'service',
     },
-    {
-      reason: 'pagination_limit_reached',
-      code: JsonRpcErrorCode.ValidationError,
-      when: 'skip exceeds the 25000 record pagination ceiling.',
-      recovery:
-        'Narrow the search query with additional filters or date ranges instead of increasing skip.',
-      thrownBy: 'service',
-    },
+    paginationLimitReachedError,
+    invalidCursorError,
   ],
 
   async handler(input, ctx) {
@@ -300,33 +301,42 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
     const resolvedEndpoint =
       endpointValue === 'recall' ? 'device/recall' : (`${input.category}/enforcement` as const);
     const size = resolvePageSize(input.limit, resolvedEndpoint, ctx);
-    const sort = sortOrNewest(
-      input,
-      endpointValue === 'recall' ? NEWEST_DEVICE_RECALL : NEWEST_ENFORCEMENT,
-    );
+    const query: CursorQuery = {
+      endpoint: resolvedEndpoint,
+      search: input.search,
+      sort: sortOrNewest(
+        input,
+        endpointValue === 'recall' ? NEWEST_DEVICE_RECALL : NEWEST_ENFORCEMENT,
+      ),
+    };
+    const searchAfter = resolveCursor(input, query, ctx);
+    // A device/recall record carries no `classification`; its class is `openfda.device_class`.
+    const classField = endpointValue === 'recall' ? 'openfda.device_class' : 'classification';
     const emptyNotice = (skip: number, total: number, totalUnverified?: boolean) =>
       emptyResultMessage(
         skip,
         total,
-        `No recall/enforcement records matched${input.search ? ` search: ${codeLiteral(input.search)}` : ''} in ${resolvedEndpoint}. Try broadening filters or check field names (e.g. classification, recalling_firm, reason_for_recall). ${formatFieldHint(resolvedEndpoint)}`,
+        `No recall/enforcement records matched${input.search ? ` search: ${codeLiteral(input.search)}` : ''} in ${resolvedEndpoint}. Try broadening filters or check field names (e.g. ${classField}, recalling_firm, reason_for_recall). ${formatFieldHint(resolvedEndpoint)}`,
         totalUnverified,
+        searchAfter !== undefined,
       );
 
-    const projection = recordProjection(input.fields, IDENTITY_KEYS);
+    const projection = pageProjection(resolvedEndpoint, IDENTITY_KEYS, {
+      fields: input.fields,
+      include: input.include,
+      searched: input.search ? fieldPathsNamed(input.search) : undefined,
+    });
     const canvas = getCanvas();
     const staging = input.stage || input.canvas_id !== undefined;
     if (staging && !canvas) {
-      throw ctx.fail(
-        'canvas_disabled',
-        'Staging requires DataCanvas. Set CANVAS_PROVIDER_TYPE=duckdb, or drop stage/canvas_id for the inline page.',
-      );
+      throw ctx.fail('canvas_disabled', CANVAS_DISABLED_MESSAGE);
     }
 
     if (canvas && staging) {
       const spill = await spillSearch({
-        endpoint: resolvedEndpoint,
-        search: input.search,
-        sort,
+        endpoint: query.endpoint,
+        search: query.search,
+        sort: query.sort,
         canvasId: input.canvas_id,
         schema:
           endpointValue === 'recall' ? DEVICE_RECALL_CANVAS_SCHEMA : ENFORCEMENT_CANVAS_SCHEMA,
@@ -344,6 +354,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
           phrasePlusHint(input.search, spill.total),
           pageSizeNotice(size, staged),
           projectionNotice(staged),
+          omissionNotice(staged),
           oversizedRecordNotice(staged),
           stagingNotice(spill),
         ]
@@ -355,17 +366,21 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
 
     const service = getOpenFdaService();
     const response = await service.query(
-      resolvedEndpoint,
+      query.endpoint,
       {
-        search: input.search,
-        sort,
+        search: query.search,
+        sort: query.sort,
         limit: size.limit,
         skip: input.skip,
+        searchAfter,
       },
       ctx,
     );
 
-    const page = inlinePage(response, size.limit, projection);
+    const page = {
+      ...inlinePage(response, size.limit, projection),
+      ...nextCursorField(response, query),
+    };
 
     ctx.log.info('Recall search completed', {
       category: input.category,
@@ -381,8 +396,9 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
         ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
         : undefined,
       phrasePlusHint(input.search, response.meta.total),
-      pageSizeNotice(size, page),
+      pageSizeNotice(size, page) ?? cursorEndNotice(page, searchAfter),
       projectionNotice(page),
+      omissionNotice(page),
       oversizedRecordNotice(page),
     ].filter(Boolean);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));

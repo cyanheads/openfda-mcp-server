@@ -1,8 +1,9 @@
 /**
  * @fileoverview Selection logic behind `openfda_drug_profile`: the Drugs@FDA ranking that
- * picks a drug's own application (`pickApplication`), the approval section built from it,
- * and the shortage summary over the newest records. Pure functions over openFDA records,
- * kept apart from the tool's fan-out and rendering.
+ * picks a drug's own application (`pickApplication`), the approval section built from it
+ * and its original submission (`originalApproval`), and the shortage summary over the
+ * newest records. Pure functions over openFDA records, kept apart from the tool's fan-out
+ * and rendering.
  * @module mcp-server/tools/drug-profile-sections
  */
 
@@ -34,6 +35,21 @@ export function strings(value: unknown): string[] {
 /** A record's openfda block — empty when openFDA harmonized nothing for it. */
 export function openfdaOf(rec: Record<string, unknown>): Record<string, unknown> {
   return (rec.openfda ?? {}) as Record<string, unknown>;
+}
+
+/**
+ * Whether openFDA flags a label or NDC record as its original packager's
+ * (`openfda.is_original_packager`). openFDA sets the flag only to true, so a
+ * harmonized record without it is a repackager's or relabeler's: false. Null
+ * when the record's openfda block is empty and the flag cannot be known. The one
+ * reading behind `openfda_drug_profile`'s `identity.is_original_packager` and
+ * `openfda_get_drug_label`'s `page_labels`.
+ */
+export function originalPackager(rec: Record<string, unknown>): boolean | null {
+  const openfda = openfdaOf(rec);
+  if (Object.keys(openfda).length === 0) return null;
+  const flag = openfda.is_original_packager;
+  return Array.isArray(flag) ? flag.includes(true) : flag === true;
 }
 
 /** Derive a human marketing/approval status from a Drugs@FDA application record. */
@@ -133,9 +149,9 @@ function productRank(
   ];
 }
 
-/** Digits of an application number, for the lowest-number tie-break; unnumbered sorts last. */
-function applicationOrdinal(applicationNumber: string): number {
-  const digits = applicationNumber.replace(/\D/g, '');
+/** Digits of an application or submission number, for tie-breaks; unnumbered sorts last. */
+function ordinal(number: string): number {
+  const digits = number.replace(/\D/g, '');
   return digits ? Number(digits) : Number.POSITIVE_INFINITY;
 }
 
@@ -163,12 +179,12 @@ export function pickApplication(
     const rank = (products.length > 0 ? products : [{}])
       .map((product) => productRank(product, number, input, key))
       .reduce((a, b) => (compareRanks(a, b) >= 0 ? a : b));
-    const ordinal = applicationOrdinal(number);
+    const appOrdinal = ordinal(number);
     const order = best === undefined ? 1 : compareRanks(rank, bestRank);
-    if (order > 0 || (order === 0 && ordinal < bestOrdinal)) {
+    if (order > 0 || (order === 0 && appOrdinal < bestOrdinal)) {
       best = app;
       bestRank = rank;
-      bestOrdinal = ordinal;
+      bestOrdinal = appOrdinal;
     }
   }
   return best;
@@ -176,10 +192,59 @@ export function pickApplication(
 
 export interface Approval {
   applicationNumber: string | null;
+  /** `submission_status_date` of the original approval, `YYYYMMDD` as stored. */
+  approvalDate: string | null;
   brandNames: string[];
   candidates: number;
   marketingStatus: string | null;
+  /** `review_priority` of the original approval, verbatim. */
+  reviewPriority: string | null;
   sponsor: string | null;
+  /** The original approval's class description, else its class code. */
+  submissionClass: string | null;
+}
+
+/** What an application's original approval contributes to its approval section. */
+type OriginalApproval = Pick<Approval, 'approvalDate' | 'reviewPriority' | 'submissionClass'>;
+
+/** Negative when `a` is the earlier original: by date (undated last), then by number. */
+function compareOriginals(a: Record<string, unknown>, b: Record<string, unknown>): number {
+  const dateA = first(a.submission_status_date);
+  const dateB = first(b.submission_status_date);
+  if (dateA !== dateB) {
+    if (dateA === null) return 1;
+    if (dateB === null) return -1;
+    return dateA < dateB ? -1 : 1;
+  }
+  return ordinal(first(a.submission_number) ?? '') - ordinal(first(b.submission_number) ?? '');
+}
+
+/**
+ * An application's original approval: among its `submissions[]` typed `ORIG` with
+ * status `AP`, the earliest `submission_status_date`, ties to the lowest
+ * `submission_number` — array order is not chronology. All three facts come from
+ * that one submission, and all are null when there is none: a tentative approval
+ * only, a record that starts at a supplement, or no `submissions`. A supplement's
+ * date is never read.
+ */
+export function originalApproval(app: Record<string, unknown>): OriginalApproval {
+  const submissions = Array.isArray(app.submissions)
+    ? (app.submissions as Record<string, unknown>[])
+    : [];
+  let original: Record<string, unknown> | undefined;
+  for (const submission of submissions) {
+    if (submission.submission_type !== 'ORIG' || submission.submission_status !== 'AP') continue;
+    if (original === undefined || compareOriginals(submission, original) < 0) original = submission;
+  }
+  if (original === undefined) {
+    return { approvalDate: null, reviewPriority: null, submissionClass: null };
+  }
+  return {
+    approvalDate: first(original.submission_status_date),
+    reviewPriority: first(original.review_priority),
+    submissionClass:
+      first(original.submission_class_code_description) ?? first(original.submission_class_code),
+  };
 }
 
 /** The approval section for a picked application, ranked among `candidates` matches. */
@@ -189,6 +254,7 @@ export function approvalOf(app: Record<string, unknown>, candidates: number): Ap
     applicationNumber: first(app.application_number),
     sponsor: first(app.sponsor_name),
     marketingStatus: deriveMarketingStatus(app),
+    ...originalApproval(app),
     brandNames: strings(products.map((product) => product.brand_name)),
     candidates,
   };

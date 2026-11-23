@@ -148,7 +148,7 @@ describe('openfda_search_adverse_events input schema', () => {
   });
 
   it('accepts all valid categories', () => {
-    for (const category of ['drug', 'food', 'device'] as const) {
+    for (const category of ['drug', 'food', 'device', 'cosmetic'] as const) {
       expect(() => searchAdverseEventsTool.input.parse({ category })).not.toThrow();
     }
   });
@@ -320,7 +320,7 @@ describe('openfda_lookup_ndc input schema', () => {
 describe('openfda_search_drug_approvals input schema', () => {
   it('accepts empty input (all optional)', () => {
     const input = searchDrugApprovalsTool.input.parse({});
-    expect(input.limit).toBe(25);
+    expect(input.limit).toBeUndefined();
     expect(input.skip).toBe(0);
     expect(input.search).toBeUndefined();
   });
@@ -490,8 +490,8 @@ describe('search-tool limit schema (#92)', () => {
   const SEARCH_TOOLS = [
     [searchAdverseEventsTool, { category: 'drug' }, undefined, 1000],
     [searchAnimalEventsTool, {}, 25, 450],
-    [searchDeviceClearancesTool, { pathway: '510k' }, undefined, 575],
-    [searchDrugApprovalsTool, {}, 25, 375],
+    [searchDeviceClearancesTool, { pathway: '510k' }, undefined, 600],
+    [searchDrugApprovalsTool, {}, undefined, 1000],
     [searchDrugShortagesTool, {}, 25, 1000],
     [searchRecallsTool, { category: 'drug' }, undefined, 1000],
     [searchTobaccoReportsTool, {}, 25, 1000],
@@ -1259,6 +1259,25 @@ describe('search reaches the staged path normalized (#75)', () => {
       expect(structured.effectiveQuery).toBe('classification:"Class I" AND status:"Ongoing"');
     },
   );
+
+  // #101 and #103: drug/enforcement 18,148 unquoted, 1 quoted; the tab is refused as written.
+  it('sends a hyphenated term quoted and whitespace as a space on every staged request', async () => {
+    matched = 150;
+    const result = await runToolContract(searchRecallsTool, {
+      category: 'drug',
+      search: 'recall_number:D-0123-2024\tAND status:"Ongoing"',
+      stage: true,
+    });
+
+    expect(result.isError).toBeFalsy();
+    const normalized = 'recall_number:"D-0123-2024" AND status:"Ongoing"';
+    const requests = http.calls.map((call) => new URL(call.request.url).searchParams);
+    expect(requests.map((params) => params.get('skip'))).toEqual(['0', '100']);
+    for (const params of requests) expect(params.get('search')).toBe(`(${normalized})`);
+    expect((result.structuredContent as { effectiveQuery?: string }).effectiveQuery).toBe(
+      normalized,
+    );
+  });
 
   it('adds the phrase-plus hint when a staged search matches nothing', async () => {
     matched = 0;

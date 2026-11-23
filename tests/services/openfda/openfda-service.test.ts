@@ -1,5 +1,5 @@
 import type { Context } from '@cyanheads/mcp-ts-core';
-import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError, serviceUnavailable } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -31,7 +31,13 @@ vi.mock('@cyanheads/mcp-ts-core/utils', async (importOriginal) => {
   };
 });
 
-import { OPENFDA_CALL_DEADLINE_MS, OpenFdaService } from '@/services/openfda/openfda-service.js';
+import { countVerdict } from '@/mcp-server/tools/field-catalog.js';
+import {
+  OPENFDA_CALL_DEADLINE_MS,
+  OpenFdaService,
+  searchAfterOfNextLink,
+} from '@/services/openfda/openfda-service.js';
+import { linearTiming } from '../../helpers/cpu-timing.js';
 
 describe('OpenFdaService', () => {
   let service: OpenFdaService;
@@ -51,15 +57,16 @@ describe('OpenFdaService', () => {
   });
 
   // `fetchWithTimeout` reads `.text()` + `.headers` on the error path while the
-  // service's success path reads `.json()`. Return a re-readable fake (not a real
-  // single-use Response) so one stub value can back tests that call query twice.
-  function mockResponse(status: number, body: unknown): Response {
+  // service's success path reads `.json()` and the `Link` header. Return a
+  // re-readable fake (not a real single-use Response) so one stub value can back
+  // tests that call query twice.
+  function mockResponse(status: number, body: unknown, headers?: Record<string, string>): Response {
     const text = typeof body === 'string' ? body : JSON.stringify(body);
     return {
       ok: status >= 200 && status < 300,
       status,
       statusText: '',
-      headers: new Headers(),
+      headers: new Headers(headers),
       text: () => Promise.resolve(text),
       json: () => Promise.resolve(typeof body === 'string' ? JSON.parse(body) : body),
     } as unknown as Response;
@@ -429,6 +436,44 @@ describe('OpenFdaService', () => {
       );
     });
 
+    // A search_after cursor reads past the ceiling too (#97), so the way past it
+    // is each tool's declared recovery, not this shared message.
+    it('states the skip ceiling as a fact, with no inline route past it', async () => {
+      mockFetch.mockResolvedValue(
+        mockResponse(400, {
+          error: { code: 'BAD_REQUEST', message: 'Skip value must 25000 or less.' },
+        }),
+      );
+
+      const err = (await service
+        .query('drug/event', { skip: 26000 }, ctx)
+        .catch((e: unknown) => e)) as McpError;
+
+      expect(err.message).toBe('Pagination limit reached: skip cannot exceed 25000.');
+      expect(err.data).toMatchObject({
+        reason: 'pagination_limit_reached',
+        endpoint: 'drug/event',
+      });
+      expect(err.data).not.toHaveProperty('recovery');
+    });
+
+    it('keeps a 400 that only echoes 25000 inside the query a query error', async () => {
+      mockFetch.mockResolvedValue(
+        mockResponse(400, {
+          error: {
+            code: 'BAD_REQUEST',
+            message: 'Search not supported: (patient.patientweight:25000;)',
+          },
+        }),
+      );
+
+      const err = (await service
+        .query('drug/event', { search: 'patient.patientweight:25000;' }, ctx)
+        .catch((e: unknown) => e)) as McpError;
+
+      expect(err.data).toMatchObject({ reason: 'query_error' });
+    });
+
     it('throws Unauthorized McpError on 401', async () => {
       mockFetch.mockResolvedValue(mockResponse(401, { error: { message: 'Unauthorized' } }));
 
@@ -508,6 +553,531 @@ describe('OpenFdaService', () => {
 
       const err = (await service.query('drug/event', {}, ctx).catch((e: unknown) => e)) as McpError;
       expect(err.message).toBe('openFDA upstream error: HTTP 502');
+    });
+  });
+
+  /*
+   * #103 — openFDA HTML-escapes the `error.message` it sends (`"` `&` `<` `>`
+   * `'` as `&quot;` `&amp;` `&lt;` `&gt;` `&#39;`), so the query it echoes there
+   * comes back mangled. `error.details` on a 5xx is sent unescaped.
+   */
+  describe('upstream message entities (#103)', () => {
+    const failure = async (status: number, body: unknown) => {
+      mockFetch.mockResolvedValue(mockResponse(status, body));
+      return (await service
+        .query('drug/ndc', { search: 'brand_name:x' }, ctx)
+        .catch((e: unknown) => e)) as McpError;
+    };
+    const QUERY_ERROR_TAIL =
+      'Check field names and query syntax — use AND/OR for boolean operators, quotes for exact match.';
+
+    it('decodes the five escapes in a 400 message, giving back the query as sent', async () => {
+      const err = await failure(400, {
+        error: {
+          code: 'BAD_REQUEST',
+          message:
+            'Search not supported: (brand_name:&quot;a &amp; b &lt; c &gt; d &#39; e&quot; ;)',
+        },
+      });
+
+      expect(err.data).toMatchObject({ reason: 'query_error' });
+      expect(err.message).toBe(
+        `openFDA query error: Search not supported: (brand_name:"a & b < c > d ' e" ;). ${QUERY_ERROR_TAIL}`,
+      );
+    });
+
+    // The caller's own `&amp;` comes back `&amp;amp;`: one pass restores it, a second would not.
+    it('decodes in one pass, so entity text in the query survives as written', async () => {
+      const err = await failure(400, {
+        error: {
+          code: 'BAD_REQUEST',
+          message: 'Search not supported: (brand_name:&quot;x &amp;amp; y &amp;#39; z&quot;)',
+        },
+      });
+
+      expect(err.message).toBe(
+        `openFDA query error: Search not supported: (brand_name:"x &amp; y &#39; z"). ${QUERY_ERROR_TAIL}`,
+      );
+    });
+
+    it('leaves a 5xx details string exactly as openFDA sent it', async () => {
+      const details =
+        '[parse_exception] parse_exception: Encountered " "-" "- "" at line 1, column 23. Was expecting &lt;x&gt; &amp; "y"';
+      const err = await failure(500, {
+        error: { code: 'SERVER_ERROR', message: 'Check your request and try again', details },
+      });
+
+      expect(err.data).toMatchObject({ reason: 'query_error' });
+      expect(err.message).toBe(`openFDA query error: ${details}. ${QUERY_ERROR_TAIL}`);
+    });
+
+    it('decodes the message of a 5xx that carries no details', async () => {
+      const err = await failure(503, {
+        error: { message: 'Index &quot;drugndc&quot; unavailable' },
+      });
+
+      expect(err.data).toMatchObject({ reason: 'upstream_error' });
+      expect(err.message).toBe('openFDA upstream error: Index "drugndc" unavailable');
+    });
+
+    it('decodes the message of an unexpected status', async () => {
+      const err = await failure(418, { error: { message: 'I&#39;m a teapot &amp; a kettle' } });
+
+      expect(err.message).toBe("openFDA returned HTTP 418: I'm a teapot & a kettle");
+    });
+
+    it('keeps a raw, non-JSON body as sent', async () => {
+      const err = await failure(503, 'upstream said &quot;no&quot;');
+
+      expect(err.message).toBe('openFDA upstream error: upstream said &quot;no&quot;');
+    });
+  });
+
+  /*
+   * An error body off openFDA's `{ error: { message, details } }` shape — a
+   * field of another type, a bare `error` string, JSON that is no object — is
+   * classified by its status as any other, and its message is the raw body.
+   */
+  describe('error bodies off the expected shape', () => {
+    const failure = async (status: number, body: string) => {
+      mockFetch.mockResolvedValue(mockResponse(status, body));
+      return (await service
+        .query('drug/ndc', { search: 'brand_name:x' }, ctx)
+        .catch((e: unknown) => e)) as McpError;
+    };
+    const TAIL =
+      'Check field names and query syntax — use AND/OR for boolean operators, quotes for exact match.';
+
+    const OFF_SHAPE: Array<[string, string]> = [
+      ['error.message an object', '{"error":{"code":"BAD_REQUEST","message":{"text":"x"}}}'],
+      ['error.message an array', '{"error":{"code":"BAD_REQUEST","message":["a","b"]}}'],
+      ['error.message a number', '{"error":{"code":"BAD_REQUEST","message":42}}'],
+      ['error.message null', '{"error":{"code":"BAD_REQUEST","message":null}}'],
+      [
+        'error.details an object beside a string message',
+        '{"error":{"message":"m","details":{"x":1}}}',
+      ],
+      ['error a string', '{"error":"Search not supported"}'],
+      ['a JSON string', '"Search not supported"'],
+      ['a JSON number', '42'],
+      ['JSON null', 'null'],
+      ['a JSON array', '[{"error":{"message":"x"}}]'],
+    ];
+
+    it.each(OFF_SHAPE)(
+      'a 400 with %s is a query_error carrying the raw body',
+      async (_label, body) => {
+        const err = await failure(400, body);
+
+        expect(err).toBeInstanceOf(McpError);
+        expect(err.data).toMatchObject({ reason: 'query_error' });
+        expect(err.message).toBe(`openFDA query error: ${body}. ${TAIL}`);
+      },
+    );
+
+    it.each(OFF_SHAPE)(
+      'a 500 with %s is an upstream_error carrying the raw body',
+      async (_label, body) => {
+        const err = await failure(500, body);
+
+        expect(err).toBeInstanceOf(McpError);
+        expect(err.data).toMatchObject({ reason: 'upstream_error' });
+        expect(err.message).toBe(`openFDA upstream error: ${body}`);
+      },
+    );
+
+    // A null field reads as absent, as it always has: the message still answers.
+    it('reads a null details as absent and keeps the message', async () => {
+      const err = await failure(
+        500,
+        '{"error":{"message":"Index &quot;x&quot; down","details":null}}',
+      );
+
+      expect(err.data).toMatchObject({ reason: 'upstream_error' });
+      expect(err.message).toBe('openFDA upstream error: Index "x" down');
+    });
+  });
+
+  /*
+   * #97 — a page read at skip 0 or by `search_after` carries a `rel="next"`
+   * link whose `search_after` value continues the walk, past skip 25,000 too.
+   * The service keeps only that parameter, sends it back beside `skip=0` as
+   * openFDA's own link does, and reports the walk position as `meta.skip`.
+   * The `Link` values below are openFDA's own (captured 2026-11-22, no key).
+   */
+  describe('search_after continuation (#97)', () => {
+    const SORTED_LINK =
+      '<https://api.fda.gov/food/event.json?search=%28date_created%3A%5B20201101%20TO%2020221231%5D%29&sort=date_created%3Adesc&limit=3&skip=0&search_after=0%3D1672358400000%3B1%3D21Av9aEBE00QUgYiPfaI>; rel="next"';
+    const UNSORTED_LINK =
+      '<https://api.fda.gov/drug/enforcement.json?search=%28openfda.generic_name%3A%22metformin%22%29&limit=20&skip=0&search_after=0%3D7bbc2fc0e663af3c01d8cf7358a0a12d561b01aefac1826d19a4d398c8d6ee05>; rel="next"';
+    const KEYWORD_LINK =
+      '<https://api.fda.gov/drug/enforcement.json?search=%28recalling_firm%3A%22johnson%22%29&sort=recalling_firm.exact%3Aasc&limit=2&skip=0&search_after=0%3DJohnson%2520%2526%2520Johnson%3B1%3D60348ca75bbe126c993c1ab5fa489343ac584b4578ad6b5b92ffe240a06b2131>; rel="next"';
+    /** openFDA's link from a page read at skip > 0: it pages by `skip`, with no `search_after`. */
+    const SKIP_LINK =
+      '<https://api.fda.gov/food/event.json?search=%28date_created%3A%5B20201101%20TO%2020221231%5D%29&sort=date_created%3Adesc&limit=3&skip=6>; rel="next"';
+    const KEYWORD_VALUE =
+      '0=Johnson%20%26%20Johnson;1=60348ca75bbe126c993c1ab5fa489343ac584b4578ad6b5b92ffe240a06b2131';
+    const NO_MATCHES = { error: { code: 'NOT_FOUND', message: 'No matches found!' } };
+    const page = (
+      results: unknown[],
+      meta: { skip: number; limit: number; total: number },
+      link?: string,
+    ) =>
+      mockResponse(
+        200,
+        { meta: { results: meta, last_updated: '2026-11-21' }, results },
+        link === undefined ? undefined : { link },
+      );
+    const sentQuery = (call: number) => new URL(mockFetch.mock.calls[call]![0]).searchParams;
+
+    describe('searchAfterOfNextLink', () => {
+      it.each<[string, string | null, string | undefined]>([
+        ['a sorted page', SORTED_LINK, '0=1672358400000;1=21Av9aEBE00QUgYiPfaI'],
+        [
+          'an unsorted page',
+          UNSORTED_LINK,
+          '0=7bbc2fc0e663af3c01d8cf7358a0a12d561b01aefac1826d19a4d398c8d6ee05',
+        ],
+        ['a keyword sort, its value percent-encoded inside', KEYWORD_LINK, KEYWORD_VALUE],
+        ['a skip-style link', SKIP_LINK, undefined],
+        ['no header', null, undefined],
+        ['an empty header', '', undefined],
+        ['an unquoted rel', '<https://h.example/x.json?search_after=0%3D1>; rel=next', '0=1'],
+        [
+          'a rel in another case',
+          '<https://h.example/x.json?search_after=0%3D1>;REL="Next"',
+          '0=1',
+        ],
+        [
+          'a rel list naming next',
+          '<https://h.example/x.json?search_after=0%3D1>; rel="prev next"',
+          '0=1',
+        ],
+        [
+          'rel after another parameter',
+          '<https://h.example/x.json?search_after=0%3D1>; title="a; b"; rel="next"',
+          '0=1',
+        ],
+        [
+          'a next link after a prev link',
+          '<https://h.example/x.json?search_after=0%3D0>; rel="prev", <https://h.example/x.json?search_after=0%3D2>; rel="next"',
+          '0=2',
+        ],
+        [
+          'only a prev link',
+          '<https://h.example/x.json?search_after=0%3D0>; rel="prev"',
+          undefined,
+        ],
+        ['a link with no rel', '<https://h.example/x.json?search_after=0%3D1>', undefined],
+        [
+          'a target with no angle brackets',
+          'https://h.example/x.json?search_after=0%3D1; rel="next"',
+          undefined,
+        ],
+        ['an unparseable target', '<http://[::1>; rel="next"', undefined],
+        ['a relative target', '</x.json?search_after=0%3D1>; rel="next"', undefined],
+        [
+          'an empty search_after',
+          '<https://h.example/x.json?skip=0&search_after=>; rel="next"',
+          undefined,
+        ],
+      ])('reads %s', (_label, header, expected) => {
+        expect(searchAfterOfNextLink(header)).toBe(expected);
+      });
+
+      it.each<[string, (n: number) => string]>([
+        ['repeated openers with no closer', (n) => `${'<'.repeat(n - 1)}\n`],
+        ['one unclosed opener before a long run', (n) => `<${'a'.repeat(n - 2)}\n`],
+        ['repeated empty link-values', (n) => `${'<>'.repeat(n / 2 - 1)}\n`],
+        ['one target before a long parameter run', (n) => `<x>; rel=${' '.repeat(n - 10)}\n`],
+        ['one target before many empty parameters', (n) => `<x>${';'.repeat(n - 4)}\n`],
+        ['one target before a long rel list', (n) => `<x>; rel="${'a '.repeat(n / 2 - 6)}\n`],
+        [
+          'one next link with a long target',
+          (n) => `<https://h.example/x.json?search_after=0%3D${'a'.repeat(n - 60)}>; rel="next"\n`,
+        ],
+        [
+          'prev links between line breaks throughout',
+          (n) => '<x>; rel="prev"  \r\n'.repeat(n / 20),
+        ],
+        ['openers between line breaks throughout', (n) => '<a  \r\n'.repeat(n / 6)],
+      ])('stays linear on %s', (_name, build) => {
+        const { t5k, t320k } = linearTiming(searchAfterOfNextLink, build(5_040), build(322_560));
+        expect(t320k / t5k).toBeLessThan(256);
+        expect(t320k).toBeLessThan(500_000);
+      });
+    });
+
+    it('sends search_after beside skip=0 and the request’s own search, sort, and limit', async () => {
+      mockFetch.mockResolvedValue(page([], { skip: 0, limit: 3, total: 30231 }));
+
+      await service.query(
+        'food/event',
+        {
+          search: 'date_created:[20201101 TO 20221231]',
+          sort: 'date_created:desc',
+          limit: 3,
+          skip: 7,
+          searchAfter: { value: '0=1672358400000;1=21Av9aEBE00QUgYiPfaI', position: 3 },
+        },
+        ctx,
+      );
+
+      const sent = new URL(mockFetch.mock.calls[0]![0]);
+      expect([...sent.searchParams.keys()]).toEqual([
+        'search',
+        'sort',
+        'limit',
+        'skip',
+        'search_after',
+      ]);
+      // openFDA refuses a skip above 0 beside search_after (400), and its own link sends 0.
+      expect(sent.searchParams.get('skip')).toBe('0');
+      // Byte for byte what openFDA's own link (SORTED_LINK) sends.
+      expect(sent.search).toContain(
+        '&skip=0&search_after=0%3D1672358400000%3B1%3D21Av9aEBE00QUgYiPfaI',
+      );
+    });
+
+    it('sends a keyword sort value back exactly as openFDA linked it', async () => {
+      mockFetch.mockResolvedValueOnce(
+        page(
+          [{ recall_number: 'D-1' }, { recall_number: 'D-2' }],
+          { skip: 0, limit: 2, total: 34 },
+          KEYWORD_LINK,
+        ),
+      );
+      mockFetch.mockResolvedValueOnce(
+        page([{ recall_number: 'D-3' }], { skip: 0, limit: 2, total: 34 }),
+      );
+      const params = {
+        search: 'recalling_firm:"johnson"',
+        sort: 'recalling_firm.exact:asc',
+        limit: 2,
+      };
+
+      const first = await service.query('drug/enforcement', params, ctx);
+      await service.query(
+        'drug/enforcement',
+        { ...params, searchAfter: { value: first.nextSearchAfter!, position: 2 } },
+        ctx,
+      );
+
+      expect(first.nextSearchAfter).toBe(KEYWORD_VALUE);
+      expect(new URL(mockFetch.mock.calls[1]![0]).search).toContain(
+        '&search_after=0%3DJohnson%2520%2526%2520Johnson%3B1%3D60348ca75bbe126c993c1ab5fa489343ac584b4578ad6b5b92ffe240a06b2131',
+      );
+    });
+
+    it('returns the next link’s search_after as the only trace of the link', async () => {
+      mockFetch.mockResolvedValue(
+        page([{ id: '1' }], { skip: 0, limit: 1, total: 9 }, UNSORTED_LINK),
+      );
+
+      const result = await service.query('drug/enforcement', { search: 'x', limit: 1 }, ctx);
+
+      expect(result.nextSearchAfter).toBe(
+        '0=7bbc2fc0e663af3c01d8cf7358a0a12d561b01aefac1826d19a4d398c8d6ee05',
+      );
+      expect(Object.keys(result).sort()).toEqual(['meta', 'nextSearchAfter', 'results']);
+      expect(JSON.stringify(result)).not.toContain('api.fda.gov');
+    });
+
+    it.each([
+      ['a skip-style link', SKIP_LINK],
+      ['no Link header', undefined],
+    ])('leaves nextSearchAfter absent for %s', async (_label, link) => {
+      mockFetch.mockResolvedValue(page([{ id: '1' }], { skip: 3, limit: 3, total: 9 }, link));
+
+      const result = await service.query('food/event', { search: 'x', limit: 3, skip: 3 }, ctx);
+
+      expect(result).not.toHaveProperty('nextSearchAfter');
+      expect(result.meta.skip).toBe(3);
+    });
+
+    it('reports the walk position as meta.skip, where openFDA reports 0', async () => {
+      mockFetch.mockResolvedValue(
+        page([{ id: '4' }], { skip: 0, limit: 1, total: 9 }, UNSORTED_LINK),
+      );
+
+      const result = await service.query(
+        'drug/enforcement',
+        { search: 'x', limit: 1, searchAfter: { value: '0=abc', position: 3 } },
+        ctx,
+      );
+
+      expect(result.meta).toEqual({ total: 9, skip: 3, limit: 1, lastUpdated: '2026-11-21' });
+    });
+
+    /**
+     * openFDA's `search_after` paging over `ids` in the order given: up to
+     * `limit` records after the one `search_after` names (`0=<id>`), a
+     * `rel="next"` link carrying the last record's key whenever the page is full
+     * (openFDA links an exactly full last page too), `No matches found!` for a
+     * page with nothing in it, and the bare total for `limit=0`. A cursor page
+     * reports `skip: 0`, as openFDA does.
+     */
+    const fakeOpenFda = (ids: readonly string[]) => async (input: string) => {
+      const query = new URL(input).searchParams;
+      const limit = Number(query.get('limit'));
+      if (limit === 0) return page([], { skip: 0, limit: 0, total: ids.length });
+      const after = query.get('search_after');
+      const start = after === null ? Number(query.get('skip')) : ids.indexOf(after.slice(2)) + 1;
+      const records = ids.slice(start, start + limit);
+      if (records.length === 0) return mockResponse(404, NO_MATCHES);
+      const last = records[records.length - 1];
+      const link =
+        records.length === limit
+          ? `<https://api.fda.gov/drug/event.json?search=%28x%29&limit=${limit}&skip=0&search_after=0%3D${last}>; rel="next"`
+          : undefined;
+      return page(
+        records.map((id) => ({ id })),
+        { skip: after === null ? start : 0, limit, total: ids.length },
+        link,
+      );
+    };
+
+    it('walks every record once, in order, across changing page sizes to a short last page', async () => {
+      mockFetch.mockImplementation(
+        fakeOpenFda(['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8', 'r9']),
+      );
+      const seen: string[] = [];
+      const starts: number[] = [];
+      let next: string | undefined;
+
+      for (const limit of [3, 2, 4, 4]) {
+        const result = await service.query<{ id: string }>(
+          'drug/event',
+          {
+            search: 'x',
+            limit,
+            ...(next === undefined
+              ? { skip: 0 }
+              : { searchAfter: { value: next, position: seen.length } }),
+          },
+          ctx,
+        );
+        starts.push(result.meta.skip);
+        seen.push(...result.results.map((record) => record.id));
+        next = result.nextSearchAfter;
+        if (next === undefined) break;
+      }
+
+      expect(seen).toEqual(['r0', 'r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8', 'r9']);
+      expect(starts).toEqual([0, 3, 5, 9]);
+      expect(next).toBeUndefined();
+      expect([1, 2, 3].map((call) => sentQuery(call).get('search_after'))).toEqual([
+        '0=r2',
+        '0=r4',
+        '0=r8',
+      ]);
+      expect([1, 2, 3].map((call) => sentQuery(call).get('skip'))).toEqual(['0', '0', '0']);
+    });
+
+    it('takes the past-end recovery when the link from an exactly full last page 404s', async () => {
+      mockFetch.mockImplementation(fakeOpenFda(['r0', 'r1', 'r2', 'r3', 'r4', 'r5']));
+      const base = { search: 'x', sort: 'receivedate:desc', limit: 3 };
+
+      const first = await service.query('drug/event', { ...base, skip: 0 }, ctx);
+      const last = await service.query(
+        'drug/event',
+        { ...base, searchAfter: { value: first.nextSearchAfter!, position: 3 } },
+        ctx,
+      );
+      const past = await service.query(
+        'drug/event',
+        { ...base, searchAfter: { value: last.nextSearchAfter!, position: 6 } },
+        ctx,
+      );
+
+      expect(last.results).toHaveLength(3);
+      expect(last.nextSearchAfter).toBe('0=r5');
+      expect(past).toStrictEqual({
+        meta: { total: 6, skip: 6, limit: 3, lastUpdated: '2026-11-21' },
+        results: [],
+      });
+      expect(mockFetch).toHaveBeenCalledTimes(4);
+      const recovery = sentQuery(3);
+      expect(recovery.get('limit')).toBe('0');
+      expect(recovery.get('skip')).toBe('0');
+      expect(recovery.has('search_after')).toBe(false);
+      expect(recovery.has('sort')).toBe(false);
+    });
+
+    it('returns the walk position with the total unverified when that recovery fails', async () => {
+      mockFetch.mockImplementation(async (input: string) =>
+        new URL(input).searchParams.get('limit') === '0'
+          ? mockResponse(503, '<html><body>503 Service Temporarily Unavailable</body></html>')
+          : mockResponse(404, NO_MATCHES),
+      );
+
+      const past = await service.query(
+        'drug/event',
+        { search: 'x', limit: 3, searchAfter: { value: '0=r5', position: 6 } },
+        ctx,
+      );
+
+      expect(past).toStrictEqual({
+        meta: { total: 0, skip: 6, limit: 3, lastUpdated: 'unknown', totalUnverified: true },
+        results: [],
+      });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    describe('under the retry ladder', () => {
+      let random: { mockRestore: () => void };
+
+      beforeEach(async () => {
+        const actual = await vi.importActual<typeof import('@cyanheads/mcp-ts-core/utils')>(
+          '@cyanheads/mcp-ts-core/utils',
+        );
+        vi.mocked(withRetry).mockImplementation(actual.withRetry);
+        vi.useFakeTimers();
+        random = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+      });
+
+      afterEach(() => {
+        vi.mocked(withRetry).mockImplementation(singleAttempt);
+        vi.useRealTimers();
+        random.mockRestore();
+      });
+
+      it('resends the same search_after and keeps the link of the attempt whose body it read', async () => {
+        const staleLink =
+          '<https://api.fda.gov/drug/event.json?search=%28x%29&limit=2&skip=0&search_after=0%3Dstale>; rel="next"';
+        mockFetch
+          .mockResolvedValueOnce(mockResponse(503, '<html><body>503</body></html>'))
+          // Headers arrive, then the body read fails: that attempt's link must not survive it.
+          .mockResolvedValueOnce({
+            ...page([], { skip: 0, limit: 2, total: 9 }, staleLink),
+            json: () => Promise.reject(serviceUnavailable('body read failed')),
+          })
+          .mockResolvedValueOnce(
+            page(
+              [{ id: 'r3' }, { id: 'r4' }],
+              { skip: 0, limit: 2, total: 9 },
+              '<https://api.fda.gov/drug/event.json?search=%28x%29&limit=2&skip=0&search_after=0%3Dr4>; rel="next"',
+            ),
+          );
+
+        const pending = service.query<{ id: string }>(
+          'drug/event',
+          { search: 'x', limit: 2, searchAfter: { value: '0=r2', position: 3 } },
+          ctx,
+        );
+        await vi.runAllTimersAsync();
+        const result = await pending;
+
+        expect(mockFetch).toHaveBeenCalledTimes(3);
+        expect([0, 1, 2].map((call) => sentQuery(call).get('search_after'))).toEqual([
+          '0=r2',
+          '0=r2',
+          '0=r2',
+        ]);
+        expect(result.results.map((record) => record.id)).toEqual(['r3', 'r4']);
+        expect(result.meta.skip).toBe(3);
+        expect(result.nextSearchAfter).toBe('0=r4');
+      });
     });
   });
 
@@ -735,19 +1305,21 @@ describe('OpenFdaService', () => {
     // correction stays hedged (#49 makes cataloged fields definitive).
     it('routes a count-on-analyzed-text 500 to not_aggregatable naming the .exact subfield', async () => {
       mockFetch.mockResolvedValue(mockResponse(500, AGGREGATION_500));
+      // The premise: an openFDA field the catalog does not record.
+      expect(countVerdict('device/classification', 'review_code')).toEqual({ kind: 'uncataloged' });
 
       const err = (await service
-        .query('device/classification', { count: 'review_panel' }, ctx)
+        .query('device/classification', { count: 'review_code' }, ctx)
         .catch((e: unknown) => e)) as McpError;
 
       expect(err.data).toMatchObject({
         reason: 'not_aggregatable',
         endpoint: 'device/classification',
-        count: 'review_panel',
+        count: 'review_code',
       });
       expect(err.code).toBe(-32007); // ValidationError — outside withRetry's transient set
       expect(TRANSIENT_CODES.has(err.code)).toBe(false);
-      expect(err.message).toContain('"review_panel.exact"'); // the add-suffix correction
+      expect(err.message).toContain('"review_code.exact"'); // the add-suffix correction
       expect(err.message).toMatch(/analyzed text field/i);
       expect(err.message).not.toMatch(/fielddata/i); // unreachable server-side advice dropped
       // Not every analyzed field has a keyword subfield: `reason_for_recall.exact`

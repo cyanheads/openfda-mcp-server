@@ -33,14 +33,14 @@ describe('OpenFdaService security', () => {
   });
 
   // Re-readable Response fake — `fetchWithTimeout` reads `.text()`/`.headers` on
-  // the error path; the success path reads `.json()`.
-  function mockResponse(status: number, body: unknown): Response {
+  // the error path; the success path reads `.json()` and the `Link` header.
+  function mockResponse(status: number, body: unknown, headers?: Record<string, string>): Response {
     const text = typeof body === 'string' ? body : JSON.stringify(body);
     return {
       ok: status >= 200 && status < 300,
       status,
       statusText: '',
-      headers: new Headers(),
+      headers: new Headers(headers),
       text: () => Promise.resolve(text),
       json: () => Promise.resolve(typeof body === 'string' ? JSON.parse(body) : body),
     } as unknown as Response;
@@ -272,6 +272,110 @@ describe('OpenFdaService security', () => {
 
       const result = await service.query('drug/event', {}, ctx);
       expect(result.results).toEqual([]);
+    });
+  });
+
+  /*
+   * #97 — openFDA's `Link` header is a full request URL. The service keeps only
+   * its `search_after` parameter: the URL never reaches a result, a log line, or
+   * an error, and a cursor value goes out as one parameter's data.
+   */
+  describe('search_after link (#97)', () => {
+    const KEY = 'secret-key-abc123';
+    // openFDA's links carry no api_key (measured); this one does, to prove the
+    // service would not pass it on if one ever did.
+    const LINK_URL = `https://api.fda.gov/drug/event.json?search=%28x%29&api_key=${KEY}&limit=1&skip=0&search_after=0%3D123%3B1%3Dabc`;
+    const linked = () =>
+      mockResponse(
+        200,
+        {
+          meta: { results: { total: 5, skip: 0, limit: 1 }, last_updated: '2026-11-21' },
+          results: [{ id: 'rec-1' }],
+        },
+        { link: `<${LINK_URL}>; rel="next"` },
+      );
+    const logged = (context: Context) =>
+      JSON.stringify((context.log as unknown as { calls: unknown[] }).calls);
+
+    it('keeps only the search_after value of the link, never its URL or a key in it', async () => {
+      const service = new OpenFdaService({ baseUrl: 'https://api.fda.gov', apiKey: KEY });
+      mockFetch.mockResolvedValue(linked());
+
+      const result = await service.query('drug/event', { search: 'x', limit: 1 }, ctx);
+      await service.query(
+        'drug/event',
+        { search: 'x', limit: 1, searchAfter: { value: result.nextSearchAfter!, position: 1 } },
+        ctx,
+      );
+
+      expect(result.nextSearchAfter).toBe('0=123;1=abc');
+      expect(Object.keys(result).sort()).toEqual(['meta', 'nextSearchAfter', 'results']);
+      expect(Object.keys(result.meta)).toEqual(['total', 'skip', 'limit', 'lastUpdated']);
+      expect(logged(ctx)).toContain('Querying openFDA');
+      for (const surface of [JSON.stringify(result), logged(ctx)]) {
+        expect(surface).not.toContain(KEY);
+        expect(surface).not.toContain('api_key');
+        expect(surface).not.toContain(LINK_URL);
+        expect(surface).not.toContain('https://api.fda.gov/drug/event.json');
+      }
+    });
+
+    it('puts neither the link nor the key in the error of a failed continuation', async () => {
+      const service = new OpenFdaService({ baseUrl: 'https://api.fda.gov', apiKey: KEY });
+      mockFetch.mockResolvedValueOnce(linked());
+      mockFetch.mockResolvedValueOnce(
+        mockResponse(500, {
+          error: {
+            code: 'SERVER_ERROR',
+            message: 'Check your request and try again',
+            details: '[illegal_argument_exception] search_after has 2 value(s) but sort has 1.',
+          },
+        }),
+      );
+
+      const first = await service.query('drug/event', { search: 'x', limit: 1 }, ctx);
+      const err = (await service
+        .query(
+          'drug/event',
+          { search: 'x', limit: 1, searchAfter: { value: first.nextSearchAfter!, position: 1 } },
+          ctx,
+        )
+        .catch((e: unknown) => e)) as McpError;
+
+      expect(err).toBeInstanceOf(McpError);
+      expect(err.data).toMatchObject({ reason: 'query_error' });
+      expect(new URL(mockFetch.mock.calls[1]![0] as string).searchParams.get('search_after')).toBe(
+        '0=123;1=abc',
+      );
+      const surface = JSON.stringify({ message: err.message, data: err.data, log: logged(ctx) });
+      expect(surface).not.toContain(KEY);
+      expect(surface).not.toContain(LINK_URL);
+    });
+
+    it('sends a cursor value as the data of one parameter, adding none', async () => {
+      const service = new OpenFdaService({ baseUrl: 'https://api.fda.gov', apiKey: KEY });
+      mockFetch.mockResolvedValue(linked());
+      const value = '0=1&count=x&api_key=evil&search=(y)#frag';
+
+      await service.query(
+        'drug/event',
+        { search: 'x', limit: 1, searchAfter: { value, position: 1 } },
+        ctx,
+      );
+
+      const sent = new URL(mockFetch.mock.calls[0]![0] as string);
+      expect(sent.origin + sent.pathname).toBe('https://api.fda.gov/drug/event.json');
+      expect(sent.hash).toBe('');
+      expect([...sent.searchParams.keys()]).toEqual([
+        'search',
+        'limit',
+        'skip',
+        'search_after',
+        'api_key',
+      ]);
+      expect(sent.searchParams.get('search_after')).toBe(value);
+      expect(sent.searchParams.get('search')).toBe('(x)');
+      expect(sent.searchParams.getAll('api_key')).toEqual([KEY]);
     });
   });
 

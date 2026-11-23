@@ -3,6 +3,7 @@
  * @module tests/mcp-server/tools/definitions/search-tobacco-reports.tool.test
  */
 
+import { z } from '@cyanheads/mcp-ts-core';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -11,6 +12,8 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 }));
 
 import { searchTobaccoReportsTool } from '@/mcp-server/tools/definitions/search-tobacco-reports.tool.js';
+import { invalidCursorError } from '@/mcp-server/tools/pagination-cursor.js';
+import { paginationLimitReachedError } from '@/mcp-server/tools/schema-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import { renderCommonMark } from '../../../helpers/commonmark.js';
 import { textOf } from '../../../helpers/content.js';
@@ -91,12 +94,12 @@ describe('openfda_search_tobacco_reports', () => {
       expect(mockQuery.mock.calls[0]![1]).toMatchObject({ sort: 'date_submitted:asc' });
     });
 
-    it('states the default in the search and sort descriptions', () => {
+    it('states the newest-first browse on search and the default sort on sort', () => {
       const shape = searchTobaccoReportsTool.input.shape;
-      expect(shape.search.description).toContain(
-        'Omit to browse newest first, sorted by date_submitted:desc.',
+      expect(shape.search.description).toContain('Omit to browse newest first.');
+      expect(shape.sort.description).toContain(
+        'With neither search nor sort, records come newest first by date_submitted:desc.',
       );
-      expect(shape.sort.description).toContain('defaults to date_submitted:desc');
     });
   });
 
@@ -395,5 +398,61 @@ describe('openfda_search_tobacco_reports', () => {
     expect(text).toContain('2 product(s)');
     expect(text).toContain('3 health problem(s)');
     expect(text).toContain('1 product problem(s)');
+  });
+
+  /**
+   * #97 — the tool's own cursor surface. The walk, the binding, and the refusals
+   * run through every cursor tool in pagination-contract.test.ts; the token at
+   * its seam in pagination-cursor.test.ts.
+   */
+  describe('cursor (#97)', () => {
+    it('advertises cursor with its base64url pattern and next_cursor as an optional output', () => {
+      const input = z.toJSONSchema(searchTobaccoReportsTool.input) as unknown as {
+        properties: Record<string, { pattern?: string }>;
+        required?: string[];
+      };
+      expect(input.properties.cursor?.pattern).toBe('^[A-Za-z0-9_-]+$');
+      expect(input.required ?? []).not.toContain('cursor');
+      const output = z.toJSONSchema(searchTobaccoReportsTool.output) as unknown as {
+        properties: Record<string, { type?: string }>;
+        required?: string[];
+      };
+      expect(output.properties.next_cursor?.type).toBe('string');
+      expect(output.required ?? []).not.toContain('next_cursor');
+    });
+
+    it('declares the shared invalid_cursor and pagination_limit_reached entries', () => {
+      expect(searchTobaccoReportsTool.errors).toContain(invalidCursorError);
+      expect(searchTobaccoReportsTool.errors).toContain(paginationLimitReachedError);
+    });
+
+    it('sends no searchAfter and returns no next_cursor key without a cursor or a link', async () => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 3, skip: 0, limit: 25, lastUpdated: '2026-01-01' },
+        results: [{ report_id: 'TOB-1' }],
+      });
+
+      const result = await searchTobaccoReportsTool.handler(
+        searchTobaccoReportsTool.input.parse({}),
+        ctx,
+      );
+
+      expect(mockQuery.mock.calls[0]![1].searchAfter).toBeUndefined();
+      expect(Object.keys(result).sort()).toEqual(['meta', 'results']);
+    });
+
+    it('renders next_cursor after the header and before the records', () => {
+      const text = textOf(
+        searchTobaccoReportsTool.format!({
+          meta: { total: 30, skip: 0, limit: 1, lastUpdated: '2026-01-01' },
+          results: [{ report_id: 'TOB-1' }],
+          next_cursor: 'eyJwIjox_-',
+        }),
+      );
+      const lines = text.split('\n');
+      expect(lines[0]).toMatch(/^\*\*30 total results\*\*/);
+      expect(lines[2]).toBe('next_cursor: `eyJwIjox_-`');
+      expect(text.indexOf('### Report TOB-1')).toBeGreaterThan(text.indexOf('next_cursor'));
+    });
   });
 });

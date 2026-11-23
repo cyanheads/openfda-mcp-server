@@ -13,6 +13,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { resetServerConfig } from '@/config/server-config.js';
 import { countValuesTool } from '@/mcp-server/tools/definitions/count-values.tool.js';
 import { initOpenFdaService } from '@/services/openfda/openfda-service.js';
+import { textOfResult } from '../../../helpers/content.js';
+import { NO_MATCHES } from '../../../helpers/upstream-responses.js';
 
 const http = createFetchMock();
 
@@ -22,9 +24,6 @@ const tally = (n: number) => () =>
     meta: { last_updated: '2026-09-18', terms: {} },
     results: Array.from({ length: n }, (_, i) => ({ term: `TERM${i + 1}`, count: 1000 * (n - i) })),
   });
-
-const NO_MATCHES = () =>
-  Response.json({ error: { code: 'NOT_FOUND', message: 'No matches found!' } }, { status: 404 });
 
 /**
  * A date-field count response: openFDA sends `{ time, count }` rows, one per
@@ -51,13 +50,6 @@ const tableRows = (text: string) => text.split('\n').filter((line) => /^\| \d/.t
 
 /** The `limit` query parameter of the n-th upstream request. */
 const sentLimit = (index = 0) => new URL(http.calls[index]!.request.url).searchParams.get('limit');
-
-function textOfResult(result: Awaited<ReturnType<typeof runToolContract>>): string {
-  return result.content
-    .filter((block) => block.type === 'text')
-    .map((block) => block.text)
-    .join('\n');
-}
 
 interface CountStructured {
   cap?: number;

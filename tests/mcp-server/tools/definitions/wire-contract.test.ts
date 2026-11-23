@@ -15,16 +15,31 @@
  *   carries `thrownBy: 'service'` on every tool that declares it. The lint that
  *   reads the marker scans only handlers holding a literal `ctx.fail(`, so it
  *   cannot catch a tool left unmarked.
+ * - **Description size.** A client loads every description before its first
+ *   call, so a rule shared across tools is written once, in its shared builder:
+ *   a description string repeated verbatim on two or more tools stays within
+ *   300 bytes, and the server-written description bytes stay under a ceiling.
  *
  * Asserted against the definitions as `tool()` returns them — the same objects
  * the server registers — not against the schema literals in their source.
  * @module tests/mcp-server/tools/definitions/wire-contract.test
  */
 
+import { Buffer } from 'node:buffer';
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import type { AnyToolDefinition } from '@cyanheads/mcp-ts-core/tools';
 import { describe, expect, it } from 'vitest';
 import { allToolDefinitions } from '@/mcp-server/tools/definitions/index.js';
+import {
+  CONJOINED_ARRAY_NOTICE_TOPIC,
+  CURSOR_END_NOTICE_TOPIC,
+  fieldsDescription,
+  searchNoticeField,
+  sortDescription,
+} from '@/mcp-server/tools/schema-utils.js';
+import { SEARCH_SYNTAX_NOTE } from '@/mcp-server/tools/search-expression.js';
+import { STAGING_WORKFLOW } from '@/services/openfda/canvas-spill.js';
+import { includeDescription, LEFT_OUT_NOTICE_TOPIC } from '@/services/openfda/record-projection.js';
 
 const UNKNOWN_KEY = '__not_a_declared_argument__';
 
@@ -60,7 +75,8 @@ describe('tool input strictness', () => {
 describe('service-raised error reasons', () => {
   /**
    * Raised by `openfda-service.ts`, by the shared guards in `schema-utils.ts`
-   * (`resolvePageSize` included), or by the framework canvas layer
+   * (`resolvePageSize` included), `search-expression.ts`, and
+   * `pagination-cursor.ts` (`resolveCursor`), or by the framework canvas layer
    * (`canvas.acquire()`), never by a handler's own `ctx.fail`.
    */
   const SERVICE_REASONS = new Set([
@@ -71,6 +87,7 @@ describe('service-raised error reasons', () => {
     'pagination_limit_reached',
     'malformed_search',
     'limit_above_cap',
+    'invalid_cursor',
     'canvas_not_found',
     'canvas_capacity_exhausted',
   ]);
@@ -128,5 +145,105 @@ describe('reserved error key', () => {
         handler: () => Promise.resolve({ error: 'unreachable' }),
       }),
     ).toThrow(/reserved/i);
+  });
+});
+
+describe('description size', () => {
+  /** A description string repeated verbatim on two or more tools may run to this many bytes. */
+  const SHARED_DESCRIPTION_MAX_BYTES = 300;
+
+  /** A shared clause written around per-tool text may run to this many bytes. */
+  const SHARED_CLAUSE_MAX_BYTES = 120;
+
+  /**
+   * Ceiling on the server-written description bytes across `allToolDefinitions`:
+   * the measured total, rounded up to the next 1,000 bytes. A client loads every
+   * one of these bytes before its first call, so raising it is a decision, made
+   * here, not a side effect of a longer description.
+   */
+  const SERVER_DESCRIPTION_CEILING_BYTES = 66_000;
+
+  const utf8Bytes = (text: string) => Buffer.byteLength(text, 'utf8');
+
+  /** Every string-valued `description` in a JSON Schema, at any depth. */
+  function schemaDescriptions(node: unknown): string[] {
+    if (Array.isArray(node)) return node.flatMap(schemaDescriptions);
+    if (node === null || typeof node !== 'object') return [];
+    return Object.entries(node).flatMap(([key, value]) =>
+      key === 'description' && typeof value === 'string' ? [value] : schemaDescriptions(value),
+    );
+  }
+
+  /**
+   * The input and output JSON Schema descriptions `tools/list` advertises for a
+   * definition, its `enrichment` block included. The framework's `error`
+   * envelope is not part of either schema, so it is excepted by construction.
+   */
+  function advertisedDescriptions(definition: AnyToolDefinition): string[] {
+    const success = definition.enrichment
+      ? definition.output.extend(definition.enrichment)
+      : definition.output;
+    return [
+      ...schemaDescriptions(
+        z.toJSONSchema(definition.input, { io: 'input', unrepresentable: 'any' }),
+      ),
+      ...schemaDescriptions(z.toJSONSchema(success, { io: 'output', unrepresentable: 'any' })),
+    ];
+  }
+
+  it(`repeats no description over ${SHARED_DESCRIPTION_MAX_BYTES} bytes verbatim on two or more tools`, () => {
+    const toolsByText = new Map<string, Set<string>>();
+    for (const definition of allToolDefinitions) {
+      for (const text of advertisedDescriptions(definition)) {
+        const tools = toolsByText.get(text) ?? new Set<string>();
+        tools.add(definition.name);
+        toolsByText.set(text, tools);
+      }
+    }
+    const oversized = [...toolsByText]
+      .filter(([text, tools]) => tools.size > 1 && utf8Bytes(text) > SHARED_DESCRIPTION_MAX_BYTES)
+      .map(([text, tools]) => `${utf8Bytes(text)} B on ${tools.size} tools: ${text.slice(0, 100)}`);
+
+    expect(oversized).toEqual([]);
+  });
+
+  it(`keeps each shared clause around per-tool text within ${SHARED_CLAUSE_MAX_BYTES} bytes`, () => {
+    /** A per-tool slot: every builder below is called with it, and the text is cut at it. */
+    const SLOT = '\u0000';
+    /** The fixed text of a builder's output, one entry per sentence between its slots. */
+    const clauses = (text: string) =>
+      text
+        .split(SLOT)
+        .flatMap((piece) => piece.split(/(?<=\.) (?=[A-Z])/))
+        .map((piece) => piece.trim())
+        .filter((piece) => /[A-Za-z]/.test(piece));
+    const shared = [
+      SEARCH_SYNTAX_NOTE,
+      STAGING_WORKFLOW,
+      CURSOR_END_NOTICE_TOPIC,
+      CONJOINED_ARRAY_NOTICE_TOPIC,
+      LEFT_OUT_NOTICE_TOPIC,
+      ...clauses(sortDescription({ example: SLOT, newest: SLOT })),
+      ...clauses(fieldsDescription([SLOT], [SLOT])),
+      ...clauses(searchNoticeField([SLOT]).description ?? ''),
+      ...clauses(includeDescription([[SLOT, 'drug/event']])),
+    ];
+    const oversized = shared.filter((clause) => utf8Bytes(clause) > SHARED_CLAUSE_MAX_BYTES);
+
+    expect(shared.length).toBeGreaterThan(5);
+    expect(oversized).toEqual([]);
+  });
+
+  it(`keeps server-written description bytes within ${SERVER_DESCRIPTION_CEILING_BYTES}`, () => {
+    const total = allToolDefinitions.reduce(
+      (sum, definition: AnyToolDefinition) =>
+        sum +
+        utf8Bytes(definition.description) +
+        advertisedDescriptions(definition).reduce((n, text) => n + utf8Bytes(text), 0) +
+        (definition.errors ?? []).reduce((n, entry) => n + utf8Bytes(entry.when), 0),
+      0,
+    );
+
+    expect(total).toBeLessThanOrEqual(SERVER_DESCRIPTION_CEILING_BYTES);
   });
 });

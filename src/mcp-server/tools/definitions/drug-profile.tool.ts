@@ -16,6 +16,7 @@ import {
   approvalOf,
   first,
   openfdaOf,
+  originalPackager,
   pickApplication,
   strings,
   summarizeShortage,
@@ -23,8 +24,36 @@ import {
 } from '@/mcp-server/tools/drug-profile-sections.js';
 import { codeLiteral, lineContent, singleLine, truncate } from '@/mcp-server/tools/format-utils.js';
 import { nonBlankString } from '@/mcp-server/tools/schema-utils.js';
+import {
+  foldDiacritics,
+  SEARCH_REFUSED_CHARACTER,
+  SEARCH_WHITESPACE,
+} from '@/mcp-server/tools/search-expression.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import type { OpenFdaQueryParams } from '@/services/openfda/types.js';
+
+/** One run of whitespace or characters openFDA refuses, for reading as one space. */
+const REFUSED_RUN = new RegExp(
+  `(?:${SEARCH_WHITESPACE.source}|${SEARCH_REFUSED_CHARACTER.source})+`,
+  'gu',
+);
+
+/**
+ * A drug name as the profile searches it. First each letter with a canonical
+ * diacritic becomes the letter alone (`Néoral` → `Neoral`, `café` → `cafe`):
+ * openFDA stores these names unaccented, and a space in the accent's place would
+ * split the word. Canonical decomposition only, so `™` and `®` stay as they are,
+ * as does a letter with no decomposition (`ø`) or a CJK character. Then each run
+ * of whitespace and characters openFDA refuses (`;`, `®`, a line break) becomes
+ * one space, and the ends are trimmed. openFDA answers HTTP 400 to a phrase
+ * holding one of them, escaped or not, and its analyzer already breaks words at
+ * punctuation, so the space matches what the character would have. The typed
+ * name and a fan-out key taken from a record both pass through here, so no
+ * phrase the tool builds holds one.
+ */
+export function searchableName(name: string): string {
+  return foldDiacritics(name).replace(REFUSED_RUN, ' ').trim();
+}
 
 /**
  * Escape a free-text name for the quoted Lucene phrase it is interpolated into.
@@ -45,15 +74,14 @@ function phrase(term: string): string {
 }
 
 /**
- * True when the term carries a character that could belong to a drug name.
+ * True when the term keeps an ASCII letter or digit — a word a phrase can match.
  *
- * Delimiters and whitespace cannot, so a name made only of those resolves
- * nothing and raises `blank_drug_name` instead of searching for the literal
- * delimiters. This replaces the old "did stripping empty the string" test, which
- * only worked because stripping was destructive.
+ * A phrase with no word matches nothing alone and drops out of an AND, so a name
+ * of only punctuation (`*`, `-`, `"""`) would profile whatever records rank first;
+ * it raises `blank_drug_name` instead. `*` is no wildcard inside a phrase.
  */
 function hasSearchableCharacter(term: string): boolean {
-  return /[^\\"\s]/.test(term);
+  return /[A-Za-z0-9]/.test(term);
 }
 
 /**
@@ -83,14 +111,16 @@ function containsWords(haystack: string, needle: string): boolean {
 
 /**
  * The name the recall and shortage sub-queries key on, and the Drugs@FDA fallback when the
- * typed name matches no application, unescaped.
+ * typed name matches no application, unescaped. `term` is the typed name as
+ * {@link searchableName} read it.
  *
  * The typed term when it is whole words of the resolved generic name: the caller typed
  * the ingredient, and one label's generic can be a single product's string
  * (`ADALIMUMAB-AACF`, `METFORMIN ER 500 MG`) that misses the rest of the drug's records.
  * Otherwise the resolved generic, then the first brand, then the term — so brand input
- * keys on the generic, never the brand. A resolved name with no searchable character
- * falls back to the (already validated) term rather than keying sub-queries off delimiters.
+ * keys on the generic, never the brand. A resolved name is read through
+ * {@link searchableName} too; one with no searchable character falls back to the
+ * (already validated) term rather than keying sub-queries off punctuation.
  */
 export function fanOutKeyFor(
   term: string,
@@ -98,8 +128,8 @@ export function fanOutKeyFor(
   brandName: string | undefined,
 ): string {
   if (genericName !== null && containsWords(genericName, term)) return term;
-  const resolved = genericName ?? brandName ?? term;
-  return hasSearchableCharacter(resolved) ? resolved.trim() : term;
+  const resolved = searchableName(genericName ?? brandName ?? term);
+  return hasSearchableCharacter(resolved) ? resolved : term;
 }
 
 /** Profile sections a sub-query populates — the key degradation is reported under. */
@@ -164,8 +194,10 @@ function fatalReason(error: unknown): string | null {
   if (error.code === JsonRpcErrorCode.Unauthorized) return 'unauthorized';
   if (error.code === JsonRpcErrorCode.Forbidden) return 'forbidden';
   if (error.code === JsonRpcErrorCode.ConfigurationError) return 'configuration_error';
-  // fetchWithTimeout raises an abort of the caller's signal as RequestCancelled
-  // tagged with this source.
+  /**
+   * fetchWithTimeout raises an abort of the caller's signal as RequestCancelled
+   * tagged with this source.
+   */
   if ((error.data as { errorSource?: string } | undefined)?.errorSource === 'FetchAborted') {
     return 'cancelled';
   }
@@ -197,19 +229,6 @@ function ndcNames(rec: Record<string, unknown>): { generic: string; brand: strin
     generic: first(rec.generic_name) ?? first(o.generic_name) ?? '',
     brand: first(rec.brand_name) ?? first(o.brand_name) ?? '',
   };
-}
-
-/**
- * Whether openFDA flags a label or NDC record as its original packager's
- * (`openfda.is_original_packager`). openFDA sets the flag only to true, so a
- * harmonized record without it is a repackager's or relabeler's: false. Null
- * when the record's openfda block is empty and the flag cannot be known.
- */
-function originalPackager(rec: Record<string, unknown>): boolean | null {
-  const o = openfdaOf(rec);
-  if (Object.keys(o).length === 0) return null;
-  const flag = o.is_original_packager;
-  return Array.isArray(flag) ? flag.includes(true) : flag === true;
 }
 
 /** True when `rec` is an original packager's label filed under `applicationNumber`. */
@@ -328,7 +347,7 @@ async function settle<T>(
 /**
  * Score a candidate by how well its generic/brand names match the requested term:
  * exact and prefix matches win, multi-ingredient combination products are penalized
- * (openFDA relevance often ranks a combo first for a single-drug query), and shorter
+ * (openFDA's index order often puts a combo first for a single-drug query), and shorter
  * generic names (fewer ingredients) break ties toward the bare drug.
  */
 function matchScore(generic: string, brand: string, termLower: string): number {
@@ -369,7 +388,7 @@ export const drugProfileTool = tool('openfda_drug_profile', {
 
   input: z.object({
     drug: nonBlankString().describe(
-      'Drug name to profile — brand or generic (e.g. "metformin", "Humira", "Glucophage"). Resolved once to an FDA identity. The Drugs@FDA approval is ranked over this name\'s matches; meta.fanOutKey reports the name the recall and shortage sub-queries searched.',
+      'Drug name to profile — brand or generic (e.g. "metformin", "Humira", "Glucophage"). Resolved once to an FDA identity, each run of whitespace and characters openFDA cannot search (such as ; or ®) read as one space. The Drugs@FDA approval is ranked over this name\'s matches; meta.fanOutKey reports the name the recall and shortage sub-queries searched.',
     ),
   }),
   inputAliases: { drug_name: 'drug', name: 'drug' },
@@ -386,7 +405,7 @@ export const drugProfileTool = tool('openfda_drug_profile', {
         fanOutKey: z
           .string()
           .describe(
-            'Name the recall/enforcement and shortage sub-queries ran against, and the Drugs@FDA approval search when the input name matches no application — the input term when it is whole words of the resolved generic name (an ingredient such as "metformin" or "adalimumab", so one label\'s product-specific generic does not narrow them), otherwise the resolved generic name, falling back to a brand name, then the input term. Derived from the label the name itself matched, before any swap to the approval\'s own label. The adverse-event sub-queries instead key off the raw input term to match heterogeneous reporter-entered values.',
+            'Name the recall/enforcement and shortage sub-queries ran against, and the Drugs@FDA approval search when the input name matches no application — the input term when it is whole words of the resolved generic name (an ingredient such as "metformin" or "adalimumab", so one label\'s product-specific generic does not narrow them), otherwise the resolved generic name, falling back to a brand name, then the input term. Derived from the label the name itself matched, before any swap to the approval\'s own label. The adverse-event sub-queries instead key off the input term to match heterogeneous reporter-entered values.',
           ),
       })
       .describe('Request metadata.'),
@@ -475,6 +494,11 @@ export const drugProfileTool = tool('openfda_drug_profile', {
       .array(
         z
           .object({
+            recall_number: z.string().nullable().describe('FDA recall number (e.g. D-0959-2017).'),
+            status: z
+              .string()
+              .nullable()
+              .describe('Recall status (Ongoing, Completed, Terminated).'),
             classification: z.string().nullable().describe('Recall hazard class (Class I/II/III).'),
             reason: z.string().nullable().describe('Reason for recall (truncated).'),
             recalling_firm: z.string().nullable().describe('Firm conducting the recall.'),
@@ -483,7 +507,7 @@ export const drugProfileTool = tool('openfda_drug_profile', {
           .describe('A single recall or enforcement action.'),
       )
       .describe(
-        'The newest 5 drug/enforcement recall actions whose openfda.generic_name or product_description matches meta.fanOutKey (may be empty); recalls_total counts every match.',
+        'The newest 5 drug/enforcement recall actions whose openfda.generic_name or product_description matches meta.fanOutKey (may be empty); recalls_total counts every match. A recall\'s lots (code_info) and distribution_pattern: openfda_search_recalls with category: drug and search recall_number:"<recall_number>".',
       ),
     recalls_total: z
       .number()
@@ -496,6 +520,22 @@ export const drugProfileTool = tool('openfda_drug_profile', {
         applicationNumber: z.string().nullable().describe('NDA, ANDA, or BLA application number.'),
         sponsor: z.string().nullable().describe('Sponsor/applicant name.'),
         marketingStatus: z.string().nullable().describe('Derived marketing/approval status.'),
+        approvalDate: z
+          .string()
+          .nullable()
+          .describe(
+            "Original approval date (submission_status_date, YYYYMMDD) of the earliest submission typed ORIG with status AP, ties to the lowest submission_number. Null when there is none, as for a tentative approval only or a record starting at a supplement; never a supplement's date.",
+          ),
+        reviewPriority: z
+          .string()
+          .nullable()
+          .describe('review_priority of that submission, verbatim (STANDARD, PRIORITY, …).'),
+        submissionClass: z
+          .string()
+          .nullable()
+          .describe(
+            'Class of that submission: submission_class_code_description (e.g. "Type 1 - New Molecular Entity"), else submission_class_code (UNKNOWN on most ANDA originals).',
+          ),
         brandNames: z
           .array(z.string())
           .describe("Brand names of the application's products (products.brand_name)."),
@@ -573,7 +613,7 @@ export const drugProfileTool = tool('openfda_drug_profile', {
     {
       reason: 'blank_drug_name',
       code: JsonRpcErrorCode.ValidationError,
-      when: 'The drug name carries no searchable character — only quotes, backslashes, or whitespace.',
+      when: 'The drug name carries no searchable character — no ASCII letter or digit.',
       recovery:
         'Supply a brand or generic drug name with at least one searchable character, for example "metformin".',
     },
@@ -595,29 +635,36 @@ export const drugProfileTool = tool('openfda_drug_profile', {
 
   async handler(input, ctx) {
     const svc = getOpenFdaService();
-    const term = input.drug.trim();
-    // Guard on searchable content, not on the raw input: a name made only of
-    // delimiters survives the schema, and searching for the literal delimiters
-    // would return an unrelated record set as a "profile".
+    // Read once: the phrases, the label ranking, and the fan-out key all use these words.
+    const term = searchableName(input.drug);
+    /**
+     * Guard on searchable content, not on the raw input: a name made only of
+     * punctuation survives the schema, and its wordless phrases would return an
+     * unrelated record set as a "profile".
+     */
     if (!hasSearchableCharacter(term)) {
       throw ctx.fail(
         'blank_drug_name',
-        `"${input.drug}" has no searchable characters, so it cannot be resolved to an FDA drug.`,
+        `"${input.drug}" has no ASCII letter or digit to search for, so it cannot be resolved to an FDA drug.`,
       );
     }
-    // Escaped once here; every interpolation below uses the escaped form, so a
-    // new sub-query cannot reintroduce the defect by interpolating `term` raw.
+    /**
+     * Escaped once here; every interpolation below uses the escaped form, so a
+     * new sub-query cannot reintroduce the defect by interpolating `term` raw.
+     */
     const termPhrase = phrase(term);
 
     const sink: FailureSink = { failures: [], signal: ctx.signal };
-    // One instant for every request of every round, so retries and backoffs in
-    // successive rounds cannot add up past the client's request timeout.
+    /**
+     * One instant for every request of every round, so retries and backoffs in
+     * successive rounds cannot add up past the client's request timeout.
+     */
     const deadline = { deadlineAtMs: Date.now() + PROFILE_DEADLINE_MS };
     const query = (endpoint: string, params: OpenFdaQueryParams) =>
       svc.query(endpoint, params, ctx, deadline);
     const termLower = term.toLowerCase();
 
-    /*
+    /**
      * 1. Resolve identity and select the approval in one round. The label search
      * asks for an original packager's label, so a repackager's never stands in for
      * the drug. The Drugs@FDA selection searches the typed name — NDAs and BLAs by
@@ -646,15 +693,17 @@ export const drugProfileTool = tool('openfda_drug_profile', {
         sink,
       ),
     ]);
-    // A global failure (bad key, forbidden endpoint, caller gone): more requests
-    // would only widen the blast radius.
+    /**
+     * A global failure (bad key, forbidden endpoint, caller gone): more requests
+     * would only widen the blast radius.
+     */
     if (sink.fatal) throw sink.fatal;
 
     let labelRecord = flaggedRes
       ? bestMatch(flaggedRes.results, termLower, openfdaNames)
       : undefined;
     let ndcRecord: Record<string, unknown> | undefined;
-    /* 2. No original packager's label matched: any label, with drug/ndc beside it. */
+    // 2. No original packager's label matched: any label, with drug/ndc beside it.
     if (!labelRecord) {
       const [labelRes, ndcRes] = await Promise.all([
         settle(
@@ -685,7 +734,7 @@ export const drugProfileTool = tool('openfda_drug_profile', {
         ? identityFromNdc(ndcRecord)
         : EMPTY_IDENTITY;
 
-    /*
+    /**
      * 3. Fan out in parallel off the resolved identity. Structured endpoints key off
      * `fanOutKeyFor` — a typed ingredient, else the resolved generic name; the free-text
      * adverse-event field keys off the user's term, which matches the heterogeneous
@@ -713,8 +762,10 @@ export const drugProfileTool = tool('openfda_drug_profile', {
       ownLabelRes,
       fallbackRes,
     ] = await Promise.all([
-      // The match total. A count response carries no total, and summing the
-      // `serious` buckets would drop every report with no seriousness recorded.
+      /**
+       * The match total. A count response carries no total, and summing the
+       * `serious` buckets would drop every report with no seriousness recorded.
+       */
       settle('adverse_events', () => query('drug/event', { search: eventSearch, limit: 0 }), sink),
       settle(
         'adverse_events',
@@ -777,11 +828,13 @@ export const drugProfileTool = tool('openfda_drug_profile', {
         : null,
     ]);
 
-    // Auth/config failures and cancellation stay accessible to the caller rather
-    // than collapsing into an empty best-effort profile.
+    /**
+     * Auth/config failures and cancellation stay accessible to the caller rather
+     * than collapsing into an empty best-effort profile.
+     */
     if (sink.fatal) throw sink.fatal;
 
-    /* 4. Merge sections (best-effort: absent/failed → null). */
+    // 4. Merge sections (best-effort: absent/failed → null).
     const ownLabel = ownLabelRes
       ? bestMatch(ownLabelRes.results, termLower, openfdaNames)
       : undefined;
@@ -794,9 +847,11 @@ export const drugProfileTool = tool('openfda_drug_profile', {
     const label = labelRecord
       ? {
           indications: section(labelRecord.indications_and_usage),
-          // Rx SPL labels carry safety text in boxed_warning / warnings_and_cautions;
-          // the bare `warnings` field is the OTC-monograph section and is null for
-          // most prescription drugs. Fall back through the Rx sections first.
+          /**
+           * Rx SPL labels carry safety text in boxed_warning / warnings_and_cautions;
+           * the bare `warnings` field is the OTC-monograph section and is null for
+           * most prescription drugs. Fall back through the Rx sections first.
+           */
           warnings: section(
             labelRecord.boxed_warning ?? labelRecord.warnings_and_cautions ?? labelRecord.warnings,
           ),
@@ -809,17 +864,17 @@ export const drugProfileTool = tool('openfda_drug_profile', {
       seriousCount: number;
       topReactions: Array<{ term: string; count: number }>;
     } | null = null;
-    // All three sub-queries or nothing: a failed one leaves the section unknown
-    // (listed in `degraded`) rather than reported beside an invented figure.
+    /**
+     * All three sub-queries or nothing: a failed one leaves the section unknown
+     * (listed in `degraded`) rather than reported beside an invented figure.
+     */
     if (eventTotalRes && reactionsRes && seriousRes) {
       const topReactions = reactionsRes.results.map((r) => ({
-        term: String((r as Record<string, unknown>).term),
-        count: Number((r as Record<string, unknown>).count ?? 0),
+        term: String(r.term),
+        count: Number(r.count ?? 0),
       }));
       const total = eventTotalRes.meta.total;
-      const seriousBucket = (seriousRes.results as Array<Record<string, unknown>>).find(
-        (b) => String(b.term) === '1',
-      );
+      const seriousBucket = seriousRes.results.find((b) => String(b.term) === '1');
       // A matched set with no serious=1 bucket has no serious reports.
       const seriousCount = Number(seriousBucket?.count ?? 0);
       if (topReactions.length > 0 || total > 0) {
@@ -827,15 +882,15 @@ export const drugProfileTool = tool('openfda_drug_profile', {
       }
     }
 
-    const recalls = (recallsRes?.results ?? []).map((r) => {
-      const rec = r as Record<string, unknown>;
-      return {
-        classification: (rec.classification as string) ?? null,
-        reason: rec.reason_for_recall ? truncate(rec.reason_for_recall as string, 300) : null,
-        recalling_firm: (rec.recalling_firm as string) ?? null,
-        date: (rec.recall_initiation_date as string) ?? (rec.report_date as string) ?? null,
-      };
-    });
+    const recalls = (recallsRes?.results ?? []).map((rec) => ({
+      // One drug enforcement report carries recall_number "": absent, not a number.
+      recall_number: first(rec.recall_number),
+      status: first(rec.status),
+      classification: (rec.classification as string) ?? null,
+      reason: rec.reason_for_recall ? truncate(rec.reason_for_recall as string, 300) : null,
+      recalling_firm: (rec.recalling_firm as string) ?? null,
+      date: (rec.recall_initiation_date as string) ?? (rec.report_date as string) ?? null,
+    }));
     // Unknown, not zero, when the recall sub-query failed.
     const recalls_total = recallsRes ? recallsRes.meta.total : null;
 
@@ -859,7 +914,7 @@ export const drugProfileTool = tool('openfda_drug_profile', {
       shortage,
     ].filter((s) => s != null).length;
 
-    /*
+    /**
      * One entry per section, not per sub-query — the three adverse-event calls share
      * a section — in section order. A label in hand still fills the section, so a
      * label lookup that failed beside it is named in a notice instead; a failed
@@ -888,8 +943,10 @@ export const drugProfileTool = tool('openfda_drug_profile', {
     // `notice` is last-wins, so every condition this call raises is joined into one.
     const notices: string[] = [];
     if (degraded.length > 0) {
-      // Never attribute an upstream failure to a misspelled drug — say which
-      // sections failed and why, and only then note an unresolved identity.
+      /**
+       * Never attribute an upstream failure to a misspelled drug — say which
+       * sections failed and why, and only then note an unresolved identity.
+       */
       const detail = degraded.map((d) => `${d.section} (${d.reason})`).join(', ');
       notices.push(
         `Partial profile — these sections failed upstream and are unknown, not empty: ${detail}. Retry for a complete profile.${
@@ -903,8 +960,10 @@ export const drugProfileTool = tool('openfda_drug_profile', {
         `Could not resolve ${codeLiteral(input.drug)} to an FDA drug. Check the spelling, try the generic name, or query openfda_get_drug_label / openfda_lookup_ndc directly.`,
       );
     }
-    // A failed lookup could only have found a label the rule ranks above the one
-    // shown — unless the one shown is already the picked application's own.
+    /**
+     * A failed lookup could only have found a label the rule ranks above the one
+     * shown — unless the one shown is already the picked application's own.
+     */
     const failedLookups = sink.failures.filter((f) => f.section === 'label');
     if (
       labelRecord &&
@@ -959,11 +1018,12 @@ export const drugProfileTool = tool('openfda_drug_profile', {
       degraded,
       meta,
     } = result;
-    /*
+    /**
      * The drug name and the fan-out key (the typed term, when it keys the
      * sub-queries) are caller text, so each rides as a code literal: a span in
-     * the line, or a fence on the lines after it when the value holds a break.
-     * The emphasis closes before the key, since a fence cannot sit inside it.
+     * the line, or a fence on the lines after it when the value holds a break —
+     * the name as typed can, the key never does (`searchableName`). The emphasis
+     * closes before the key all the same.
      */
     const lines: string[] = [
       `# Drug profile: ${codeLiteral(meta.drug)}`,
@@ -971,8 +1031,10 @@ export const drugProfileTool = tool('openfda_drug_profile', {
       '',
     ];
 
-    // Ahead of the sections themselves, so an empty section is never read as
-    // "no FDA record" when the sub-query behind it actually failed.
+    /**
+     * Ahead of the sections themselves, so an empty section is never read as
+     * "no FDA record" when the sub-query behind it actually failed.
+     */
     if (degraded.length > 0) {
       lines.push(`## Degraded (${degraded.length} section${degraded.length === 1 ? '' : 's'})`);
       lines.push('These sub-queries failed upstream — the data below is unknown, not absent:');
@@ -1046,7 +1108,7 @@ export const drugProfileTool = tool('openfda_drug_profile', {
       for (const r of recalls) {
         lines.push(
           singleLine(
-            `- **Classification:** ${r.classification ?? 'n/a'} · **Recalling firm:** ${r.recalling_firm ?? 'n/a'} · **Date:** ${r.date ?? 'n/a'}`,
+            `- **Recall number:** ${r.recall_number ?? 'n/a'} · **Status:** ${r.status ?? 'n/a'} · **Classification:** ${r.classification ?? 'n/a'} · **Recalling firm:** ${r.recalling_firm ?? 'n/a'} · **Date:** ${r.date ?? 'n/a'}`,
           ),
         );
         lines.push(singleLine(`  **Reason:** ${r.reason ?? 'n/a'}`));
@@ -1064,6 +1126,7 @@ export const drugProfileTool = tool('openfda_drug_profile', {
       lines.push(
         ...[
           `**Application number:** ${approval.applicationNumber ?? 'n/a'} | **Sponsor:** ${approval.sponsor ?? 'n/a'} | **Marketing status:** ${approval.marketingStatus ?? 'n/a'}`,
+          `**Approval date:** ${approval.approvalDate ?? 'n/a'} | **Review priority:** ${approval.reviewPriority ?? 'n/a'} | **Submission class:** ${approval.submissionClass ?? 'n/a'}`,
           `**Brand names:** ${approval.brandNames.length ? approval.brandNames.join(', ') : 'n/a'}`,
         ].map(singleLine),
         candidates > CANDIDATE_LIMIT

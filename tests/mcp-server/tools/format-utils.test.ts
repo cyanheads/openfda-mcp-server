@@ -309,6 +309,26 @@ describe('emptyResultMessage', () => {
     expect(msg).toContain('skip=2000');
     expect(msg).not.toContain('Try different filters.');
   });
+
+  // #97 — a cursor page's skip is its walk position; past the end there, the walk is over.
+  it('says the cursor walk has ended, not that an offset overshot, on a page read by cursor', () => {
+    const msg = emptyResultMessage(30_231, 30_200, 'Try different filters.', undefined, true);
+    expect(msg).toBe(
+      'No records at this cursor: its walk position (30231) is past the last of the 30200 matched records, so the cursor walk has ended. Re-run the call from skip 0 to read them again.',
+    );
+  });
+
+  it.each([
+    ['a confirmed zero', undefined, 'Try different filters.'],
+    ['an unverified zero', true, 'No results at skip=40.'],
+  ] as const)(
+    'keeps the skip wording for %s on a page read by cursor',
+    (_name, unverified, lead) => {
+      const msg = emptyResultMessage(40, 0, 'Try different filters.', unverified, true);
+      expect(msg.startsWith(lead)).toBe(true);
+      expect(msg).not.toContain('cursor');
+    },
+  );
 });
 
 describe('noMatchNote', () => {
@@ -350,6 +370,33 @@ describe('searchLead', () => {
 
   it('opens with the header alone when nothing staged and no record was oversized', () => {
     expect(searchLead({ meta: META, results: [] })).toEqual([`${resultHeader(META, 0)}\n`]);
+  });
+
+  // #97 — content[] carries the token structuredContent.next_cursor does, copyable as written.
+  describe('the next_cursor line', () => {
+    /** A base64url token whose `_` and `-` would read as Markdown outside a code span. */
+    const TOKEN = 'eyJwIjoyNSwiYSI6IjA9MTc4MTY1NDQwMDAwMDsxPVdYMjMtcUVCeDVjQm1hb28tNjlkIn0_x_-';
+
+    it('follows the header, as a code span on a line of its own', () => {
+      const lead = searchLead({
+        meta: { ...META, total: 100, limit: 25 },
+        results: [{}],
+        next_cursor: TOKEN,
+        projected_fields: ['report_id'],
+      });
+      expect(lead[1]).toBe(`next_cursor: \`${TOKEN}\`\n`);
+      expect(lead[2]).toMatch(/^> Records projected to the requested fields/);
+    });
+
+    it('reads back as the exact token under CommonMark', () => {
+      const text = searchLead({ meta: META, results: [], next_cursor: TOKEN }).join('\n');
+      expect(codeLiteralsIn(renderCommonMark(text))).toEqual([TOKEN]);
+    });
+
+    it('is absent when the page carries no next_cursor', () => {
+      const lead = searchLead({ meta: META, results: [], next_cursor: undefined });
+      expect(lead.join('')).not.toContain('next_cursor');
+    });
   });
 
   it('orders header, oversized-record line, then staging line', () => {
@@ -455,6 +502,74 @@ describe('projectedRecordLines', () => {
       '### recall_number: D-1 ### forged',
     );
   });
+
+  /**
+   * #93 — an Orange Book product's application number sits in `products[]`, so
+   * its identity key is the dotted `products.application_number`. The heading
+   * reads it through the array; the `products` block it sits in still renders
+   * whole, since it carries the record's other projected product fields.
+   */
+  describe('a dotted identity key (#93)', () => {
+    const OB_IDS = [
+      'application_number',
+      'products.application_number',
+      'products.application_type',
+      'product_number',
+    ] as const;
+
+    it('heads the record with the value under the array, and renders the parent block whole', () => {
+      expect(
+        projectedRecordLines(
+          {
+            products: [{ application_number: '202155', application_type: 'N', route: 'ORAL' }],
+            product_number: '001',
+          },
+          OB_IDS,
+        ),
+      ).toEqual([
+        '### products.application_number: 202155',
+        '**Products:** [{"application_number":"202155","application_type":"N","route":"ORAL"}]',
+        '**Product number:** 001',
+      ]);
+    });
+
+    it('joins the values every element carries, in element order', () => {
+      expect(
+        projectedRecordLines(
+          { products: [{ application_number: '202155' }, {}, { application_number: '220073' }] },
+          OB_IDS,
+        )[0],
+      ).toBe('### products.application_number: 202155, 220073');
+    });
+
+    it('passes over a dotted key no element carries, to the next identity key', () => {
+      expect(
+        projectedRecordLines({ products: [{ route: 'ORAL' }], product_number: '002' }, OB_IDS),
+      ).toEqual(['### product_number: 002', '**Products:** [{"route":"ORAL"}]']);
+    });
+
+    it('reads a dotted key through a nested object as well as an array', () => {
+      expect(projectedRecordLines({ a: { b: 'X-1' }, c: 'kept' }, ['a.b'])).toEqual([
+        '### a.b: X-1',
+        '**A:** b=X-1',
+        '**C:** kept',
+      ]);
+    });
+
+    it('joins a top-level array identity value with commas and spaces', () => {
+      expect(
+        projectedRecordLines({ application_number: ['BLA 761458/Original 2', 'BLA 761458'] }, [
+          'application_number',
+        ]),
+      ).toEqual(['### application_number: BLA 761458/Original 2, BLA 761458']);
+    });
+
+    it('flattens a line break in a dotted identity value', () => {
+      expect(
+        projectedRecordLines({ products: [{ application_number: '1\n# forged' }] }, OB_IDS)[0],
+      ).toBe('### products.application_number: 1 # forged');
+    });
+  });
 });
 
 describe('emptyPageBody', () => {
@@ -474,6 +589,20 @@ describe('emptyPageBody', () => {
     const body = emptyPageBody({ meta: { total: 12, skip: 40 } }, 'No results found.');
     expect(body).not.toContain('No results found');
     expect(body).toContain('skip=40 is past the end');
+  });
+
+  it('tells a page at or under the skip ceiling to lower skip', () => {
+    expect(emptyPageBody({ meta: { total: 30_231, skip: 25_000 } }, 'No results found.')).toBe(
+      'No records in this page: 30231 matched, but skip=25000 is past the end of the result set. Lower skip to read matched records.',
+    );
+  });
+
+  // #97 — only a cursor page reports a walk position past the ceiling, which no skip reaches.
+  it('points a cursor page past the skip ceiling at a walk from skip 0, never at a lower skip', () => {
+    const body = emptyPageBody({ meta: { total: 30_200, skip: 30_231 } }, 'No results found.');
+    expect(body).toBe(
+      'No records in this page: 30200 matched, but skip=30231 is past the end of the result set. Re-run the call from skip 0 and follow next_cursor to read matched records.',
+    );
   });
 });
 

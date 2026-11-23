@@ -14,8 +14,11 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 import { z } from '@cyanheads/mcp-ts-core';
 import { resetServerConfig } from '@/config/server-config.js';
 import { getDrugLabelTool } from '@/mcp-server/tools/definitions/get-drug-label.tool.js';
-import { phrasePlusHint } from '@/mcp-server/tools/schema-utils.js';
+import { invalidCursorError } from '@/mcp-server/tools/pagination-cursor.js';
+import { paginationLimitReachedError } from '@/mcp-server/tools/schema-utils.js';
+import { phrasePlusHint } from '@/mcp-server/tools/search-expression.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import type { OpenFdaQueryParams } from '@/services/openfda/types.js';
 import {
   FOOTNOTE_INLINE,
   FOOTNOTE_REF,
@@ -1149,6 +1152,866 @@ describe('openfda_get_drug_label', () => {
       const text = textOf(content);
       expect(text).toContain('Careful.');
       expect(text).toContain('`warnings` — 11 bytes');
+    });
+  });
+
+  /*
+   * #107 — an outline page names the records it sums over, so a brand search's
+   * repackager copies can be told from the original packager's label.
+   */
+  describe('page_labels on an outline page (#107)', () => {
+    /** A label over the outline budget on its own; `openfda` undefined drops the key. */
+    function packagedLabel(
+      setId: string,
+      openfda: Record<string, unknown> | undefined,
+    ): Record<string, unknown> {
+      return {
+        ...(openfda !== undefined && { openfda }),
+        set_id: setId,
+        id: `id-${setId}`,
+        effective_time: '20260817',
+        version: '39',
+        boxed_warning: ['B'.repeat(9_000)],
+        warnings_and_cautions: ['W'.repeat(9_000)],
+        clinical_studies: ['C'.repeat(9_000)],
+      };
+    }
+    const squibb = () =>
+      packagedLabel('e9481622-7cc6-418a-acb6-c5450daae9b0', {
+        brand_name: ['ELIQUIS', 'ELIQUIS SPRINKLE'],
+        generic_name: ['APIXABAN'],
+        manufacturer_name: ['E.R. Squibb & Sons, L.L.C.'],
+        application_number: ['NDA202155'],
+        is_original_packager: [true],
+      });
+    const aphena = () =>
+      packagedLabel('set-aphena', {
+        brand_name: ['ELIQUIS'],
+        generic_name: ['APIXABAN'],
+        manufacturer_name: ['Aphena Pharma Solutions - Tennessee, LLC'],
+        application_number: ['NDA202155'],
+      });
+    /** A linked label missing a name: the name is null, the flag still false. */
+    const genericOnly = () =>
+      packagedLabel('set-generic', { generic_name: ['APIXABAN'], product_type: ['HUMAN'] });
+    const emptyBlock = () => packagedLabel('set-empty', {});
+    const noBlock = () => packagedLabel('set-none', undefined);
+    const ownBytes = (record: unknown) => Buffer.byteLength(JSON.stringify(record), 'utf8');
+
+    interface OutlineStructured {
+      kind: string;
+      notice?: string;
+      outline: { name: string }[];
+      page_labels: Record<string, unknown>[];
+    }
+
+    async function outlinePage(records: Record<string, unknown>[], search: string, total = 9) {
+      mockQuery.mockResolvedValue({
+        meta: { total, skip: 0, limit: records.length, lastUpdated: '2026-11-20' },
+        results: records,
+      });
+      const result = await runToolContract(getDrugLabelTool, { search, limit: records.length });
+      expect(result.isError).toBeFalsy();
+      return { result, structured: result.structuredContent as unknown as OutlineStructured };
+    }
+
+    it('names every record on a page where each carries an openfda block, on both surfaces', async () => {
+      const records = [aphena(), squibb()];
+      const { result, structured } = await outlinePage(records, 'openfda.brand_name:"eliquis"');
+
+      expect(structured.kind).toBe('outline');
+      expect(structured.page_labels).toEqual([
+        {
+          set_id: 'set-aphena',
+          effective_time: '20260817',
+          brand_name: 'ELIQUIS',
+          generic_name: 'APIXABAN',
+          manufacturer_name: 'Aphena Pharma Solutions - Tennessee, LLC',
+          is_original_packager: false,
+          bytes: ownBytes(records[0]),
+        },
+        {
+          set_id: 'e9481622-7cc6-418a-acb6-c5450daae9b0',
+          effective_time: '20260817',
+          brand_name: 'ELIQUIS',
+          generic_name: 'APIXABAN',
+          manufacturer_name: 'E.R. Squibb & Sons, L.L.C.',
+          is_original_packager: true,
+          bytes: ownBytes(records[1]),
+        },
+      ]);
+      // Each label clears the budget alone, so its own size is what says a set_id re-call outlines too.
+      for (const label of structured.page_labels) expect(label.bytes).toBeGreaterThan(BUDGET);
+
+      const text = textOf(result.content);
+      expect(text).toContain(
+        `| set-aphena | 20260817 | ELIQUIS | APIXABAN | Aphena Pharma Solutions - Tennessee, LLC | false | ${ownBytes(records[0])} |`,
+      );
+      expect(text).toContain(
+        `| e9481622-7cc6-418a-acb6-c5450daae9b0 | 20260817 | ELIQUIS | APIXABAN | E.R. Squibb & Sons, L.L.C. | true | ${ownBytes(records[1])} |`,
+      );
+      // The table parses with one cell per field, every value included.
+      const html = renderCommonMark(text);
+      const rows = [...html.matchAll(/<tr>([\s\S]*?)<\/tr>/g)].map((m) =>
+        [...(m[1] ?? '').matchAll(/<t[hd]>([\s\S]*?)<\/t[hd]>/g)].map((c) => c[1]),
+      );
+      expect(rows[0]).toEqual([
+        'set_id',
+        'effective_time',
+        'brand_name',
+        'generic_name',
+        'manufacturer_name',
+        'is_original_packager',
+        'bytes',
+      ]);
+      expect(rows[2]).toEqual([
+        'e9481622-7cc6-418a-acb6-c5450daae9b0',
+        '20260817',
+        'ELIQUIS',
+        'APIXABAN',
+        'E.R. Squibb &amp; Sons, L.L.C.',
+        'true',
+        String(ownBytes(records[1])),
+      ]);
+    });
+
+    it('keeps set_id, effective_time, and bytes on a page where no record has openfda data, the rest null', async () => {
+      const records = [emptyBlock(), noBlock()];
+      const { result, structured } = await outlinePage(
+        records,
+        'spl_product_data_elements:"apixaban"',
+      );
+
+      expect(structured.page_labels).toEqual(
+        records.map((record) => ({
+          set_id: record.set_id,
+          effective_time: '20260817',
+          brand_name: null,
+          generic_name: null,
+          manufacturer_name: null,
+          is_original_packager: null,
+          bytes: ownBytes(record),
+        })),
+      );
+      const text = textOf(result.content);
+      for (const record of records) {
+        expect(text).toContain(
+          `| ${record.set_id} | 20260817 | null | null | null | null | ${ownBytes(record)} |`,
+        );
+      }
+    });
+
+    it('tells true, false, and unknown apart on a mixed page, on both surfaces', async () => {
+      const records = [squibb(), aphena(), genericOnly(), emptyBlock()];
+      const { result, structured } = await outlinePage(records, 'openfda.generic_name:"apixaban"');
+
+      expect(structured.page_labels.map((l) => [l.set_id, l.is_original_packager])).toEqual([
+        ['e9481622-7cc6-418a-acb6-c5450daae9b0', true],
+        ['set-aphena', false],
+        ['set-generic', false],
+        ['set-empty', null],
+      ]);
+      expect(structured.page_labels[2]).toMatchObject({
+        brand_name: null,
+        generic_name: 'APIXABAN',
+        manufacturer_name: null,
+      });
+      const flags = [...textOf(result.content).matchAll(/^\| (\S+) \|.*\| (\w+) \| \d+ \|$/gm)].map(
+        (m) => [m[1], m[2]],
+      );
+      expect(flags).toEqual([
+        ['e9481622-7cc6-418a-acb6-c5450daae9b0', 'true'],
+        ['set-aphena', 'false'],
+        ['set-generic', 'false'],
+        ['set-empty', 'null'],
+      ]);
+    });
+
+    it('lists one record for a set_id re-call that still outlines', async () => {
+      const { structured } = await outlinePage(
+        [squibb()],
+        'set_id:"e9481622-7cc6-418a-acb6-c5450daae9b0"',
+        1,
+      );
+
+      expect(structured.kind).toBe('outline');
+      expect(structured.page_labels).toHaveLength(1);
+      expect(structured.page_labels[0]).toMatchObject({ is_original_packager: true });
+    });
+
+    it('adds page_labels to the outline arm only', async () => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 1, skip: 0, limit: 5, lastUpdated: '2026-11-20' },
+        results: [squibb()],
+      });
+
+      const selection = await runToolContract(getDrugLabelTool, {
+        search: 'openfda.brand_name:"eliquis"',
+        sections: ['boxed_warning'],
+      });
+
+      expect(selection.isError).toBeFalsy();
+      expect(selection.structuredContent).toMatchObject({ kind: 'full' });
+      expect(selection.structuredContent).not.toHaveProperty('page_labels');
+    });
+
+    it('escapes a cell that would split the row, keeping every value', () => {
+      const content = getDrugLabelTool.format!({
+        meta: { total: 1, skip: 0, limit: 1, lastUpdated: '' },
+        kind: 'outline',
+        outline: [{ name: 'boxed_warning', bytes: 9004 }],
+        page_labels: [
+          {
+            set_id: 'set-pipe',
+            effective_time: '20260101',
+            brand_name: 'A | B',
+            generic_name: null,
+            manufacturer_name: 'Acme *Labs*',
+            is_original_packager: false,
+            bytes: 27_000,
+          },
+        ],
+      });
+
+      const html = renderCommonMark(textOf(content));
+      const cells = [...html.matchAll(/<td>([\s\S]*?)<\/td>/g)].map((m) => m[1]);
+      expect(cells).toEqual([
+        'set-pipe',
+        '20260101',
+        'A | B',
+        'null',
+        'Acme *Labs*',
+        'false',
+        '27000',
+      ]);
+    });
+
+    describe("the routes to the original packager's label", () => {
+      const routes =
+        "For the original packager's label, add AND openfda.is_original_packager:true to the search (it keeps only the labels openFDA flags, so several or none can remain), or take identity.spl_set_id from openfda_drug_profile.";
+
+      it('names both when more labels matched than the page returned, on both surfaces', async () => {
+        const { result, structured } = await outlinePage(
+          [aphena(), aphena()],
+          'openfda.brand_name:"eliquis"',
+        );
+
+        expect(structured.notice).toContain(
+          `9 labels matched; this page returned 2. Page with skip (e.g. skip=2) or narrow the search. ${routes}`,
+        );
+        expect(noticeQuote(result)).toContain('openfda.is_original_packager:true');
+        expect(noticeQuote(result)).toContain('identity.spl_set_id from openfda_drug_profile');
+      });
+
+      it('drops the filter when the search already names is_original_packager', async () => {
+        const { structured } = await outlinePage(
+          [squibb(), squibb()],
+          'openfda.brand_name:"medrol" AND openfda.is_original_packager:true',
+        );
+
+        expect(structured.notice).toContain(
+          "or narrow the search. For the original packager's label, take identity.spl_set_id from openfda_drug_profile.",
+        );
+        expect(structured.notice).not.toContain('add AND');
+      });
+
+      it('rides the whole-record page that leaves labels unreturned too', async () => {
+        mockQuery.mockResolvedValue({
+          meta: { total: 9, skip: 0, limit: 1, lastUpdated: '2026-11-20' },
+          results: [{ openfda: { brand_name: ['ELIQUIS'] }, set_id: 'set-small' }],
+        });
+
+        const result = await runToolContract(getDrugLabelTool, {
+          search: 'openfda.brand_name:"eliquis"',
+          limit: 1,
+        });
+
+        expect(result.structuredContent).toMatchObject({ kind: 'full' });
+        expect(noticeOf(result)).toBe(
+          `9 labels matched; this page returned 1. Page with skip (e.g. skip=1) or narrow the search. ${routes}`,
+        );
+      });
+
+      it('are named in the search description', () => {
+        const description = getDrugLabelTool.input.shape.search.description ?? '';
+        expect(description).toContain('add AND openfda.is_original_packager:true');
+        expect(description).toContain('identity.spl_set_id from openfda_drug_profile');
+      });
+    });
+  });
+
+  describe('the more-pages lead at the skip ceiling (#97)', () => {
+    it('never suggests a skip past the ceiling on a page read at skip 25000', async () => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 46_581, skip: 25_000, limit: 1, lastUpdated: '2026-11-20' },
+        results: [{ openfda: { brand_name: ['Oral'] }, set_id: 'set-oral' }],
+      });
+
+      const result = await runToolContract(getDrugLabelTool, {
+        search: 'openfda.route:"ORAL"',
+        limit: 1,
+        skip: 25_000,
+      });
+
+      const notice = noticeOf(result);
+      expect(notice).not.toContain('e.g. skip=25001');
+      expect(notice).toContain(
+        "46581 labels matched; this page returned 1. The next page would start at skip=25001, past openFDA's 25000-record pagination ceiling — to read past it, re-run the call from skip 0 and follow next_cursor, or narrow the search.",
+      );
+    });
+  });
+
+  /*
+   * #97 — the search_after cursor. The token itself is tabled in
+   * pagination-cursor.test.ts; these prove this handler's wiring on each arm
+   * (whole page, sections selection, outline) and the guidance only this tool
+   * gives. They stand in for a pagination-contract CURSOR_TOOLS row, whose
+   * limit-and-fields case sends `fields`, an input this tool does not take.
+   */
+  describe('cursor (#97)', () => {
+    const search = 'openfda.brand_name:"aspirin"';
+
+    interface CursorStructured {
+      kind: string;
+      meta: { skip: number; total: number };
+      next_cursor?: string;
+      notice?: string;
+      outline?: unknown[];
+      page_labels?: { set_id: string | null }[];
+      results?: { id?: string }[];
+    }
+
+    /**
+     * Answer `mockQuery` the way openFDA answers through the service: a request
+     * by `search_after` value resumes after the record that value names (never at
+     * `position`, which returns only as `meta.skip`), and every non-empty page
+     * links the next, the exactly full last page included. `served` caps each
+     * page below the `limit` sent, as a short page would; `record` shapes each id.
+     */
+    function answerLikeOpenFda(
+      total: number,
+      {
+        served = [],
+        record = (id: string): Record<string, unknown> => ({ id }),
+      }: { served?: readonly number[]; record?: (id: string) => Record<string, unknown> } = {},
+    ) {
+      const ids = Array.from({ length: total }, (_, i) => `doc-${String(i).padStart(5, '0')}`);
+      let call = 0;
+      mockQuery.mockImplementation((_endpoint: string, params: OpenFdaQueryParams) => {
+        const from = params.searchAfter
+          ? ids.indexOf(params.searchAfter.value.replace(/^0=/, '')) + 1
+          : (params.skip ?? 0);
+        const size = Math.min(params.limit ?? 5, served[call] ?? Number.POSITIVE_INFINITY);
+        call += 1;
+        const slice = ids.slice(from, from + size);
+        return Promise.resolve({
+          meta: {
+            skip: params.searchAfter?.position ?? params.skip ?? 0,
+            total,
+            limit: params.limit ?? 5,
+            lastUpdated: '2026-11-21',
+          },
+          results: slice.map(record),
+          ...(slice.length > 0 && { nextSearchAfter: `0=${slice.at(-1)}` }),
+        });
+      });
+      return ids;
+    }
+
+    const structuredOf = (result: WireResult) =>
+      result.structuredContent as unknown as CursorStructured;
+
+    /** Read the first page and return its next_cursor; fails when none is issued. */
+    async function firstCursor(extra: Record<string, unknown> = {}) {
+      const result = await runToolContract(getDrugLabelTool, { search, limit: 5, ...extra });
+      const { next_cursor } = structuredOf(result);
+      expect(next_cursor).toMatch(/^[A-Za-z0-9_-]+$/);
+      return next_cursor as string;
+    }
+
+    const big = (id: string) => ({ ...oversizedLabel(), set_id: id, id });
+
+    it('advertises cursor with its base64url pattern and next_cursor as an optional output', () => {
+      const input = z.toJSONSchema(getDrugLabelTool.input) as unknown as {
+        properties: Record<string, { pattern?: string }>;
+        required?: string[];
+      };
+      expect(input.properties.cursor?.pattern).toBe('^[A-Za-z0-9_-]+$');
+      expect(input.required ?? []).not.toContain('cursor');
+      const output = z.toJSONSchema(getDrugLabelTool.output) as unknown as {
+        properties: Record<string, { type?: string }>;
+        required?: string[];
+      };
+      expect(output.properties.next_cursor?.type).toBe('string');
+      expect(output.required ?? []).not.toContain('next_cursor');
+    });
+
+    it('declares the shared invalid_cursor and pagination_limit_reached entries', () => {
+      expect(getDrugLabelTool.errors).toContain(invalidCursorError);
+      expect(getDrugLabelTool.errors).toContain(paginationLimitReachedError);
+    });
+
+    it('sends no searchAfter and returns no next_cursor key without a cursor or a link', async () => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 3, skip: 0, limit: 5, lastUpdated: '2026-01-01' },
+        results: [{ openfda: { brand_name: ['Aspirin'] } }],
+      });
+
+      const result = await getDrugLabelTool.handler(getDrugLabelTool.input.parse({ search }), ctx);
+
+      expect(mockQuery.mock.calls[0]![1].searchAfter).toBeUndefined();
+      expect(Object.keys(result).sort()).toEqual(['kind', 'meta', 'results']);
+    });
+
+    it('issues next_cursor on a skip 0 page, the same token on both surfaces', async () => {
+      answerLikeOpenFda(12);
+
+      const result = await runToolContract(getDrugLabelTool, { search, limit: 5 });
+
+      const { next_cursor, notice } = structuredOf(result);
+      expect(next_cursor).toMatch(/^[A-Za-z0-9_-]+$/);
+      const lines = textOf(result.content).split('\n');
+      expect(lines[0]).toMatch(/^\*\*12 total results\*\*/);
+      expect(lines[2]).toBe(`next_cursor: \`${next_cursor}\``);
+      expect(notice).toContain(
+        '12 labels matched; this page returned 5. Page with next_cursor or skip (e.g. skip=5), or narrow the search.',
+      );
+    });
+
+    it('follows next_cursor with the query it was issued for, and no skip', async () => {
+      answerLikeOpenFda(12);
+      const cursor = await firstCursor({ sort: 'effective_time:desc' });
+
+      await runToolContract(getDrugLabelTool, {
+        search,
+        sort: 'effective_time:desc',
+        limit: 5,
+        cursor,
+      });
+
+      const [first, second] = mockQuery.mock.calls;
+      expect(second?.[0]).toBe('drug/label');
+      expect(second?.[1]).toMatchObject({
+        search,
+        sort: 'effective_time:desc',
+        searchAfter: { value: '0=doc-00004', position: 5 },
+      });
+      expect(first?.[1].searchAfter).toBeUndefined();
+      expect(second?.[1].skip ?? 0).toBe(0);
+    });
+
+    it('walks the match once, in order, across a clamp and short pages', async () => {
+      // 12 records: limit 3, then a clamped limit the fake serves only 4 of, then 2, then 5.
+      const ids = answerLikeOpenFda(12, { served: [3, 4, 2, 5] });
+      const seen: string[] = [];
+      const skips: number[] = [];
+      const notices: (string | undefined)[] = [];
+      let last: WireResult | undefined;
+      let cursor: string | undefined;
+
+      for (const limit of [3, 1_000_000, 2, 5]) {
+        last = await runToolContract(getDrugLabelTool, {
+          search,
+          limit,
+          ...(cursor && { cursor }),
+        });
+        const structured = structuredOf(last);
+        skips.push(structured.meta.skip);
+        notices.push(structured.notice);
+        seen.push(...(structured.results ?? []).map((r) => String(r.id)));
+        cursor = structured.next_cursor;
+        if (!cursor) break;
+      }
+
+      expect(skips).toEqual([0, 3, 7, 9]);
+      expect(seen).toEqual(ids);
+      // The clamp notice counts from the walk position and the 4 records served, not the cap.
+      expect(notices[1]).toContain(
+        'limit=1000000 is above the 1000-record cap for drug/label, so 1000 was applied. The next page starts at skip=7.',
+      );
+      expect(notices[2]).toContain(
+        'this page returned 2. Page with next_cursor or skip (e.g. skip=9)',
+      );
+      expect(cursor).toBeUndefined();
+      expect(notices[3]).toBe(
+        'This page holds the last 3 of the 12 matched records, so the cursor walk is complete.',
+      );
+      expect(noticeQuote(last!)).toContain('so the cursor walk is complete.');
+      expect(textOf(last!.content)).not.toContain('next_cursor:');
+    });
+
+    it('walks past skip 25000 and never names a skip past the ceiling', async () => {
+      const ids = answerLikeOpenFda(26_500);
+      const seen: string[] = [];
+      const suggested: number[] = [];
+      let atCeiling: string | undefined;
+      let cursor: string | undefined;
+
+      for (let page = 0; page < 30; page++) {
+        const result = await runToolContract(getDrugLabelTool, {
+          search,
+          limit: 1000,
+          ...(cursor && { cursor }),
+        });
+        const structured = structuredOf(result);
+        seen.push(...(structured.results ?? []).map((r) => String(r.id)));
+        for (const m of String(structured.notice).matchAll(/skip \(e\.g\. skip=(\d+)\)/g)) {
+          suggested.push(Number(m[1]));
+        }
+        if (structured.meta.skip === 25_000) atCeiling = structured.notice;
+        cursor = structured.next_cursor;
+        if (!cursor) break;
+      }
+
+      expect(seen).toEqual(ids);
+      expect(Math.max(...suggested)).toBe(25_000);
+      expect(atCeiling).toContain(
+        '26500 labels matched; this page returned 1000. Page with next_cursor, or narrow the search.',
+      );
+    });
+
+    it('says the walk has ended on an empty cursor page past the end, never a no-match', async () => {
+      answerLikeOpenFda(12);
+      const cursor = await firstCursor();
+      mockQuery.mockResolvedValueOnce({
+        meta: { skip: 5, total: 4, limit: 5, lastUpdated: '2026-11-21' },
+        results: [],
+      });
+
+      const result = await runToolContract(getDrugLabelTool, { search, limit: 5, cursor });
+
+      expect(structuredOf(result).notice).toContain(
+        'No records at this cursor: its walk position (5) is past the last of the 4 matched records',
+      );
+      const text = textOf(result.content);
+      expect(text).not.toMatch(/^No labels found\.$/m);
+      expect(text).toContain('4 matched, but skip=5 is past the end');
+    });
+
+    it('accepts its own continuation for a search the schema rewrites, in either form', async () => {
+      const sent = 'openfda.brand_name:"aspirin"+AND+openfda.route:"ORAL"';
+      const spaced = 'openfda.brand_name:"aspirin" AND openfda.route:"ORAL"';
+      answerLikeOpenFda(12);
+      const cursor = await firstCursor({ search: sent });
+
+      for (const each of [sent, spaced]) {
+        const result = await runToolContract(getDrugLabelTool, {
+          search: each,
+          limit: 5,
+          cursor,
+        });
+        expect(result.isError).toBeFalsy();
+      }
+      expect(mockQuery.mock.calls.map((call) => call[1].search)).toEqual([spaced, spaced, spaced]);
+    });
+
+    it('accepts a different limit and sections on the next page', async () => {
+      answerLikeOpenFda(12, { record: (id) => ({ id, set_id: id, boxed_warning: ['B.'] }) });
+      const cursor = await firstCursor();
+
+      const result = await runToolContract(getDrugLabelTool, {
+        search,
+        limit: 2,
+        sections: ['boxed_warning'],
+        cursor,
+      });
+
+      expect(result.isError).toBeFalsy();
+      const structured = structuredOf(result);
+      expect(structured.results?.map((r) => r.id)).toEqual(['doc-00005', 'doc-00006']);
+      expect(structured.next_cursor).toMatch(/^[A-Za-z0-9_-]+$/);
+    });
+
+    it.each([
+      ['skip above 0', { skip: 5 }, 'skip=5'],
+      [
+        'another search',
+        { search: 'openfda.brand_name:"other"' },
+        'different endpoint, search, or sort',
+      ],
+      ['another sort', { sort: 'effective_time:asc' }, 'different endpoint, search, or sort'],
+      ['a token it did not issue', { cursor: 'bm90IGEgdG9rZW4' }, 'does not decode'],
+    ] as [string, Record<string, unknown>, string][])(
+      'refuses a cursor with %s before any request',
+      async (_case, change, fault) => {
+        answerLikeOpenFda(12);
+        const cursor = await firstCursor();
+
+        const result = await runToolContract(getDrugLabelTool, {
+          search,
+          limit: 5,
+          cursor,
+          ...change,
+        });
+
+        expect(result.isError).toBe(true);
+        const { error } = result.structuredContent as unknown as {
+          error: { message: string; data?: { reason?: string; recovery?: { hint?: string } } };
+        };
+        expect(error.data?.reason).toBe('invalid_cursor');
+        expect(error.data?.recovery?.hint).toBe(invalidCursorError.recovery);
+        expect(error.message).toContain(fault);
+        expect(mockQuery).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it('refuses an empty cursor at argument validation', async () => {
+      const result = await runToolContract(getDrugLabelTool, { search, cursor: '' });
+
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toMatchObject({ error: { code: -32602 } });
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    describe('an outline page read by cursor', () => {
+      it('says to re-call with the same cursor, joined to the paging lead, and lists its labels', async () => {
+        answerLikeOpenFda(12, { record: big });
+        const cursor = await firstCursor({ limit: 2 });
+
+        const result = await runToolContract(getDrugLabelTool, { search, limit: 2, cursor });
+
+        const structured = structuredOf(result);
+        expect(structured.kind).toBe('outline');
+        expect(structured.meta.skip).toBe(2);
+        expect(structured.page_labels?.map((l) => l.set_id)).toEqual(['doc-00002', 'doc-00003']);
+        expect(structured.next_cursor).toMatch(/^[A-Za-z0-9_-]+$/);
+        expect(structured.notice).toMatch(
+          /^12 labels matched; this page returned 2\. Page with next_cursor or skip \(e\.g\. skip=4\), or narrow the search\. For the original packager's label, .+ This page of 2 label record\(s\) exceeds the 24000-byte inline size budget/,
+        );
+        expect(structured.notice).toContain(
+          'Re-call with the same search, limit, and cursor plus sections:[...] to retrieve specific ones',
+        );
+        const lines = textOf(result.content).split('\n');
+        expect(lines[2]).toBe(`next_cursor: \`${structured.next_cursor}\``);
+        expect(noticeQuote(result)).toContain(
+          'Re-call with the same search, limit, and cursor plus',
+        );
+      });
+
+      it('joins the end of the walk to the outline guidance on the last page', async () => {
+        answerLikeOpenFda(3, { record: big });
+        const cursor = await firstCursor({ limit: 2 });
+
+        const result = await runToolContract(getDrugLabelTool, { search, limit: 2, cursor });
+
+        const structured = structuredOf(result);
+        expect(structured.kind).toBe('outline');
+        expect(structured.next_cursor).toBeUndefined();
+        expect(structured.notice).toMatch(
+          /^This page holds the last 1 of the 3 matched records, so the cursor walk is complete\. This page of 1 label record\(s\) exceeds the 24000-byte inline size budget/,
+        );
+        expect(structured.notice).toContain('Re-call with the same search, limit, and cursor plus');
+      });
+
+      it('keeps the plain re-call wording on an outline page read without one', async () => {
+        answerLikeOpenFda(12, { record: big });
+
+        const result = await runToolContract(getDrugLabelTool, { search });
+
+        expect(structuredOf(result).notice).toContain(
+          'Re-call with the same search plus sections:[...] to retrieve specific ones',
+        );
+      });
+    });
+
+    /*
+     * A limit other than the default, a skip above 0, a sort, and a cursor each
+     * change which labels a call reads, so the outline's re-call names each one
+     * the call set. The re-call below is built from the names the sentence lists,
+     * and nothing else, so a recipe that drops one reads other labels.
+     */
+    describe('the outline re-call names each paging input the call set', () => {
+      type LabelInputs = { search: string } & Record<string, unknown>;
+
+      /** The inputs the outline's re-call sentence names, from `inputs`, plus a sections selection. */
+      function recallFrom(notice: string | undefined, inputs: LabelInputs): LabelInputs {
+        const kept = notice?.match(/Re-call with the same (.+?) plus sections:\[\.\.\.\]/)?.[1];
+        expect(kept).toBeDefined();
+        const names = String(kept).split(/, and |, | and /);
+        expect(names[0]).toBe('search');
+        for (const name of names) expect(Object.hasOwn(inputs, name)).toBe(true);
+        return {
+          search: inputs.search,
+          ...Object.fromEntries(names.map((name) => [name, inputs[name]])),
+          sections: ['boxed_warning'],
+        };
+      }
+
+      /** Read the outline page for `inputs`, then follow its re-call sentence. */
+      async function outlineThenFollow(inputs: LabelInputs) {
+        const page = await runToolContract(getDrugLabelTool, inputs);
+        const outline = structuredOf(page);
+        expect(outline.kind).toBe('outline');
+        const followed = structuredOf(
+          await runToolContract(getDrugLabelTool, recallFrom(outline.notice, inputs)),
+        );
+        return {
+          notice: outline.notice,
+          quote: noticeQuote(page),
+          named: outline.page_labels?.map((label) => label.set_id),
+          followed: followed.results?.map((record) => record.id),
+        };
+      }
+
+      it.each([
+        ['limit', { limit: 3 }, 'search and limit', ['doc-00000', 'doc-00001', 'doc-00002']],
+        [
+          'skip',
+          { skip: 3 },
+          'search and skip',
+          ['doc-00003', 'doc-00004', 'doc-00005', 'doc-00006', 'doc-00007'],
+        ],
+        [
+          'limit and skip',
+          { limit: 3, skip: 4 },
+          'search, limit, and skip',
+          ['doc-00004', 'doc-00005', 'doc-00006'],
+        ],
+        [
+          'a limit equal to the default, which it leaves unnamed',
+          { limit: 5 },
+          'search',
+          ['doc-00000', 'doc-00001', 'doc-00002', 'doc-00003', 'doc-00004'],
+        ],
+      ] as [string, Record<string, unknown>, string, string[]][])(
+        'names %s, and the re-call reads the same labels',
+        async (_case, paging, kept, labels) => {
+          answerLikeOpenFda(12, { record: big });
+
+          const { notice, quote, named, followed } = await outlineThenFollow({
+            search,
+            ...paging,
+          });
+
+          expect(named).toEqual(labels);
+          expect(followed).toEqual(labels);
+          const sentence = `Re-call with the same ${kept} plus sections:[...] to retrieve specific ones`;
+          expect(notice).toContain(sentence);
+          expect(quote).toContain(`Re-call with the same ${kept} plus`);
+        },
+      );
+
+      it('names the limit beside the cursor on a page read by cursor, and the re-call reads the same labels', async () => {
+        answerLikeOpenFda(12, { record: big });
+        const cursor = await firstCursor({ limit: 3 });
+
+        const { notice, quote, named, followed } = await outlineThenFollow({
+          search,
+          limit: 3,
+          cursor,
+        });
+
+        const labels = ['doc-00003', 'doc-00004', 'doc-00005'];
+        expect(named).toEqual(labels);
+        expect(followed).toEqual(labels);
+        expect(notice).toContain(
+          'Re-call with the same search, limit, and cursor plus sections:[...] to retrieve specific ones',
+        );
+        expect(quote).toContain('Re-call with the same search, limit, and cursor plus');
+      });
+
+      it('names the sort, and the re-call reads the same labels in the same order', async () => {
+        const ids = Array.from({ length: 12 }, (_, i) => `doc-${String(i).padStart(5, '0')}`);
+        // Answers newest first under a :desc sort, index order otherwise, as openFDA does.
+        mockQuery.mockImplementation((_endpoint: string, params: OpenFdaQueryParams) => {
+          const order = params.sort?.endsWith(':desc') ? [...ids].reverse() : ids;
+          const skip = params.skip ?? 0;
+          const limit = params.limit ?? 5;
+          return Promise.resolve({
+            meta: { skip, total: ids.length, limit, lastUpdated: '2026-11-21' },
+            results: order.slice(skip, skip + limit).map(big),
+          });
+        });
+
+        const { notice, quote, named, followed } = await outlineThenFollow({
+          search,
+          sort: 'effective_time:desc',
+          limit: 3,
+          skip: 2,
+        });
+
+        const labels = ['doc-00009', 'doc-00008', 'doc-00007'];
+        expect(named).toEqual(labels);
+        expect(followed).toEqual(labels);
+        expect(notice).toContain(
+          'Re-call with the same search, sort, limit, and skip plus sections:[...] to retrieve specific ones',
+        );
+        expect(quote).toContain('Re-call with the same search, sort, limit, and skip plus');
+      });
+    });
+  });
+
+  /*
+   * #107 and #97 add to the outline arm and to paged notices only. A page that
+   * ends the match, read without a cursor, keeps the bytes it had before them.
+   */
+  describe('a page that ends the match, read without a cursor', () => {
+    const search = 'openfda.brand_name:"aspirin"';
+    const record = {
+      openfda: { brand_name: ['Aspirin'], generic_name: ['aspirin'], manufacturer_name: ['Bayer'] },
+      set_id: 'set-a',
+      id: 'id-a',
+      effective_time: '20260101',
+      version: '2',
+      warnings: ['Short.'],
+    };
+
+    it('returns a whole-record page byte-identical on both surfaces', async () => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 1, skip: 0, limit: 5, lastUpdated: '2026-11-20' },
+        results: [record],
+      });
+
+      const result = await runToolContract(getDrugLabelTool, { search });
+
+      expect(JSON.stringify(result.structuredContent)).toBe(
+        '{"meta":{"total":1,"skip":0,"limit":5,"lastUpdated":"2026-11-20"},"kind":"full","results":[{"openfda":{"brand_name":["Aspirin"],"generic_name":["aspirin"],"manufacturer_name":["Bayer"]},"set_id":"set-a","id":"id-a","effective_time":"20260101","version":"2","warnings":["Short."]}],"totalResults":1,"effectiveQuery":"openfda.brand_name:\\"aspirin\\""}',
+      );
+      expect(result.content).toEqual([
+        {
+          type: 'text',
+          text: '**1 total results** (returned: 1, skip: 0, limit: 5, kind: full) | Data updated: 2026-11-20\n\n### Aspirin (aspirin)\n**Manufacturer:** Bayer\n**Effective date:** 20260101\n**Set ID:** set-a (v2)\n**Brand name:** Aspirin\n**Generic name:** aspirin\n**Manufacturer name:** Bayer\n\n**Id:**\nid-a\n\n**Version:**\n2\n\n**Warnings:**\nShort.\n\n---\n',
+        },
+        {
+          type: 'text',
+          text: '\n\n**totalResults:** 1\n**effectiveQuery:** `openfda.brand_name:"aspirin"`',
+        },
+      ]);
+    });
+
+    it('keeps the outline and its re-call notice byte-identical', async () => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 1, skip: 0, limit: 5, lastUpdated: '2026-11-20' },
+        results: [oversizedLabel()],
+      });
+
+      const result = await runToolContract(getDrugLabelTool, { search });
+
+      const structured = result.structuredContent as Record<string, unknown>;
+      expect(structured.kind).toBe('outline');
+      expect(structured.results).toBeUndefined();
+      expect(JSON.stringify(structured.outline)).toBe(
+        '[{"name":"boxed_warning","bytes":9004},{"name":"warnings_and_cautions","bytes":9004},{"name":"clinical_studies_table","bytes":9004},{"name":"openfda","bytes":62},{"name":"effective_time","bytes":10},{"name":"set_id","bytes":7},{"name":"id","bytes":6},{"name":"version","bytes":3}]',
+      );
+      expect(structured.notice).toBe(
+        'This page of 1 label record(s) exceeds the 24000-byte inline size budget, so the response lists the sections available instead of the label text. Re-call with the same search plus sections:[...] to retrieve specific ones — e.g. sections:["warnings_and_cautions"] returns 9188 bytes across the 1 record(s) on this page. Each listed size is summed across the page, so a section\'s cost scales with limit; a selection over the budget is still returned whole and reports its size. Metadata (openfda, set_id, id, effective_time, version) is returned either way and counts toward these figures.',
+      );
+      expect(textOf(result.content)).toContain(
+        '**8 sections available** (page too large to inline)\n\n- `boxed_warning` — 9004 bytes\n- `warnings_and_cautions` — 9004 bytes\n- `clinical_studies_table` — 9004 bytes\n- `openfda` — 62 bytes\n- `effective_time` — 10 bytes\n- `set_id` — 7 bytes\n- `id` — 6 bytes\n- `version` — 3 bytes',
+      );
+    });
+
+    it('returns a sections selection byte-identical', async () => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 1, skip: 0, limit: 5, lastUpdated: '2026-11-20' },
+        results: [record],
+      });
+
+      const result = await runToolContract(getDrugLabelTool, { search, sections: ['warnings'] });
+
+      expect(JSON.stringify(result.structuredContent)).toBe(
+        '{"meta":{"total":1,"skip":0,"limit":5,"lastUpdated":"2026-11-20"},"kind":"full","results":[{"openfda":{"brand_name":["Aspirin"],"generic_name":["aspirin"],"manufacturer_name":["Bayer"]},"set_id":"set-a","id":"id-a","effective_time":"20260101","version":"2","warnings":["Short."]}],"totalResults":1,"effectiveQuery":"openfda.brand_name:\\"aspirin\\""}',
+      );
     });
   });
 });

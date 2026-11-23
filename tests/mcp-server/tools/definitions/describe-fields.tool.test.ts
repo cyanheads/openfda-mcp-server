@@ -200,6 +200,44 @@ describe('openfda_describe_fields', () => {
       expect(countAs.get('openfda.k_number')).toBe('openfda.k_number');
     });
 
+    // #96 — the classification fields a product-code lookup reads, with their probed forms.
+    it('lists the device/classification submission type and malfunction-reporting fields on both surfaces', async () => {
+      const result = await describeFieldsTool.handler(
+        describeFieldsTool.input.parse({ endpoint: 'device/classification' }),
+        ctx,
+      );
+      const countAs = countAsByPath(result);
+      expect(countAs.get('submission_type_id')).toBeNull();
+      expect(countAs.get('summary_malfunction_reporting')).toBe('summary_malfunction_reporting');
+      expect(countAs.get('openfda.pma_number')).toBe('openfda.pma_number');
+
+      const text = textOf(describeFieldsTool.format!(result));
+      expect(text).toMatch(
+        /^\| `submission_type_id` \| string \| not countable \| [^|]*"4" = 510\(k\) exempt[^|]*\|$/m,
+      );
+      expect(text).toMatch(
+        /^\| `device_class` \| string \| not countable \| [^|]*"f" \(HDE[^|]*\|$/m,
+      );
+      expect(text).toContain(
+        '| `summary_malfunction_reporting` | string | `summary_malfunction_reporting` |',
+      );
+    });
+
+    // #107 — the original-packager flag, the filter that isolates the NDA holder's label.
+    it('lists drug/label openfda.is_original_packager as a boolean on both surfaces', async () => {
+      const result = await describeFieldsTool.handler(
+        describeFieldsTool.input.parse({ endpoint: 'drug/label' }),
+        ctx,
+      );
+      const field = result.groups
+        .flatMap((g) => g.fields)
+        .find((f) => f.path === 'openfda.is_original_packager');
+      expect(field).toMatchObject({ type: 'boolean', countAs: 'openfda.is_original_packager' });
+      expect(textOf(describeFieldsTool.format!(result))).toContain(
+        '| `openfda.is_original_packager` | boolean | `openfda.is_original_packager` |',
+      );
+    });
+
     it('renders the count expression in the content[] table', async () => {
       const result = await describeFieldsTool.handler(
         describeFieldsTool.input.parse({ endpoint: 'device/classification' }),
@@ -235,6 +273,37 @@ describe('openfda_describe_fields', () => {
       expect(textOf(describeFieldsTool.format!(result))).toContain(
         '| `products.brand_name` | string | `products.brand_name.exact` |',
       );
+    });
+  });
+
+  /**
+   * Endpoints this batch catalogs (#93, #94, #95): each is describable, and a
+   * field's count form reaches both surfaces — `countAs` in structuredContent,
+   * the Count-as cell in the content[] table.
+   */
+  describe.each<[string, string, string, string | null, string]>([
+    ['drug/orangebook', 'Patents', 'patents.patent_number', 'patents.patent_number', 'string'],
+    ['transparency/crl', 'Text', 'text', null, 'string'],
+    ['other/nsde', 'Package', 'package_ndc11', 'package_ndc11', 'string'],
+    ['cosmetic/event', 'Products and reactions', 'reactions', 'reactions.exact', 'string'],
+  ])('%s', (endpoint, groupLabel, path, countAs, type) => {
+    it(`lists ${path} under ${groupLabel} on both surfaces`, async () => {
+      const result = await describeFieldsTool.handler(
+        describeFieldsTool.input.parse({ endpoint }),
+        ctx,
+      );
+      expect(result.endpoint).toBe(endpoint);
+      const group = result.groups.find((g) => g.label === groupLabel);
+      expect(group?.fields.find((f) => f.path === path)).toMatchObject({ type, countAs });
+
+      const text = textOf(describeFieldsTool.format!(result));
+      expect(text).toContain(`## Searchable fields — \`${endpoint}\``);
+      expect(text).toContain(`### ${groupLabel}`);
+      const cell = countAs === null ? 'not countable' : `\`${countAs}\``;
+      expect(text).toContain(`| \`${path}\` | ${type} | ${cell} |`);
+      for (const field of result.groups.flatMap((g) => g.fields)) {
+        expect(text).toContain(`| \`${field.path}\` | ${field.type} |`);
+      }
     });
   });
 

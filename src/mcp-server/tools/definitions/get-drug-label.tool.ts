@@ -1,8 +1,10 @@
 /**
  * @fileoverview Tool definition for looking up FDA drug labeling (package inserts / SPL documents).
  * Oversized pages return a section outline whose worked re-call example is measured
- * against the same byte budget, and a `sections` selection that overflows that
- * budget is disclosed rather than silently returned oversized.
+ * against the same byte budget, plus the identity of each label record the outline
+ * sums over (`page_labels`), and a `sections` selection that overflows that
+ * budget is disclosed rather than silently returned oversized. Pages continue past
+ * openFDA's `skip` ceiling by the shared `search_after` cursor.
  * @module mcp-server/tools/definitions/get-drug-label
  */
 
@@ -15,37 +17,58 @@ import {
   type SectionMeta,
   selectSections,
 } from '@cyanheads/mcp-ts-core/utils';
+import { first, openfdaOf, originalPackager } from '@/mcp-server/tools/drug-profile-sections.js';
 import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
   codeLiteral,
   emptyPageBody,
   emptyResultMessage,
+  formatCell,
   humanizeField,
   resultHeader,
   singleLine,
 } from '@/mcp-server/tools/format-utils.js';
 import {
-  assertSearchDelimitersBalanced,
+  type CursorQuery,
+  cursorEndNotice,
+  cursorInput,
+  cursorOutputShape,
+  invalidCursorError,
+  nextCursorField,
+  resolveCursor,
+} from '@/mcp-server/tools/pagination-cursor.js';
+import {
   assertSkipWithinCeiling,
-  META_LIMIT_DESCRIPTION,
-  malformedSearchError,
+  CURSOR_END_NOTICE_TOPIC,
   nonBlankString,
+  OPENFDA_MAX_SKIP,
+  PAGE_SIZES,
+  PAST_CEILING_ROUTE,
   pageLimit,
+  pageMetaOutput,
   pageSizeNotice,
-  phrasePlusHint,
+  paginationLimitReachedError,
+  rateLimitedError,
   resolvePageSize,
-  SEARCH_SYNTAX_NOTE,
   SKIP_DESCRIPTION,
-  searchExpression,
+  sortDescription,
   sortExpression,
-  totalUnverifiedField,
+  upstreamError,
 } from '@/mcp-server/tools/schema-utils.js';
+import {
+  assertSearchDelimitersBalanced,
+  malformedSearchError,
+  phrasePlusHint,
+  SEARCH_SYNTAX_NOTE,
+  searchExpression,
+} from '@/mcp-server/tools/search-expression.js';
 import {
   createFootnoteSequence,
   type FootnoteSequence,
   renderSplTable,
 } from '@/mcp-server/tools/spl-table.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
+import { jsonBytes } from '@/services/openfda/page-budget.js';
 
 const ENDPOINT = 'drug/label';
 
@@ -71,16 +94,6 @@ function renderTableSection(value: unknown, sequence: FootnoteSequence): string 
       .join('\n\n');
   }
   return;
-}
-
-/**
- * UTF-8 bytes of `value` serialized as JSON — the size it occupies on the wire,
- * measured as the search tools' page budget measures it. Label text is often
- * non-ASCII, where a string's length undercounts its bytes.
- */
-function jsonBytes(value: unknown): number {
-  const json = JSON.stringify(value);
-  return json === undefined ? 0 : Buffer.byteLength(json, 'utf8');
 }
 
 /**
@@ -170,19 +183,32 @@ function exampleSection(
   return;
 }
 
+/** The inputs that choose which labels a page holds, as a re-call of it must repeat them. */
+type PageInput = 'search' | 'sort' | 'limit' | 'skip' | 'cursor';
+
+/** Renders names as an English list: `a`, `a and b`, `a, b, and c`. */
+const PAGE_INPUT_LIST = new Intl.ListFormat('en', { type: 'conjunction' });
+
 /**
  * Re-call guidance for an overflowed page. The worked example is a section
  * measured to fit the budget at this page's record count, with that size stated
  * inline — the names the outline lists largest-first are the cost to weigh, not
- * a retrieval to imitate.
+ * a retrieval to imitate. `kept` names every input the call set that chooses
+ * which labels the page holds (`search` always), so a re-call repeating them
+ * reads these labels again; `format()` cannot see the input, so this is the
+ * surface that says so.
  */
-function outlineGuidance(sections: SectionMeta[], records: Record<string, unknown>[]): string {
+function outlineGuidance(
+  sections: SectionMeta[],
+  records: Record<string, unknown>[],
+  kept: readonly PageInput[],
+): string {
   const metadataBytes = projectPage(records, []).bytes;
   const example = exampleSection(sections, records, metadataBytes);
   const worked = example
     ? `e.g. sections:["${example.name}"] returns ${example.bytes} bytes across the ${records.length} record(s) on this page`
     : `but no single section fits that budget across the ${records.length} record(s) on this page: metadata alone is ${metadataBytes} bytes, so lower limit before naming sections`;
-  return `This page of ${records.length} label record(s) exceeds the ${DEFAULT_OUTLINE_BUDGET_BYTES}-byte inline size budget, so the response lists the sections available instead of the label text. Re-call with the same search plus sections:[...] to retrieve specific ones — ${worked}. Each listed size is summed across the page, so a section's cost scales with limit; a selection over the budget is still returned whole and reports its size. Metadata (${LABEL_METADATA_KEYS.join(', ')}) is returned either way and counts toward these figures.`;
+  return `This page of ${records.length} label record(s) exceeds the ${DEFAULT_OUTLINE_BUDGET_BYTES}-byte inline size budget, so the response lists the sections available instead of the label text. Re-call with the same ${PAGE_INPUT_LIST.format(kept)} plus sections:[...] to retrieve specific ones — ${worked}. Each listed size is summed across the page, so a section's cost scales with limit; a selection over the budget is still returned whole and reports its size. Metadata (${LABEL_METADATA_KEYS.join(', ')}) is returned either way and counts toward these figures.`;
 }
 
 /**
@@ -197,6 +223,95 @@ function selectionOverflowNotice(bytes: number, records: number): string | undef
   return `Selection is ${bytes} bytes across ${records} record(s), over the ${DEFAULT_OUTLINE_BUDGET_BYTES}-byte inline size budget — returned whole, not truncated. Lower limit or name fewer sections to reduce it.`;
 }
 
+/** One record of an outline page, as `page_labels` lists it. */
+const PageLabelSchema = z
+  .object({
+    set_id: z.string().nullable().describe('SPL set ID, the key to re-call this label alone.'),
+    effective_time: z.string().nullable().describe('Label effective date (YYYYMMDD).'),
+    brand_name: z.string().nullable().describe('First openfda.brand_name.'),
+    generic_name: z.string().nullable().describe('First openfda.generic_name.'),
+    manufacturer_name: z.string().nullable().describe('First openfda.manufacturer_name.'),
+    is_original_packager: z
+      .boolean()
+      .nullable()
+      .describe(
+        "True when openFDA flags the label as the original packager's, false for a label with an openfda block but no flag (a repackager's or relabeler's), null when the openfda block is empty — which nulls the three names too.",
+      ),
+    bytes: z
+      .number()
+      .describe(
+        `This label's serialized UTF-8 size; one over ${DEFAULT_OUTLINE_BUDGET_BYTES} bytes returns an outline even when re-called alone.`,
+      ),
+  })
+  .describe('One label record on the page.');
+
+type PageLabel = z.infer<typeof PageLabelSchema>;
+
+/**
+ * Identity of one record on an outline page, which otherwise names no record —
+ * so a caller can tell the original packager's label from repackagers' copies
+ * and re-call one by `set_id`. The names and flag come from the openfda block,
+ * which openFDA fills only on labels it linked to a product, so an empty block
+ * leaves every one of them null. `bytes` is the record's own {@link jsonBytes},
+ * the measure the outline entries use.
+ */
+function pageLabel(record: Record<string, unknown>): PageLabel {
+  const openfda = openfdaOf(record);
+  return {
+    set_id: first(record.set_id),
+    effective_time: first(record.effective_time),
+    brand_name: first(openfda.brand_name),
+    generic_name: first(openfda.generic_name),
+    manufacturer_name: first(openfda.manufacturer_name),
+    is_original_packager: originalPackager(record),
+    bytes: jsonBytes(record),
+  };
+}
+
+/**
+ * The two routes to the original packager's label, for a search that matched
+ * more labels than the page returned — a brand search matches the original
+ * packager's label and every repackager's copy. The filter route is left out
+ * when the search already names the flag.
+ */
+function originalPackagerRoutes(search: string): string {
+  const filter = search.includes('is_original_packager')
+    ? ''
+    : 'add AND openfda.is_original_packager:true to the search (it keeps only the labels openFDA flags, so several or none can remain), or ';
+  return `For the original packager's label, ${filter}take identity.spl_set_id from openfda_drug_profile.`;
+}
+
+/**
+ * The lead for a page that leaves matched labels unreturned: how to page on,
+ * then {@link originalPackagerRoutes}. A page carrying `next_cursor` names it;
+ * the next `skip` is named only while it is within openFDA's ceiling, and past
+ * it the walk from `skip: 0` that reaches those labels. `meta.skip` is the walk
+ * position on a page read by cursor.
+ */
+function moreLabelsLead(
+  page: {
+    meta: { skip: number; total: number };
+    next_cursor?: string | undefined;
+    results: readonly unknown[];
+  },
+  search: string,
+): string {
+  const returned = page.results.length;
+  const next = page.meta.skip + returned;
+  const skipWithin = next <= OPENFDA_MAX_SKIP;
+  const paging = page.next_cursor
+    ? `Page with next_cursor${skipWithin ? ` or skip (e.g. skip=${next})` : ''}, or narrow the search.`
+    : skipWithin
+      ? `Page with skip (e.g. skip=${next}) or narrow the search.`
+      : `The next page would start at skip=${next}, past openFDA's ${OPENFDA_MAX_SKIP}-record pagination ceiling — to read past it, ${PAST_CEILING_ROUTE}.`;
+  return `${page.meta.total} labels matched; this page returned ${returned}. ${paging} ${originalPackagerRoutes(search)}`;
+}
+
+/** A `page_labels` value as a table cell: null spelled out, so it reads apart from an empty string. */
+function labelCell(value: string | number | boolean | null): string {
+  return value === null ? 'null' : formatCell(value);
+}
+
 export const getDrugLabelTool = tool('openfda_get_drug_label', {
   description:
     'Look up FDA drug labeling (package inserts / SPL documents). Check indications, warnings, dosage, contraindications, active ingredients, or any structured label section. A label runs to tens of thousands of tokens, so a page that exceeds the inline budget returns the list of available sections instead; re-call with sections to pull the ones you need.',
@@ -204,36 +319,27 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
 
   input: z.object({
     search: searchExpression().describe(
-      `Query targeting label fields. Examples: openfda.brand_name:"aspirin", openfda.generic_name:"metformin", openfda.manufacturer_name:"pfizer". To fetch one product's label, pass set_id with the SPL UUID returned in earlier results; it returns the label's current revision only, since openFDA does not serve earlier ones. ${SEARCH_SYNTAX_NOTE}`,
+      `Label query, e.g. openfda.brand_name:"aspirin", openfda.generic_name:"metformin", openfda.manufacturer_name:"pfizer". set_id with an SPL UUID from earlier results fetches that product's label, in its current revision only (openFDA serves no earlier ones). A brand search also matches repackagers' copies: to keep the original packager's label, add AND openfda.is_original_packager:true (several or none can remain), or take identity.spl_set_id from openfda_drug_profile. ${SEARCH_SYNTAX_NOTE}`,
     ),
     sort: sortExpression()
       .optional()
-      .describe(
-        'Sort expression — a field path optionally suffixed with :asc or :desc (any letter case; :ascending and :descending are also accepted, and every direction is sent as asc or desc); comma-separate for multi-field sort. Example: effective_time:desc. Field paths take only letters, digits, underscores, and dots; any other character or direction is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.',
-      ),
+      .describe(sortDescription({ example: 'effective_time:desc' })),
     limit: pageLimit(
       ENDPOINT,
-      'Labels per page. Labels are large, and the cost of a sections selection is the section summed across every record on the page — so it scales with this limit. Lower it before widening a selection.',
+      'Labels per page. A sections selection costs its size summed across every label on the page, so lower this before widening one.',
     ),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
+    cursor: cursorInput,
     sections: z
       .array(nonBlankString().describe('A top-level label section name.'))
       .optional()
       .describe(
-        'Label sections to return, e.g. ["boxed_warning","indications_and_usage"]. Names come from the outline an oversized page returns, or from openfda_describe_fields. Omit for the whole label — which returns the section outline instead when the page exceeds the inline size budget; an empty list is treated as omitted. A selection is returned whole even when it exceeds that budget, with its serialized size reported on the notice; the outline names a section measured to fit at the requested limit. Sections ending in _table hold SPL table markup: raw in structured results, rendered as Markdown tables in the text output. Metadata (openfda, set_id, id, effective_time, version) is returned either way and counts toward the size.',
+        `Label sections to return, e.g. ["boxed_warning","indications_and_usage"], named by an oversized page's outline or by openfda_describe_fields. Omitted or [], the whole label comes back, or its outline when the page exceeds the inline size budget; a selection comes back whole even over that budget. Metadata (${LABEL_METADATA_KEYS.join(', ')}) always comes back and counts toward the size.`,
       ),
   }),
 
   output: z.object({
-    meta: z
-      .object({
-        total: z.number().describe('Total matching results in the dataset.'),
-        skip: z.number().describe('Number of results skipped.'),
-        limit: z.number().describe(META_LIMIT_DESCRIPTION),
-        lastUpdated: z.string().describe('Date the dataset was last updated.'),
-        totalUnverified: totalUnverifiedField,
-      })
-      .describe('Pagination and freshness metadata.'),
+    meta: pageMetaOutput,
     kind: z
       .enum(['full', 'outline'])
       .describe(
@@ -243,7 +349,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       .array(z.record(z.string(), z.any()))
       .optional()
       .describe(
-        'Drug label records, present when kind is "full". Each carries an openfda block (brand_name, generic_name, manufacturer_name, route) plus optional SPL sections like indications_and_usage, warnings, dosage_and_administration, contraindications, adverse_reactions; section presence varies per label. Sections ending in _table carry raw SPL table markup (tags and character entities) exactly as openFDA returns it. Narrowed to the requested sections plus metadata when sections was supplied.',
+        'Label records when kind is "full": an openfda block (brand_name, generic_name, manufacturer_name, route) plus the SPL sections each label has, such as indications_and_usage, warnings, dosage_and_administration, contraindications, adverse_reactions; with sections, only those plus metadata. _table sections carry raw SPL table markup as openFDA returns it; the text output renders them as Markdown tables.',
       ),
     outline: z
       .array(
@@ -253,8 +359,15 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       )
       .optional()
       .describe(
-        'Section names available across the matched page and their serialized size, largest first. Present when kind is "outline" — pass names back in sections to retrieve them.',
+        'When kind is "outline": the sections on the page and their serialized size summed across it, largest first; pass names back in sections.',
       ),
+    page_labels: z
+      .array(PageLabelSchema)
+      .optional()
+      .describe(
+        'The label records this page holds, in page order. Present when kind is "outline", which otherwise names no record.',
+      ),
+    ...cursorOutputShape,
   }),
 
   enrichment: {
@@ -266,7 +379,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       .boolean()
       .optional()
       .describe(
-        'True when more labels matched than this page returned — page with skip for the rest.',
+        'True when more labels matched than this page returned — page with next_cursor or skip for the rest.',
       ),
     shown: z.number().optional().describe('Number of labels returned in this response.'),
     cap: z.number().optional().describe('The limit applied to this page.'),
@@ -274,28 +387,13 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       .string()
       .optional()
       .describe(
-        'Guidance for this page: how to broaden filters or correct field names when results are empty or paging overshot, the sized re-call example when a page overflowed to its section outline, section names no record carried, the serialized size when a sections selection exceeds the inline budget, and the requested value, the cap applied, and the next skip when limit exceeded the 1000-record cap. Absent when nothing needs saying.',
+        `Guidance for this page: empty result, paging on and the original packager's label, the sized re-call for an outline, section names no record carried, a selection over the inline budget, limit clamp, ${CURSOR_END_NOTICE_TOPIC}. Absent when nothing needs saying.`,
       ),
   },
 
   errors: [
-    {
-      reason: 'rate_limited',
-      code: JsonRpcErrorCode.RateLimited,
-      when: 'The openFDA daily or per-minute request limit is exceeded.',
-      retryable: true,
-      recovery:
-        'Wait briefly and retry, or configure OPENFDA_API_KEY to raise the daily limit to 120K requests.',
-      thrownBy: 'service',
-    },
-    {
-      reason: 'upstream_error',
-      code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'The openFDA API returned a 5xx server error.',
-      retryable: true,
-      recovery: 'Retry after a short wait; if the error persists check api.fda.gov status.',
-      thrownBy: 'service',
-    },
+    rateLimitedError,
+    upstreamError,
     malformedSearchError,
     {
       reason: 'query_error',
@@ -305,33 +403,33 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
         'Verify field names using the openFDA field reference and correct boolean operators (AND/OR, quoted phrases).',
       thrownBy: 'service',
     },
-    {
-      reason: 'pagination_limit_reached',
-      code: JsonRpcErrorCode.ValidationError,
-      when: 'skip exceeds the 25000 record pagination ceiling.',
-      recovery:
-        'Narrow the search query with additional filters or date ranges instead of increasing skip.',
-      thrownBy: 'service',
-    },
+    paginationLimitReachedError,
+    invalidCursorError,
   ],
 
   async handler(input, ctx) {
     assertSkipWithinCeiling(input.skip, ctx);
     assertSearchDelimitersBalanced(input.search, ctx);
     const size = resolvePageSize(input.limit, ENDPOINT, ctx);
+    const query: CursorQuery = { endpoint: ENDPOINT, search: input.search, sort: input.sort };
+    const searchAfter = resolveCursor(input, query, ctx);
 
     const service = getOpenFdaService();
     const queried = await service.query(
-      ENDPOINT,
+      query.endpoint,
       {
-        search: input.search,
-        sort: input.sort,
+        search: query.search,
+        sort: query.sort,
         limit: size.limit,
         skip: input.skip,
+        searchAfter,
       },
       ctx,
     );
     const response = { ...queried, meta: { ...queried.meta, limit: size.limit } };
+    /** Spread into every arm's result: the continuation belongs to the page, whichever shape it takes. */
+    const continuation = nextCursorField(response, query);
+    const page = { ...response, ...continuation };
 
     ctx.log.info('Drug label lookup completed', {
       search: input.search,
@@ -353,12 +451,15 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
         response.meta.total,
         `No labels matched search: ${codeLiteral(input.search)}. Try broader terms or check field names (e.g. openfda.brand_name, openfda.generic_name, openfda.manufacturer_name). openFDA fills the openfda block only on labels it linked to a product, so when an openfda field finds nothing, search the label's own product text with spl_product_data_elements (e.g. spl_product_data_elements:"lisinopril"). ${fieldHint}${plusHint ? ` ${plusHint}` : ''}`,
         response.meta.totalUnverified,
+        searchAfter !== undefined,
       );
     } else if (morePages) {
-      pageLead = `${response.meta.total} labels matched; this page returned ${response.results.length}. Page with skip (e.g. skip=${response.meta.skip + response.results.length}) or narrow the search.`;
+      pageLead = moreLabelsLead(page, input.search);
     }
     /** Page guidance, joined with the section or outline guidance below (`notice` is last-wins). */
-    const pageNotice = [pageLead, pageSizeNotice(size, response)].filter(Boolean).join(' ');
+    const pageNotice = [pageLead, pageSizeNotice(size, page) ?? cursorEndNotice(page, searchAfter)]
+      .filter(Boolean)
+      .join(' ');
     if (morePages) {
       ctx.enrich.truncated({
         shown: response.results.length,
@@ -367,7 +468,9 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       });
     }
 
-    /*
+    const records = response.results;
+
+    /**
      * Selection path — the agent named the sections it wants, so the size is its
      * call to make: the projection is returned whole whatever it measures, and
      * an overflow is disclosed rather than trimmed.
@@ -376,10 +479,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       const sections = input.sections;
       const available = new Set(response.results.flatMap((r) => Object.keys(r)));
       const unknown = sections.filter((name) => !available.has(name));
-      const { bytes, results } = projectPage(
-        response.results as Record<string, unknown>[],
-        sections,
-      );
+      const { bytes, results } = projectPage(records, sections);
       const overflow = selectionOverflowNotice(bytes, response.results.length);
       if (overflow) {
         ctx.log.info('Drug label section selection exceeded the inline size budget', {
@@ -393,29 +493,41 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
         .filter(Boolean)
         .join(' ');
       if (notice) ctx.enrich.notice(notice);
-      return { meta: response.meta, kind: 'full' as const, results };
+      return { meta: response.meta, kind: 'full' as const, results, ...continuation };
     }
 
-    /* Disclosure path — return the page whole, or its section outline when it overflows. */
-    const outcome = outlineOnOverflow(
-      { results: response.results as Record<string, unknown>[] },
-      { extract: extractLabelSections },
-    );
+    // Disclosure path — return the page whole, or its section outline when it overflows.
+    const outcome = outlineOnOverflow({ results: records }, { extract: extractLabelSections });
     if (outcome.kind === 'full') {
       if (pageNotice) ctx.enrich.notice(pageNotice);
-      return { meta: response.meta, kind: 'full' as const, results: outcome.results };
+      return {
+        meta: response.meta,
+        kind: 'full' as const,
+        results: outcome.results,
+        ...continuation,
+      };
     }
 
     ctx.log.info('Drug label page overflowed to a section outline', {
       sections: outcome.sections.length,
       records: response.results.length,
     });
+    // Each input the call set away from its default that the re-call must repeat. A cursor never comes with a skip.
+    const kept: PageInput[] = ['search'];
+    if (input.sort !== undefined) kept.push('sort');
+    if (size.limit !== PAGE_SIZES[ENDPOINT].default) kept.push('limit');
+    if (input.skip > 0) kept.push('skip');
+    if (searchAfter !== undefined) kept.push('cursor');
     ctx.enrich.notice(
-      [pageNotice, outlineGuidance(outcome.sections, response.results as Record<string, unknown>[])]
-        .filter(Boolean)
-        .join(' '),
+      [pageNotice, outlineGuidance(outcome.sections, records, kept)].filter(Boolean).join(' '),
     );
-    return { meta: response.meta, kind: 'outline' as const, outline: outcome.sections };
+    return {
+      meta: response.meta,
+      kind: 'outline' as const,
+      outline: outcome.sections,
+      page_labels: records.map(pageLabel),
+      ...continuation,
+    };
   },
 
   /**
@@ -426,6 +538,10 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
   format: (result) => {
     const records = result.results ?? [];
     const lines = [`${singleLine(resultHeader(result.meta, records.length, result.kind))}\n`];
+    // The same token as structuredContent.next_cursor, on its own line, as searchLead renders it.
+    if (result.next_cursor) {
+      lines.push(`${singleLine(`next_cursor: ${codeLiteral(result.next_cursor)}`)}\n`);
+    }
     if (records.length === 0 && !result.outline) {
       lines.push(emptyPageBody(result, 'No labels found.'));
     }
@@ -437,7 +553,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
      * loop below is what carries them into `content[]`.
      */
     const metaKeys = new Set(['openfda', 'set_id', 'effective_time']);
-    // One footnote sequence for the whole text, so no `[^n]` label repeats (#61).
+    // One footnote sequence for the whole text, so no `[^n]` label repeats.
     const footnotes = createFootnoteSequence();
 
     for (const r of records) {
@@ -452,19 +568,23 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       if (r.set_id)
         lines.push(singleLine(`**Set ID:** ${r.set_id}${r.version ? ` (v${r.version})` : ''}`));
 
-      // Every openfda field, whole — the header above shows only the first
-      // entry of brand_name/generic_name/manufacturer_name, so skipping them
-      // here would drop every later entry from content[].
+      /**
+       * Every openfda field, whole — the header above shows only the first
+       * entry of brand_name/generic_name/manufacturer_name, so skipping them
+       * here would drop every later entry from content[].
+       */
       for (const [key, val] of Object.entries(openfda)) {
         if (val == null) continue;
         const display = Array.isArray(val) ? (val as string[]).join(', ') : String(val);
         if (display) lines.push(singleLine(`**${humanizeField(key)}:** ${display}`));
       }
 
-      // Every label section present in the record, whole — `structuredContent`
-      // carries the untrimmed record, so trimming here would desync the surfaces.
-      // `*_table` sections are SPL table markup and render as Markdown tables;
-      // prose sections pass through verbatim, multi-line, as the label's own text.
+      /**
+       * Every label section present in the record, whole — `structuredContent`
+       * carries the untrimmed record, so trimming here would desync the surfaces.
+       * `*_table` sections are SPL table markup and render as Markdown tables;
+       * prose sections pass through verbatim, multi-line, as the label's own text.
+       */
       for (const [key, value] of Object.entries(r)) {
         if (metaKeys.has(key) || value == null) continue;
         const table = key.endsWith('_table') ? renderTableSection(value, footnotes) : undefined;
@@ -481,6 +601,27 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
         lines.push(`\n**${humanizeField(key)}:**\n${text}`);
       }
       lines.push('\n---\n');
+    }
+
+    if (result.page_labels) {
+      lines.push(`**${result.page_labels.length} labels on this page**\n`);
+      lines.push(
+        '| set_id | effective_time | brand_name | generic_name | manufacturer_name | is_original_packager | bytes |',
+        '|---|---|---|---|---|---|---|',
+      );
+      for (const label of result.page_labels) {
+        const cells = [
+          label.set_id,
+          label.effective_time,
+          label.brand_name,
+          label.generic_name,
+          label.manufacturer_name,
+          label.is_original_packager,
+          label.bytes,
+        ];
+        lines.push(`| ${cells.map(labelCell).join(' | ')} |`);
+      }
+      lines.push('');
     }
 
     if (result.outline) {

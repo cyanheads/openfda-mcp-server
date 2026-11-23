@@ -6,31 +6,41 @@
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { OBJECT_ARRAY_PATHS, SINGLE_ENTRY_ARRAYS } from '@/mcp-server/tools/field-catalog.js';
 import { codeLiteral, escapeTableCell, singleLine } from '@/mcp-server/tools/format-utils.js';
 import {
-  assertSearchDelimitersBalanced,
-  malformedSearchError,
+  CONJOINED_ARRAY_NOTICE_TOPIC,
   nonBlankString,
   PAGE_SIZES,
   pageLimit,
   pageSizeNotice,
-  phrasePlusHint,
+  rateLimitedError,
   resolvePageSize,
+  upstreamError,
+} from '@/mcp-server/tools/schema-utils.js';
+import { type ArrayTieRoute, arrayTieNotice } from '@/mcp-server/tools/search-clauses.js';
+import {
+  assertSearchDelimitersBalanced,
+  malformedSearchError,
+  phrasePlusHint,
   SEARCH_SYNTAX_NOTE,
   searchExpression,
-} from '@/mcp-server/tools/schema-utils.js';
+} from '@/mcp-server/tools/search-expression.js';
+import { rewriteShortageDates, shortageDateGroupHint } from '@/mcp-server/tools/shortage-dates.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 
-/** All valid openFDA endpoint paths. */
+/** The openFDA endpoints this tool counts: the field catalog's endpoints, one for one. */
 const ENDPOINTS = [
   'drug/event',
   'drug/label',
   'drug/enforcement',
   'drug/ndc',
   'drug/drugsfda',
+  'drug/orangebook',
   'drug/shortages',
   'food/event',
   'food/enforcement',
+  'cosmetic/event',
   'device/event',
   'device/510k',
   'device/pma',
@@ -43,7 +53,48 @@ const ENDPOINTS = [
   'animalandveterinary/event',
   'tobacco/problem',
   'other/substance',
+  'other/nsde',
+  'transparency/crl',
 ] as const;
+
+/**
+ * Where the conjoined-clause notice sends a count whose conjoined clauses fall under one
+ * array of objects (`OBJECT_ARRAY_PATHS`): the search tool that stages the
+ * endpoint, with the selector input that reaches it where the tool serves
+ * several endpoints, whose staged table holds each listed array's top column.
+ */
+const STAGING_ROUTES: Partial<
+  Record<(typeof ENDPOINTS)[number], Extract<ArrayTieRoute, { kind: 'search_tool' }>>
+> = {
+  'drug/drugsfda': { kind: 'search_tool', tool: 'openfda_search_drug_approvals' },
+  'drug/event': {
+    kind: 'search_tool',
+    tool: 'openfda_search_adverse_events',
+    selector: 'category: "drug"',
+  },
+  'device/event': {
+    kind: 'search_tool',
+    tool: 'openfda_search_adverse_events',
+    selector: 'category: "device"',
+  },
+  'food/event': {
+    kind: 'search_tool',
+    tool: 'openfda_search_adverse_events',
+    selector: 'category: "food"',
+  },
+  'animalandveterinary/event': { kind: 'search_tool', tool: 'openfda_search_animal_events' },
+  'drug/ndc': { kind: 'search_tool', tool: 'openfda_lookup_ndc' },
+  'drug/orangebook': {
+    kind: 'search_tool',
+    tool: 'openfda_search_drug_approvals',
+    selector: 'dataset: "orangebook"',
+  },
+  'cosmetic/event': {
+    kind: 'search_tool',
+    tool: 'openfda_search_adverse_events',
+    selector: 'category: "cosmetic"',
+  },
+};
 
 /**
  * The count term list's cap, which is openFDA's own count maximum: openFDA
@@ -128,28 +179,13 @@ export const countValuesTool = tool('openfda_count_values', {
       .string()
       .optional()
       .describe(
-        'Why the tally is empty — the search matched no records, or the matched records carry no value for the field — and how to widen it; when truncated, how to reach the omitted terms (on a date field, how many distinct dates were counted); at the 1000-term maximum, that openFDA cannot show whether more distinct values exist; how many count rows openFDA sent without a value or numeric count, which are left out; when limit exceeded the 1000-term cap, the requested value and the cap applied. Absent when a complete list is returned at the requested limit.',
+        `Guidance for this tally: why it is empty and how to widen it, how to reach terms past limit, the ${OPENFDA_MAX_COUNT_TERMS}-term maximum, count rows left out, limit clamp, ${CONJOINED_ARRAY_NOTICE_TOPIC}. Absent when nothing needs saying.`,
       ),
   },
 
   errors: [
-    {
-      reason: 'rate_limited',
-      code: JsonRpcErrorCode.RateLimited,
-      when: 'The openFDA daily or per-minute request limit is exceeded.',
-      retryable: true,
-      recovery:
-        'Wait briefly and retry, or configure OPENFDA_API_KEY to raise the daily limit to 120K requests.',
-      thrownBy: 'service',
-    },
-    {
-      reason: 'upstream_error',
-      code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'The openFDA API returned a 5xx server error.',
-      retryable: true,
-      recovery: 'Retry after a short wait; if the error persists check api.fda.gov status.',
-      thrownBy: 'service',
-    },
+    rateLimitedError,
+    upstreamError,
     malformedSearchError,
     {
       reason: 'query_error',
@@ -170,11 +206,21 @@ export const countValuesTool = tool('openfda_count_values', {
   ],
 
   async handler(input, ctx) {
+    // Guarded as written, so a position the rejection names counts the caller's characters.
     assertSearchDelimitersBalanced(input.search, ctx);
+    /**
+     * `drug/shortages` reads an eight-digit date on its date fields as epoch
+     * milliseconds, so a calendar date there is sent as `YYYY-MM-DD`.
+     * This tool echoes no query, so the rewrite shows where a notice quotes it.
+     */
+    const search =
+      input.endpoint === 'drug/shortages' && input.search !== undefined
+        ? rewriteShortageDates(input.search)
+        : input.search;
     const size = resolvePageSize(input.limit, 'count', ctx);
     const limit = size.limit;
 
-    /*
+    /**
      * openFDA count responses carry no distinct-term total, so one term past the
      * limit is the only completeness signal: it arrives only when more exist. At
      * the count maximum there is no room for it, and completeness is unknowable.
@@ -186,7 +232,7 @@ export const countValuesTool = tool('openfda_count_values', {
     const response = await svc.query(
       input.endpoint,
       {
-        search: input.search,
+        search,
         count: input.count,
         limit: Math.min(limit + 1, OPENFDA_MAX_COUNT_TERMS),
       },
@@ -216,31 +262,46 @@ export const countValuesTool = tool('openfda_count_values', {
       unreadable > 0
         ? `openFDA returned ${unreadable} count ${unreadable === 1 ? 'row' : 'rows'} with no value or no numeric count; ${unreadable === 1 ? 'it is' : 'they are'} left out of the tally.`
         : undefined;
-    /*
-     * `notice` is last-wins, and the clamp disclosure holds on every branch, so
-     * each branch sends its own text joined with the notes that also apply.
+    /**
+     * Conjoined clauses under one array of objects can be met by different
+     * entries. Silent on an empty tally: the records where one entry
+     * meets them are among those the whole record matches, so a tally empty
+     * under one reading is empty under the other.
+     */
+    const arrays = OBJECT_ARRAY_PATHS[input.endpoint];
+    const route = STAGING_ROUTES[input.endpoint];
+    const tieNote =
+      arrays && route
+        ? arrayTieNotice(search, results.length, arrays, route, SINGLE_ENTRY_ARRAYS[input.endpoint])
+        : undefined;
+    /**
+     * `notice` is last-wins, and the clamp disclosure and the tie note hold on
+     * every branch, so each branch sends its own text joined with the notes that
+     * also apply.
      */
     const clampNote = pageSizeNotice(size);
     const withNotes = (...texts: (string | undefined)[]) =>
-      [...texts, clampNote].filter(Boolean).join(' ');
+      [...texts, clampNote, tieNote].filter(Boolean).join(' ');
 
     // Caller text in a notice rides as a code literal, so it reads back as sent.
     const field = codeLiteral(input.count);
-    const search = input.search && codeLiteral(input.search);
+    const quotedSearch = search && codeLiteral(search);
 
     ctx.enrich({ termCount: results.length });
     if (response.meta.nothingToCount) {
       ctx.enrich.notice(
         withNotes(
-          `${field} is countable on ${input.endpoint}, but the records matching search: ${search} carry no value for it, so the tally is empty. Count across a broader search, or count a different field (openfda_describe_fields lists the endpoint's countable fields).`,
+          `${field} is countable on ${input.endpoint}, but the records matching search: ${quotedSearch} carry no value for it, so the tally is empty. Count across a broader search, or count a different field (openfda_describe_fields lists the endpoint's countable fields).`,
         ),
       );
     } else if (results.length === 0) {
-      const hint = phrasePlusHint(input.search, response.results.length);
+      const hint = phrasePlusHint(search, response.results.length);
+      const groupHint =
+        input.endpoint === 'drug/shortages' ? shortageDateGroupHint(search) : undefined;
       ctx.enrich.notice(
         withNotes(
           unreadableNote ??
-            `${field} is countable on ${input.endpoint}, but nothing matched${search ? ` search: ${search}` : ''}. Broaden or drop the search filter; call openfda_describe_fields for the endpoint field list.${hint ? ` ${hint}` : ''}`,
+            `${field} is countable on ${input.endpoint}, but nothing matched${quotedSearch ? ` search: ${quotedSearch}` : ''}.${groupHint ? ` ${groupHint}` : ''} Broaden or drop the search filter; call openfda_describe_fields for the endpoint field list.${hint ? ` ${hint}` : ''}`,
         ),
       );
     } else if (moreExist) {
@@ -264,7 +325,7 @@ export const countValuesTool = tool('openfda_count_values', {
           unreadableNote,
         ),
       );
-    } else if (unreadableNote || clampNote) {
+    } else if (unreadableNote || clampNote || tieNote) {
       ctx.enrich.notice(withNotes(unreadableNote));
     }
 

@@ -8,6 +8,7 @@
  */
 
 import { escapeTableCell, escapeTableCellFragment } from '@/mcp-server/tools/format-utils.js';
+import { decodeEntities } from '@/services/openfda/html-entities.js';
 
 /** A parsed SPL node — an element from the table vocabulary, or text between tags. */
 type SplNode =
@@ -51,14 +52,6 @@ const VOID_TAGS = new Set(['br', 'col', 'footnoteref', 'rendermultimedia']);
 const TAG_RE =
   /<(\/?)([A-Za-z][\w.:-]*)((?:\s+[\w.:-]+(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'<>]+))?)*)\s*(\/?)>/g;
 const ATTR_RE = /([\w.:-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>]+)))?/g;
-const ENTITY_RE = /&(?:#[xX]([0-9a-fA-F]+)|#(\d+)|(lt|gt|amp|quot|apos));/g;
-const NAMED_ENTITIES: Record<string, string> = {
-  amp: '&',
-  apos: "'",
-  gt: '>',
-  lt: '<',
-  quot: '"',
-};
 
 /** Marks a block boundary (paragraph, list item, nested row) inside one cell. */
 const BLOCK = '\u0000';
@@ -66,16 +59,6 @@ const BLOCK = '\u0000';
 const CELL_BREAK = '<br>';
 /** Upper bound on a single cell's colspan — guards the grid against a malformed span. */
 const MAX_COLSPAN = 1000;
-
-/** Decode numeric character references and the five XML named entities. */
-function decodeEntities(text: string): string {
-  return text.replace(ENTITY_RE, (match, hex: string, dec: string, named: string) => {
-    if (named) return NAMED_ENTITIES[named] ?? match;
-    const code = hex ? Number.parseInt(hex, 16) : Number.parseInt(dec, 10);
-    const valid = code > 0 && code <= 0x10ffff && (code < 0xd800 || code > 0xdfff);
-    return valid ? String.fromCodePoint(code) : match;
-  });
-}
 
 /**
  * Escape one decoded text run with the shared table-cell escaper. Whitespace,

@@ -3,14 +3,30 @@
  * @module tests/mcp-server/tools/definitions/search-animal-events.tool.test
  */
 
+import { z } from '@cyanheads/mcp-ts-core';
+import {
+  CanvasRegistry,
+  DataCanvas,
+  DEFAULT_CANVAS_REGISTRY_OPTIONS,
+  DuckdbProvider,
+} from '@cyanheads/mcp-ts-core/canvas';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
   getOpenFdaService: vi.fn(),
 }));
 
+// No canvas unless a test stages one.
+vi.mock('@/services/canvas/canvas-accessor.js', () => ({
+  getCanvas: vi.fn(() => undefined),
+}));
+
+import { dataframeQueryTool } from '@/mcp-server/tools/definitions/dataframe-query.tool.js';
 import { searchAnimalEventsTool } from '@/mcp-server/tools/definitions/search-animal-events.tool.js';
+import { invalidCursorError } from '@/mcp-server/tools/pagination-cursor.js';
+import { paginationLimitReachedError } from '@/mcp-server/tools/schema-utils.js';
+import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import { renderCommonMark } from '../../../helpers/commonmark.js';
 import { textOf } from '../../../helpers/content.js';
@@ -93,10 +109,10 @@ describe('openfda_search_animal_events', () => {
 
     it('states the default in the search and sort descriptions', () => {
       const shape = searchAnimalEventsTool.input.shape;
-      expect(shape.search.description).toContain(
-        'Omit to browse newest first, sorted by original_receive_date:desc.',
+      expect(shape.search.description).toContain('Omit to browse newest first.');
+      expect(shape.sort.description).toContain(
+        'With neither search nor sort, records come newest first by original_receive_date:desc.',
       );
-      expect(shape.sort.description).toContain('defaults to original_receive_date:desc');
     });
   });
 
@@ -573,6 +589,27 @@ describe('openfda_search_animal_events', () => {
         expect(notice).toContain('"USA-USFDACVM-N141426"');
       });
 
+      it('explains the MSK mask for an .exact filter on a masked field', async () => {
+        const notice = await emptyNoticeFor('drug.brand_name.exact:"Bravecto"');
+
+        expect(notice).toContain('drug.brand_name and drug.manufacturer.name hold only "MSK"');
+      });
+
+      // The guidance follows the fields the search filters on, never their text elsewhere.
+      it.each([
+        ['inside a quoted phrase', 'reaction.veddra_term_name:"drug.brand_name"'],
+        ['as the tail of a longer path', 'other.drug.brand_name:"Bravecto"'],
+        ['as the tail of a longer manufacturer path', 'other.drug.manufacturer.name:"Merck"'],
+      ])(
+        'leaves the MSK line off a search naming a masked field only %s',
+        async (_case, search) => {
+          const notice = await emptyNoticeFor(search);
+
+          expect(notice).toContain('No animal adverse event reports matched');
+          expect(notice).not.toContain('MSK');
+        },
+      );
+
       it('leaves the MSK line off a registration-number search', async () => {
         const notice = await emptyNoticeFor(
           'drug.manufacturer.registration_number:"USA-USFDACVM-N999999"',
@@ -642,5 +679,434 @@ describe('openfda_search_animal_events', () => {
     const text = textOf(content);
     expect(text).toContain('treated: 5');
     expect(text).toContain('affected: 2');
+  });
+
+  // #100 — openFDA tests each clause against the whole record, so AND-ed clauses
+  // on different fields of one drug, reaction, or outcome array can be met by
+  // different entries; a matched page says so and gives the per-entry SQL.
+  describe('clauses one array entry must meet together (#100)', () => {
+    const RECORD = {
+      unique_aer_id_number: 'AER-100',
+      original_receive_date: '20260115',
+      serious_ae: 'true',
+      drug: [
+        { route: 'Oral', dosage_form: 'Tablet', active_ingredients: [{ name: 'Fluralaner' }] },
+      ],
+      reaction: [{ veddra_term_name: 'Vomiting' }],
+    };
+    const PAGE = {
+      meta: { total: 2, skip: 0, limit: 5, lastUpdated: '2026-11-20' },
+      results: [RECORD],
+    };
+    const EMPTY = { meta: { total: 0, skip: 0, limit: 5, lastUpdated: '2026-11-20' }, results: [] };
+
+    /** A canvas that drains what it is given and records the schema each table was registered with. */
+    const stageOnto = () => {
+      const schemas: { name: string }[][] = [];
+      const instance = {
+        canvasId: 'cv_tie',
+        isNew: true,
+        registerTable: vi.fn(
+          async (
+            name: string,
+            rows: AsyncIterable<unknown>,
+            options: { schema: { name: string }[] },
+          ) => {
+            schemas.push(options.schema);
+            let rowCount = 0;
+            for await (const _row of rows) rowCount++;
+            return { tableName: name, rowCount, columns: [] };
+          },
+        ),
+        drop: vi.fn(),
+      };
+      vi.mocked(getCanvas).mockReturnValue({
+        acquire: vi.fn().mockResolvedValue(instance),
+      } as never);
+      return schemas;
+    };
+    /** Both surfaces, every text block, with the random staged table name fixed so they compare as literals. */
+    const surfaces = (result: Awaited<ReturnType<typeof runToolContract>>) => {
+      const fixed = (text: string) => text.replaceAll(/spilled_[0-9a-f]{8}/g, 'spilled_TABLE');
+      const text = result.content.flatMap((block) => (block.type === 'text' ? [block.text] : []));
+      return {
+        structured: JSON.parse(fixed(JSON.stringify(result.structuredContent))),
+        text: text.map(fixed),
+      };
+    };
+    const RECORD_LINES =
+      '### Report AER-100\n**Received:** 20260115 | **Serious:** Yes\n**Reactions:** Vomiting\n**Drugs:**\n- Fluralaner (via Oral)\n**Dosage form:** Tablet\n**Active ingredients:** [{"name":"Fluralaner"}]\n\n**Serious ae:** true\n';
+    const HEADER =
+      '**2 total results** (returned: 1, skip: 0, limit: 5) | Data updated: 2026-11-20\n\n';
+    const STAGED_NOTICE =
+      'Staged 2 of 2 matched records on canvas table "spilled_TABLE" (canvas_id "cv_tie"). Call openfda_dataframe_describe for the column names, then openfda_dataframe_query to run SQL over the staged set.';
+    const STAGED_LINE =
+      '> Staged 2 of 2 matched rows on canvas table `spilled_TABLE` (canvas_id `cv_tie`, spilled=true) — openfda_dataframe_describe for its columns, then openfda_dataframe_query for SQL.\n\n';
+    const STAGED_FIELDS = {
+      canvas_id: 'cv_tie',
+      canvas_table: 'spilled_TABLE',
+      spilled: true,
+      staged_rows: 2,
+    };
+
+    afterEach(() => {
+      vi.mocked(getCanvas).mockReset();
+    });
+
+    it('returns a search with no conjoined pair exactly as before, inline', async () => {
+      mockQuery.mockResolvedValue(PAGE);
+
+      const result = await runToolContract(searchAnimalEventsTool, {
+        search: 'drug.route:"Oral" OR drug.dosage_form:"Tablet"',
+        limit: 5,
+      });
+
+      expect(surfaces(result)).toEqual({
+        structured: {
+          ...PAGE,
+          totalResults: 2,
+          effectiveQuery: 'drug.route:"Oral" OR drug.dosage_form:"Tablet"',
+        },
+        text: [
+          `${HEADER}${RECORD_LINES}`,
+          '\n\n**totalResults:** 2\nQuery: `drug.route:"Oral" OR drug.dosage_form:"Tablet"`',
+        ],
+      });
+    });
+
+    it('returns a search with no conjoined pair exactly as before, staged', async () => {
+      stageOnto();
+      mockQuery.mockResolvedValue(PAGE);
+
+      const result = await runToolContract(searchAnimalEventsTool, {
+        search: 'drug.route:"Oral" AND serious_ae:"true"',
+        limit: 5,
+        stage: true,
+      });
+
+      expect(surfaces(result)).toEqual({
+        structured: {
+          ...PAGE,
+          ...STAGED_FIELDS,
+          totalResults: 2,
+          effectiveQuery: 'drug.route:"Oral" AND serious_ae:"true"',
+          notice: STAGED_NOTICE,
+        },
+        text: [
+          `${HEADER}${STAGED_LINE}${RECORD_LINES}`,
+          `\n\n**totalResults:** 2\nQuery: \`drug.route:"Oral" AND serious_ae:"true"\`\n> ${STAGED_NOTICE}`,
+        ],
+      });
+    });
+
+    const TIED = 'drug.active_ingredients.name:"Fluralaner" AND drug.route:"Oral"';
+    const FILTER = `EXISTS (SELECT 1 FROM (SELECT unnest(from_json(t.drug, '["json"]')) AS d) WHERE d->>'route' ILIKE '%Oral%' AND EXISTS (SELECT 1 FROM (SELECT unnest(from_json(d->'active_ingredients', '["json"]')) AS a) WHERE a->>'name' ILIKE '%Fluralaner%'))`;
+    const TIE_LEAD =
+      'openFDA matches each clause against the whole record, so the clauses on `drug.active_ingredients.name` and `drug.route` can be met by different `drug` entries.';
+
+    it('sends an inline page to stage the search, on both surfaces', async () => {
+      mockQuery.mockResolvedValue(PAGE);
+
+      const result = await runToolContract(searchAnimalEventsTool, { search: TIED, limit: 5 });
+
+      const notice = `${TIE_LEAD} For one entry meeting them together, call again with stage: true and query the staged table, aliased t, in openfda_dataframe_query: \`WHERE ${FILTER}\`.`;
+      expect(surfaces(result)).toEqual({
+        structured: { ...PAGE, totalResults: 2, effectiveQuery: TIED, notice },
+        text: [
+          `${HEADER}${RECORD_LINES}`,
+          `\n\n**totalResults:** 2\nQuery: \`${TIED}\`\n> ${notice}`,
+        ],
+      });
+    });
+
+    it('ties a hyphenated value the schema quoted, comparing the value with no stray quote, on both surfaces', async () => {
+      mockQuery.mockResolvedValue(PAGE);
+
+      const result = await runToolContract(searchAnimalEventsTool, {
+        search:
+          'drug.manufacturer.registration_number:USA-USFDACVM-N141426 AND drug.active_ingredients.name:Fluralaner',
+        limit: 5,
+      });
+
+      const sent =
+        'drug.manufacturer.registration_number:"USA-USFDACVM-N141426" AND drug.active_ingredients.name:Fluralaner';
+      expect(mockQuery.mock.calls[0]![1].search).toBe(sent);
+      const notice = `openFDA matches each clause against the whole record, so the clauses on \`drug.manufacturer.registration_number\` and \`drug.active_ingredients.name\` can be met by different \`drug\` entries. For one entry meeting them together, call again with stage: true and query the staged table, aliased t, in openfda_dataframe_query: \`WHERE EXISTS (SELECT 1 FROM (SELECT unnest(from_json(t.drug, '["json"]')) AS d) WHERE d->'manufacturer'->>'registration_number' ILIKE '%USA-USFDACVM-N141426%' AND EXISTS (SELECT 1 FROM (SELECT unnest(from_json(d->'active_ingredients', '["json"]')) AS a) WHERE a->>'name' ILIKE '%Fluralaner%'))\`.`;
+      expect(surfaces(result)).toEqual({
+        structured: { ...PAGE, totalResults: 2, effectiveQuery: sent, notice },
+        text: [
+          `${HEADER}${RECORD_LINES}`,
+          `\n\n**totalResults:** 2\nQuery: \`${sent}\`\n> ${notice}`,
+        ],
+      });
+    });
+
+    /*
+     * search-clauses.test.ts tables the SQL text for a quote and an apostrophe;
+     * this runs the staged SQL in DuckDB beside a value holding %, _, and '.
+     */
+    it('runs the staged SQL for that value beside one holding %, _, and an apostrophe, keeping the record one entry meets', {
+      timeout: 30_000,
+    }, async () => {
+      const tenantId = 'animal-events-tie-sql';
+      const provider = new DuckdbProvider({
+        defaultRowLimit: 1000,
+        exportRootPath: '/tmp/openfda-animal-events-tool-test',
+        memoryLimitMb: 64,
+        schemaSniffRows: 100,
+      });
+      const canvas = new DataCanvas(
+        provider,
+        new CanvasRegistry(provider, { ...DEFAULT_CANVAS_REGISTRY_OPTIONS, sweeperIntervalMs: 0 }),
+      );
+      vi.mocked(getCanvas).mockReturnValue(canvas as never);
+      const registration = 'USA-USFDACVM-N141426';
+      const lot = "L_5%'A";
+      const records = [
+        {
+          unique_aer_id_number: 'ONE-ENTRY',
+          drug: [{ manufacturer: { registration_number: registration }, lot_number: lot }],
+        },
+        {
+          unique_aer_id_number: 'SPLIT',
+          drug: [
+            { manufacturer: { registration_number: registration }, lot_number: 'L5A' },
+            { manufacturer: { registration_number: 'USA-USFDACVM-N000001' }, lot_number: lot },
+          ],
+        },
+      ];
+      mockQuery.mockImplementation(
+        async (_endpoint: string, params: { limit: number; skip: number }) => ({
+          meta: {
+            total: records.length,
+            skip: params.skip,
+            limit: params.limit,
+            lastUpdated: '2026-11-20',
+          },
+          results: structuredClone(records.slice(params.skip, params.skip + params.limit)),
+        }),
+      );
+
+      try {
+        const staged = await runToolContract(
+          searchAnimalEventsTool,
+          {
+            search: `drug.manufacturer.registration_number:${registration} AND drug.lot_number:"${lot}"`,
+            stage: true,
+          },
+          { context: { tenantId } },
+        );
+
+        const sent = `drug.manufacturer.registration_number:"${registration}" AND drug.lot_number:"${lot}"`;
+        expect(mockQuery.mock.calls.every((call) => call[1].search === sent)).toBe(true);
+        const structured = staged.structuredContent as {
+          canvas_id: string;
+          canvas_table: string;
+          effectiveQuery: string;
+          notice: string;
+          staged_rows: number;
+        };
+        expect(structured.effectiveQuery).toBe(sent);
+        expect(structured.staged_rows).toBe(2);
+        const sql = /`(SELECT \* FROM \S+ t WHERE .+)`\.$/.exec(structured.notice)?.[1];
+        expect(sql).toBe(
+          `SELECT * FROM ${structured.canvas_table} t WHERE EXISTS (SELECT 1 FROM (SELECT unnest(from_json(t.drug, '["json"]')) AS d) WHERE d->'manufacturer'->>'registration_number' ILIKE '%${registration}%' AND d->>'lot_number' ILIKE '%L_5%''A%')`,
+        );
+        expect(surfaces(staged).text[1]).toContain(`> ${surfaces(staged).structured.notice}`);
+
+        const queried = await runToolContract(
+          dataframeQueryTool,
+          { canvas_id: structured.canvas_id, query: sql ?? '' },
+          { context: { tenantId } },
+        );
+        expect(queried.isError).toBeFalsy();
+        const rows = (queried.structuredContent as { rows: { unique_aer_id_number: string }[] })
+          .rows;
+        expect(rows.map((row) => row.unique_aer_id_number)).toEqual(['ONE-ENTRY']);
+      } finally {
+        await canvas.shutdown(createMockContext({ tenantId }));
+      }
+    });
+
+    it('names the staged table on a staged call, joined after the staging notice', async () => {
+      stageOnto();
+      mockQuery.mockResolvedValue(PAGE);
+
+      const result = await runToolContract(searchAnimalEventsTool, {
+        search: TIED,
+        limit: 5,
+        stage: true,
+      });
+
+      const notice = `${STAGED_NOTICE} ${TIE_LEAD} For one entry meeting them together, query the staged table in openfda_dataframe_query: \`SELECT * FROM spilled_TABLE t WHERE ${FILTER}\`.`;
+      expect(surfaces(result).structured).toMatchObject({ ...STAGED_FIELDS, notice });
+      expect(surfaces(result).text[1]).toBe(
+        `\n\n**totalResults:** 2\nQuery: \`${TIED}\`\n> ${notice}`,
+      );
+    });
+
+    it('joins the tie notice with the limit clamp when both fire', async () => {
+      mockQuery.mockResolvedValue({ ...PAGE, meta: { ...PAGE.meta, limit: 450 } });
+
+      const result = await runToolContract(searchAnimalEventsTool, { search: TIED, limit: 5_000 });
+
+      const notice = String((result.structuredContent as { notice?: string }).notice);
+      expect(notice).toMatch(/^.*5000.*450.*openFDA matches each clause against the whole record/s);
+      expect(notice.match(/openFDA matches each clause/g)).toHaveLength(1);
+      expect(surfaces(result).text[1]).toContain(`> ${notice}`);
+    });
+
+    it('keeps the tie notice on every page of a cursor walk, a cursor page restaging without the cursor, joined after the walk end', async () => {
+      mockQuery.mockImplementation(
+        async (_endpoint: string, params: { searchAfter?: { position: number } }) => {
+          const position = params.searchAfter?.position ?? 0;
+          return {
+            meta: { total: 3, skip: position, limit: 1, lastUpdated: '2026-11-20' },
+            results: [{ ...RECORD, unique_aer_id_number: `AER-${position}` }],
+            nextSearchAfter: `0=AER-${position}`,
+          };
+        },
+      );
+      const tieNotice = `${TIE_LEAD} For one entry meeting them together, call again with stage: true and query the staged table, aliased t, in openfda_dataframe_query: \`WHERE ${FILTER}\`.`;
+      // A call carrying both cursor and stage is refused, so a page read by cursor restages without it.
+      const cursorTieNotice = `${TIE_LEAD} For one entry meeting them together, call again without cursor and with stage: true, and query the staged table, aliased t, in openfda_dataframe_query: \`WHERE ${FILTER}\`.`;
+      const walk: { cursor?: string; notice?: string; text: string }[] = [];
+      let cursor: string | undefined;
+
+      for (let page = 0; page < 3; page++) {
+        const result = await runToolContract(searchAnimalEventsTool, {
+          search: TIED,
+          limit: 1,
+          ...(cursor && { cursor }),
+        });
+        const structured = result.structuredContent as { next_cursor?: string; notice?: string };
+        walk.push({
+          ...(structured.next_cursor && { cursor: structured.next_cursor }),
+          ...(structured.notice && { notice: structured.notice }),
+          text: surfaces(result).text.join(''),
+        });
+        cursor = structured.next_cursor;
+      }
+
+      expect(mockQuery.mock.calls.map((call) => call[1].searchAfter)).toEqual([
+        undefined,
+        { position: 1, value: '0=AER-0' },
+        { position: 2, value: '0=AER-1' },
+      ]);
+      expect(walk.map((p) => p.notice)).toEqual([
+        tieNotice,
+        cursorTieNotice,
+        `This page holds the last 1 of the 3 matched records, so the cursor walk is complete. ${cursorTieNotice}`,
+      ]);
+      for (const page of walk) expect(page.text).toContain(`> ${page.notice}`);
+      expect(walk[0]?.cursor).toMatch(/^[A-Za-z0-9_-]+$/);
+      expect(walk[1]?.cursor).toMatch(/^[A-Za-z0-9_-]+$/);
+      expect(walk[0]?.text).toContain(`\nnext_cursor: \`${walk[0]?.cursor}\`\n`);
+      expect(walk[1]?.text).toContain(`\nnext_cursor: \`${walk[1]?.cursor}\`\n`);
+      expect(walk[2]).not.toHaveProperty('cursor');
+      expect(walk[2]?.text).not.toContain('next_cursor:');
+    });
+
+    it.each([
+      ['inline', {}],
+      ['staged', { stage: true }],
+    ] as const)('says nothing about entries on a %s total of 0', async (_mode, extra) => {
+      if ('stage' in extra) stageOnto();
+      mockQuery.mockResolvedValue(EMPTY);
+
+      const result = await runToolContract(searchAnimalEventsTool, {
+        search: TIED,
+        limit: 5,
+        ...extra,
+      });
+
+      const notice = String((result.structuredContent as { notice?: string }).notice);
+      expect(notice).toContain('No animal adverse event reports matched');
+      expect(notice).not.toContain('openFDA matches each clause');
+    });
+
+    // Every array the notice can name is a column of the staged table.
+    it.each([
+      ['drug', 'drug.route:"Oral" AND drug.dosage_form:"Tablet"'],
+      [
+        'drug',
+        'drug.active_ingredients.name:"Fluralaner" AND drug.active_ingredients.dose.numerator:"1"',
+      ],
+      ['reaction', 'reaction.veddra_term_name:"Vomiting" AND reaction.accuracy:"Probable"'],
+      ['outcome', 'outcome.medical_status:"Died" AND outcome.number_of_animals_affected:"1"'],
+    ] as const)('names %s, a staged column, for %s', async (column, search) => {
+      const schemas = stageOnto();
+      mockQuery.mockResolvedValue(PAGE);
+
+      const result = await runToolContract(searchAnimalEventsTool, {
+        search,
+        limit: 5,
+        stage: true,
+      });
+
+      const notice = String((result.structuredContent as { notice?: string }).notice);
+      expect(notice).toContain(`different \`${column}\` entries`);
+      expect(notice).toContain(`unnest(from_json(t.${column}, '["json"]'))`);
+      expect(schemas[0]?.map((c) => c.name)).toContain(column);
+    });
+  });
+
+  /**
+   * #97 — the tool's own cursor surface. The walk, the binding, and the refusals
+   * run through every cursor tool in pagination-contract.test.ts; the token at
+   * its seam in pagination-cursor.test.ts.
+   */
+  describe('cursor (#97)', () => {
+    it('advertises cursor with its base64url pattern and next_cursor as an optional output', () => {
+      const input = z.toJSONSchema(searchAnimalEventsTool.input) as unknown as {
+        properties: Record<string, { pattern?: string }>;
+        required?: string[];
+      };
+      expect(input.properties.cursor?.pattern).toBe('^[A-Za-z0-9_-]+$');
+      expect(input.required ?? []).not.toContain('cursor');
+      const output = z.toJSONSchema(searchAnimalEventsTool.output) as unknown as {
+        properties: Record<string, { type?: string }>;
+        required?: string[];
+      };
+      expect(output.properties.next_cursor?.type).toBe('string');
+      expect(output.required ?? []).not.toContain('next_cursor');
+    });
+
+    it('declares the shared invalid_cursor and pagination_limit_reached entries', () => {
+      expect(searchAnimalEventsTool.errors).toContain(invalidCursorError);
+      expect(searchAnimalEventsTool.errors).toContain(paginationLimitReachedError);
+      expect(
+        searchAnimalEventsTool.errors?.filter((e) => e.reason === 'pagination_limit_reached'),
+      ).toHaveLength(1);
+    });
+
+    it('sends no searchAfter and returns no next_cursor key without a cursor or a link', async () => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 3, skip: 0, limit: 25, lastUpdated: '2026-01-01' },
+        results: [{ unique_aer_id_number: 'AER-1' }],
+      });
+
+      const result = await searchAnimalEventsTool.handler(
+        searchAnimalEventsTool.input.parse({}),
+        ctx,
+      );
+
+      expect(mockQuery.mock.calls[0]![1].searchAfter).toBeUndefined();
+      expect(Object.keys(result).sort()).toEqual(['meta', 'results']);
+    });
+
+    it('renders next_cursor after the header and before the records', () => {
+      const text = textOf(
+        searchAnimalEventsTool.format!({
+          meta: { total: 30, skip: 0, limit: 1, lastUpdated: '2026-01-01' },
+          results: [{ unique_aer_id_number: 'AER-1' }],
+          next_cursor: 'eyJwIjox_-',
+        }),
+      );
+      const lines = text.split('\n');
+      expect(lines[0]).toMatch(/^\*\*30 total results\*\*/);
+      expect(lines[2]).toBe('next_cursor: `eyJwIjox_-`');
+      expect(text.indexOf('### Report AER-1')).toBeGreaterThan(text.indexOf('next_cursor'));
+    });
   });
 });

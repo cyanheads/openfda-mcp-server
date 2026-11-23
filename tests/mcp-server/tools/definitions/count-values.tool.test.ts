@@ -1,13 +1,24 @@
 import { JsonRpcErrorCode, McpError, validationError } from '@cyanheads/mcp-ts-core/errors';
 import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
   getOpenFdaService: vi.fn(),
 }));
 
+vi.mock('@/services/canvas/canvas-accessor.js', () => ({
+  getCanvas: vi.fn(() => undefined),
+}));
+
 import { countValuesTool } from '@/mcp-server/tools/definitions/count-values.tool.js';
-import { phrasePlusHint } from '@/mcp-server/tools/schema-utils.js';
+import { describeFieldsTool } from '@/mcp-server/tools/definitions/describe-fields.tool.js';
+import { lookupNdcTool } from '@/mcp-server/tools/definitions/lookup-ndc.tool.js';
+import { searchAdverseEventsTool } from '@/mcp-server/tools/definitions/search-adverse-events.tool.js';
+import { searchAnimalEventsTool } from '@/mcp-server/tools/definitions/search-animal-events.tool.js';
+import { searchDrugApprovalsTool } from '@/mcp-server/tools/definitions/search-drug-approvals.tool.js';
+import { getCatalogedEndpoints, OBJECT_ARRAY_PATHS } from '@/mcp-server/tools/field-catalog.js';
+import { phrasePlusHint } from '@/mcp-server/tools/search-expression.js';
+import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import { codeLiteralsIn, renderCommonMark } from '../../../helpers/commonmark.js';
 import { textOf } from '../../../helpers/content.js';
@@ -21,6 +32,17 @@ describe('openfda_count_values', () => {
     mockQuery.mockReset();
     vi.mocked(getOpenFdaService).mockReturnValue({ query: mockQuery } as never);
     ctx = createMockContext({ errors: countValuesTool.errors });
+  });
+
+  /**
+   * #16 — openfda_count_values and openfda_describe_fields take the same
+   * endpoints: the count tool's own list is the cataloged set, so every
+   * countable endpoint has the count forms the service classifies against.
+   */
+  it('accepts exactly the endpoints openfda_describe_fields describes', () => {
+    const countEndpoints = [...countValuesTool.input.shape.endpoint.options].sort();
+    expect(countEndpoints).toEqual([...getCatalogedEndpoints()].sort());
+    expect([...describeFieldsTool.input.shape.endpoint.options].sort()).toEqual(countEndpoints);
   });
 
   it('passes count param to service', async () => {
@@ -394,15 +416,22 @@ describe('openfda_count_values', () => {
       expect(literals).toEqual([COUNT, search]);
     });
 
-    it('fences a search holding a line break inside the notice quote', async () => {
+    // The search schema sends each line break as a space, so the notice quotes
+    // the one-line search openFDA received.
+    it('quotes a search holding a line break on one line, the break sent as a space', async () => {
       mockQuery.mockResolvedValue(EMPTY);
-      const search = 'openfda.brand_name:"x"\nAND _exists_:openfda';
-      const { notice, html, literals } = await run({ count: COUNT, search });
+      const { notice, html, literals } = await run({
+        count: COUNT,
+        search: 'openfda.brand_name:"x"\nAND _exists_:openfda',
+      });
 
-      expect(notice).toContain(`nothing matched search: \n\`\`\`\n${search}\n\`\`\`\n. Broaden`);
-      expect(literals).toEqual([COUNT, search]);
-      expect(html.match(/<blockquote>/g)).toHaveLength(1);
-      expect(html).toMatch(/<\/pre>\s*<p>\. Broaden[^<]*<\/p>\s*<\/blockquote>/);
+      const sent = 'openfda.brand_name:"x" AND _exists_:openfda';
+      expect(mockQuery.mock.calls[0]?.[1]).toMatchObject({ search: sent });
+      expect(notice).toBe(
+        '`openfda.brand_name.exact` is countable on drug/label, but nothing matched search: `openfda.brand_name:"x" AND _exists_:openfda`. Broaden or drop the search filter; call openfda_describe_fields for the endpoint field list.',
+      );
+      expect(literals).toEqual([COUNT, sent]);
+      expect(html).not.toContain('<pre>');
     });
   });
 
@@ -450,6 +479,427 @@ describe('openfda_count_values', () => {
       expect(String((result.structuredContent as { notice?: string }).notice)).not.toContain(
         'literal plus sign',
       );
+    });
+  });
+
+  /**
+   * #102 — `drug/shortages` reads an eight-digit date on its four date fields as
+   * epoch milliseconds, so a calendar date on one is sent as `YYYY-MM-DD`. The
+   * rewrite's forms are tabled at its seam (`shortage-dates.test.ts`); these
+   * prove the wiring on this tool.
+   */
+  describe('shortage dates in search (#102)', () => {
+    const TALLY = {
+      meta: { lastUpdated: '2026-11-20' },
+      results: [{ term: 'Current', count: 385 }],
+    };
+    const EMPTY = { meta: { lastUpdated: '2026-11-20' }, results: [] };
+
+    it('sends a YYYYMMDD range on drug/shortages as YYYY-MM-DD', async () => {
+      mockQuery.mockResolvedValue(TALLY);
+
+      await runToolContract(countValuesTool, {
+        endpoint: 'drug/shortages',
+        count: 'status',
+        search: 'initial_posting_date:[20260101 TO 20261231]',
+      });
+
+      expect(mockQuery.mock.calls[0]?.[0]).toBe('drug/shortages');
+      expect(mockQuery.mock.calls[0]?.[1]).toMatchObject({
+        search: 'initial_posting_date:[2026-01-01 TO 2026-12-31]',
+      });
+    });
+
+    it('leaves a YYYYMMDD range on another endpoint as written', async () => {
+      mockQuery.mockResolvedValue(TALLY);
+
+      await runToolContract(countValuesTool, {
+        endpoint: 'drug/event',
+        count: 'serious',
+        search: 'receivedate:[20260101 TO 20261231]',
+      });
+
+      expect(mockQuery.mock.calls[0]?.[1]).toMatchObject({
+        search: 'receivedate:[20260101 TO 20261231]',
+      });
+    });
+
+    it('quotes the search it sent in the no-match notice, on both surfaces', async () => {
+      mockQuery.mockResolvedValue(EMPTY);
+
+      const result = await runToolContract(countValuesTool, {
+        endpoint: 'drug/shortages',
+        count: 'status',
+        search: 'update_date:11/20/2026 AND generic_name:"zzz"',
+      });
+
+      const sent = 'update_date:"2026-11-20" AND generic_name:"zzz"';
+      expect(mockQuery.mock.calls[0]?.[1]).toMatchObject({ search: sent });
+      const notice = String((result.structuredContent as { notice?: string }).notice);
+      expect(notice).toBe(
+        `\`status\` is countable on drug/shortages, but nothing matched search: \`${sent}\`. Broaden or drop the search filter; call openfda_describe_fields for the endpoint field list.`,
+      );
+      expect(textOf(result.content, result.content.length - 1)).toContain(`> ${notice}`);
+    });
+
+    // A `field:(…)` group's dates are sent as written, so an eight-digit one matches nothing.
+    it('says how to write the dates of a date-field group that matched nothing', async () => {
+      mockQuery.mockResolvedValue(EMPTY);
+
+      const result = await runToolContract(countValuesTool, {
+        endpoint: 'drug/shortages',
+        count: 'status',
+        search: 'update_date:(20261120 OR 20261119)',
+      });
+
+      const notice = String((result.structuredContent as { notice?: string }).notice);
+      expect(notice).toBe(
+        '`status` is countable on drug/shortages, but nothing matched search: `update_date:(20261120 OR 20261119)`. Dates inside the update_date:(...) group are sent as written, so write each one YYYY-MM-DD. Broaden or drop the search filter; call openfda_describe_fields for the endpoint field list.',
+      );
+      expect(textOf(result.content, result.content.length - 1)).toContain(`> ${notice}`);
+    });
+
+    // The guard reads the caller's search, so a position it names counts the caller's characters.
+    it('names a refused character at its position in the search as written', async () => {
+      const result = await runToolContract(countValuesTool, {
+        endpoint: 'drug/shortages',
+        count: 'status',
+        search: 'update_date:20261120 AND generic_name:a;b',
+      });
+
+      expect(result.isError).toBe(true);
+      const error = (result.structuredContent as { error: { message: string; data?: unknown } })
+        .error;
+      expect(error.data).toMatchObject({ reason: 'malformed_search' });
+      expect(error.message).toContain('Search query holds ";" at position 40,');
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+  });
+
+  /**
+   * #100 — openFDA tests each clause against the whole record, so a count whose
+   * AND-ed clauses fall under one array of objects tallies records where
+   * different entries met them. The detector and its SQL are tabled at their
+   * seam (`search-clauses.test.ts`); these prove the wiring on this tool.
+   */
+  describe('clauses one array entry must meet together (#100)', () => {
+    const TALLY = { meta: { lastUpdated: '2026-11-20' }, results: [{ term: 'PFIZER', count: 3 }] };
+    const EMPTY = { meta: { lastUpdated: '2026-11-20' }, results: [] };
+    const TABLE =
+      '**1 terms** (total occurrences: 3) | Data updated: 2026-11-20\n\n| # | Term | Count |\n|---|------|-------|\n| 1 | PFIZER | 3 |';
+    const NESTED =
+      'submissions.submission_type:"ORIG" AND submissions.application_docs.type:"Label"';
+    const NESTED_NOTICE = `openFDA matches each clause against the whole record, so the clauses on \`submissions.submission_type\` and \`submissions.application_docs.type\` can be met by different \`submissions\` entries. For one entry meeting them together, stage this search with openfda_search_drug_approvals (stage: true) and query the staged table, aliased t, in openfda_dataframe_query: \`WHERE EXISTS (SELECT 1 FROM (SELECT unnest(from_json(t.submissions, '["json"]')) AS s) WHERE s->>'submission_type' ILIKE '%ORIG%' AND EXISTS (SELECT 1 FROM (SELECT unnest(from_json(s->'application_docs', '["json"]')) AS a) WHERE a->>'type' ILIKE '%Label%'))\`.`;
+
+    const texts = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+      result.content.flatMap((block) => (block.type === 'text' ? [block.text] : []));
+    const noticeOf = (result: Awaited<ReturnType<typeof runToolContract>>) =>
+      (result.structuredContent as { notice?: string }).notice;
+
+    afterEach(() => {
+      vi.mocked(getCanvas).mockReset();
+    });
+
+    it('names the drug/drugsfda search tool for a nested submissions.application_docs pair, on both surfaces', async () => {
+      mockQuery.mockResolvedValue(TALLY);
+
+      const result = await runToolContract(countValuesTool, {
+        endpoint: 'drug/drugsfda',
+        count: 'sponsor_name',
+        search: NESTED,
+      });
+
+      expect(result.structuredContent).toEqual({
+        ...TALLY,
+        termCount: 1,
+        notice: NESTED_NOTICE,
+      });
+      expect(texts(result)).toEqual([TABLE, `\n\n**termCount:** 1\n> ${NESTED_NOTICE}`]);
+    });
+
+    it.each([
+      [
+        'drug/ndc',
+        'active_ingredients.name:"ASPIRIN" AND active_ingredients.strength:"81"',
+        `openFDA matches each clause against the whole record, so the clauses on \`active_ingredients.name\` and \`active_ingredients.strength\` can be met by different \`active_ingredients\` entries. For one entry meeting them together, stage this search with openfda_lookup_ndc (stage: true) and query the staged table, aliased t, in openfda_dataframe_query: \`WHERE EXISTS (SELECT 1 FROM (SELECT unnest(from_json(t.active_ingredients, '["json"]')) AS a) WHERE a->>'name' ILIKE '%ASPIRIN%' AND a->>'strength' ILIKE '%81%')\`.`,
+      ],
+      [
+        'drug/event',
+        'patient.drug.medicinalproduct:"aspirin" AND patient.drug.drugcharacterization:"1"',
+        `openFDA matches each clause against the whole record, so the clauses on \`patient.drug.medicinalproduct\` and \`patient.drug.drugcharacterization\` can be met by different \`patient.drug\` entries. For one entry meeting them together, stage this search with openfda_search_adverse_events (category: "drug", stage: true) and query the staged table, aliased t, in openfda_dataframe_query: \`WHERE EXISTS (SELECT 1 FROM (SELECT unnest(from_json(json_extract(t.patient, '$.drug'), '["json"]')) AS d) WHERE d->>'medicinalproduct' ILIKE '%aspirin%' AND d->>'drugcharacterization' ILIKE '%1%')\`.`,
+      ],
+      [
+        'drug/orangebook',
+        'patents.patent_number:"1" AND patents.drug_substance_flag:"Y"',
+        `openFDA matches each clause against the whole record, so the clauses on \`patents.patent_number\` and \`patents.drug_substance_flag\` can be met by different \`patents\` entries. For one entry meeting them together, stage this search with openfda_search_drug_approvals (dataset: "orangebook", stage: true) and query the staged table, aliased t, in openfda_dataframe_query: \`WHERE EXISTS (SELECT 1 FROM (SELECT unnest(from_json(t.patents, '["json"]')) AS p) WHERE p->>'patent_number' ILIKE '%1%' AND p->>'drug_substance_flag' ILIKE '%Y%')\`.`,
+      ],
+      [
+        'animalandveterinary/event',
+        'drug.route:"Oral" AND drug.dosage_form:"Tablet"',
+        `openFDA matches each clause against the whole record, so the clauses on \`drug.route\` and \`drug.dosage_form\` can be met by different \`drug\` entries. For one entry meeting them together, stage this search with openfda_search_animal_events (stage: true) and query the staged table, aliased t, in openfda_dataframe_query: \`WHERE EXISTS (SELECT 1 FROM (SELECT unnest(from_json(t.drug, '["json"]')) AS d) WHERE d->>'route' ILIKE '%Oral%' AND d->>'dosage_form' ILIKE '%Tablet%')\`.`,
+      ],
+    ] as const)('names the %s search tool, on both surfaces', async (endpoint, search, notice) => {
+      mockQuery.mockResolvedValue(TALLY);
+
+      const result = await runToolContract(countValuesTool, { endpoint, count: 'serious', search });
+
+      expect(result.structuredContent).toEqual({ ...TALLY, termCount: 1, notice });
+      expect(texts(result)).toEqual([TABLE, `\n\n**termCount:** 1\n> ${notice}`]);
+    });
+
+    // An Orange Book record holds one product, so a pair ties only on the ingredients under it.
+    it('names the ingredient array under the one Orange Book product, on both surfaces', async () => {
+      mockQuery.mockResolvedValue(TALLY);
+
+      const result = await runToolContract(countValuesTool, {
+        endpoint: 'drug/orangebook',
+        count: 'serious',
+        search:
+          'products.active_ingredients.name:"AMLODIPINE BESYLATE" AND products.active_ingredients.strength:"10MG"',
+      });
+
+      const notice = `openFDA matches each clause against the whole record, so the clauses on \`products.active_ingredients.name\` and \`products.active_ingredients.strength\` can be met by different \`products.active_ingredients\` entries. For one entry meeting them together, stage this search with openfda_search_drug_approvals (dataset: "orangebook", stage: true) and query the staged table, aliased t, in openfda_dataframe_query: \`WHERE EXISTS (SELECT 1 FROM (SELECT unnest(from_json(t.products, '["json"]')) AS p) WHERE EXISTS (SELECT 1 FROM (SELECT unnest(from_json(p->'active_ingredients', '["json"]')) AS a) WHERE a->>'name' ILIKE '%AMLODIPINE BESYLATE%' AND a->>'strength' ILIKE '%10MG%'))\`.`;
+      expect(result.structuredContent).toEqual({ ...TALLY, termCount: 1, notice });
+      expect(texts(result)).toEqual([TABLE, `\n\n**termCount:** 1\n> ${notice}`]);
+    });
+
+    it('joins the notice after the truncation guidance', async () => {
+      mockQuery.mockResolvedValue({
+        ...TALLY,
+        results: [...TALLY.results, { term: 'MERCK', count: 2 }],
+      });
+
+      const result = await runToolContract(countValuesTool, {
+        endpoint: 'drug/drugsfda',
+        count: 'sponsor_name',
+        search: NESTED,
+        limit: 1,
+      });
+
+      const notice = `Showing the top 1 terms by count; more distinct values exist. Raise limit (max 1000) or narrow with search. ${NESTED_NOTICE}`;
+      expect(result.structuredContent).toMatchObject({ truncated: true, shown: 1, notice });
+      expect(texts(result).at(-1)).toContain(`> ${notice}`);
+    });
+
+    it('joins the notice after the limit clamp on a complete list', async () => {
+      mockQuery.mockResolvedValue(TALLY);
+
+      const result = await runToolContract(countValuesTool, {
+        endpoint: 'drug/drugsfda',
+        count: 'sponsor_name',
+        search: NESTED,
+        limit: 5_000,
+      });
+
+      const notice = String(noticeOf(result));
+      expect(notice).toMatch(/^\S.*5000.*1000.*\. openFDA matches each clause/s);
+      expect(notice.endsWith(NESTED_NOTICE)).toBe(true);
+      expect(notice.match(/openFDA matches each clause/g)).toHaveLength(1);
+      expect(texts(result).at(-1)).toContain(`> ${notice}`);
+    });
+
+    it.each([
+      ['matched nothing', EMPTY],
+      [
+        'matched records with no value for the field',
+        { ...EMPTY, meta: { ...EMPTY.meta, nothingToCount: true } },
+      ],
+    ])('says nothing about entries when the search %s', async (_case, response) => {
+      mockQuery.mockResolvedValue(response);
+
+      const result = await runToolContract(countValuesTool, {
+        endpoint: 'drug/drugsfda',
+        count: 'sponsor_name',
+        search: NESTED,
+      });
+
+      expect(result.structuredContent).toMatchObject({ results: [], termCount: 0 });
+      expect(String(noticeOf(result))).toContain(
+        '`sponsor_name` is countable on drug/drugsfda, but ',
+      );
+      expect(String(noticeOf(result))).not.toContain('openFDA matches each clause');
+    });
+
+    // A count with no conjoined pair under one array returns what it returned before #100.
+    it.each([
+      [
+        'drug/drugsfda',
+        'clauses joined by OR',
+        'submissions.submission_type:"ORIG" OR submissions.review_priority:"PRIORITY"',
+      ],
+      [
+        'drug/drugsfda',
+        'an array clause beside a top-level field',
+        'submissions.submission_type:"ORIG" AND sponsor_name:"PFIZER"',
+      ],
+      [
+        'drug/label',
+        'an endpoint outside the array table',
+        'openfda.brand_name:"X" AND openfda.generic_name:"Y"',
+      ],
+      [
+        'drug/orangebook',
+        'two fields of the one product an Orange Book record holds',
+        'products.application_number:"210274" AND products.application_type:"N"',
+      ],
+    ] as const)('returns %s with %s exactly as before', async (endpoint, _case, search) => {
+      mockQuery.mockResolvedValue(TALLY);
+
+      const result = await runToolContract(countValuesTool, {
+        endpoint,
+        count: 'sponsor_name',
+        search,
+      });
+
+      expect(result.structuredContent).toEqual({ ...TALLY, termCount: 1 });
+      expect(texts(result)).toEqual([TABLE, '\n\n**termCount:** 1']);
+    });
+
+    // drug/shortages lists no array of objects, so its date rewrite runs with no notice beside it.
+    it('rewrites shortage dates and adds no notice, drug/shortages listing no array', async () => {
+      expect(OBJECT_ARRAY_PATHS['drug/shortages']).toBeUndefined();
+      mockQuery.mockResolvedValue(TALLY);
+
+      const result = await runToolContract(countValuesTool, {
+        endpoint: 'drug/shortages',
+        count: 'status',
+        search: 'initial_posting_date:[20260101 TO 20261231] AND update_date:20261120',
+      });
+
+      expect(mockQuery.mock.calls[0]?.[1]).toMatchObject({
+        search: 'initial_posting_date:[2026-01-01 TO 2026-12-31] AND update_date:"2026-11-20"',
+      });
+      expect(result.structuredContent).toEqual({ ...TALLY, termCount: 1 });
+      expect(texts(result)).toEqual([TABLE, '\n\n**termCount:** 1']);
+    });
+
+    /**
+     * The route the notice gives works: the tool it names, called with the
+     * selector the notice names, stages the counted endpoint into a table
+     * holding the column its SQL reads, for every top array of every endpoint
+     * the array table lists.
+     */
+    describe('the search tool it names stages the array as a column', () => {
+      /** Endpoint, the tool the notice names, the selector input it names, and that selector as the notice writes it. */
+      const STAGERS = [
+        ['drug/drugsfda', searchDrugApprovalsTool, {}, ''],
+        ['drug/event', searchAdverseEventsTool, { category: 'drug' }, 'category: "drug", '],
+        ['device/event', searchAdverseEventsTool, { category: 'device' }, 'category: "device", '],
+        ['food/event', searchAdverseEventsTool, { category: 'food' }, 'category: "food", '],
+        ['animalandveterinary/event', searchAnimalEventsTool, {}, ''],
+        ['drug/ndc', lookupNdcTool, {}, ''],
+        [
+          'drug/orangebook',
+          searchDrugApprovalsTool,
+          { dataset: 'orangebook' },
+          'dataset: "orangebook", ',
+        ],
+        [
+          'cosmetic/event',
+          searchAdverseEventsTool,
+          { category: 'cosmetic' },
+          'category: "cosmetic", ',
+        ],
+      ] as const;
+      /**
+       * Where a top array holds one entry per record, the array under it whose
+       * entries a pair can split: an Orange Book record holds one product.
+       */
+      const PAIRED_UNDER = new Map([['drug/orangebook products', 'products.active_ingredients']]);
+      /** Each endpoint's listed arrays with no listed array above them. */
+      const cases = STAGERS.flatMap(([endpoint, stager, selector, written]) => {
+        const paths = OBJECT_ARRAY_PATHS[endpoint] ?? [];
+        return paths
+          .filter((path) => !paths.some((outer) => path.startsWith(`${outer}.`)))
+          .map((array) => [endpoint, array, stager, selector, written] as const);
+      });
+
+      /** A canvas that drains what it is given and records the schema each table was registered with. */
+      const stageOnto = () => {
+        const schemas: { name: string }[][] = [];
+        const instance = {
+          canvasId: 'cv_count',
+          isNew: true,
+          registerTable: vi.fn(
+            async (
+              name: string,
+              rows: AsyncIterable<unknown>,
+              options: { schema: { name: string }[] },
+            ) => {
+              schemas.push(options.schema);
+              let rowCount = 0;
+              for await (const _row of rows) rowCount++;
+              return { tableName: name, rowCount, columns: [] };
+            },
+          ),
+          drop: vi.fn(),
+        };
+        vi.mocked(getCanvas).mockReturnValue({
+          acquire: vi.fn().mockResolvedValue(instance),
+        } as never);
+        return schemas;
+      };
+
+      it('walks every endpoint of the array table, seventeen top arrays', () => {
+        expect(STAGERS.map(([endpoint]) => endpoint)).toEqual(Object.keys(OBJECT_ARRAY_PATHS));
+        expect(cases.map(([endpoint, array]) => `${endpoint} ${array}`)).toEqual([
+          'drug/drugsfda submissions',
+          'drug/drugsfda products',
+          'drug/event patient.drug',
+          'drug/event patient.reaction',
+          'device/event device',
+          'device/event patient',
+          'device/event mdr_text',
+          'food/event products',
+          'animalandveterinary/event drug',
+          'animalandveterinary/event reaction',
+          'animalandveterinary/event outcome',
+          'drug/ndc active_ingredients',
+          'drug/ndc packaging',
+          'drug/orangebook products',
+          'drug/orangebook patents',
+          'drug/orangebook exclusivity',
+          'cosmetic/event products',
+        ]);
+      });
+
+      it.each(cases)('%s %s', async (endpoint, array, stager, selector, written) => {
+        const paired = PAIRED_UNDER.get(`${endpoint} ${array}`) ?? array;
+        const search = `${paired}.alpha:"x" AND ${paired}.beta:"y"`;
+        mockQuery.mockResolvedValue(TALLY);
+        const count = await runToolContract(countValuesTool, {
+          endpoint,
+          count: 'serious',
+          search,
+        });
+        const notice = String(noticeOf(count));
+        expect(notice).toContain(`different \`${paired}\` entries`);
+        expect(notice).toContain(`stage this search with ${stager.name} (${written}stage: true)`);
+        // An array under a plain object (`patient.drug`) is read out of its object column.
+        const [column, ...rest] = array.split('.');
+        expect(notice).toContain(
+          rest.length > 0
+            ? `unnest(from_json(json_extract(t.${column}, '$.${rest.join('.')}'), '["json"]'))`
+            : `unnest(from_json(t.${array}, '["json"]'))`,
+        );
+
+        const schemas = stageOnto();
+        mockQuery.mockReset();
+        mockQuery.mockResolvedValue({
+          meta: { total: 1, skip: 0, limit: 1, lastUpdated: '2026-11-20' },
+          results: [{}],
+        });
+        const staged = await runToolContract(stager, {
+          ...selector,
+          search,
+          stage: true,
+          limit: 1,
+        });
+
+        expect(staged.isError).toBeFalsy();
+        expect(new Set(mockQuery.mock.calls.map((call) => call[0]))).toEqual(new Set([endpoint]));
+        expect(schemas[0]?.map((c) => c.name)).toContain(column);
+      });
     });
   });
 });

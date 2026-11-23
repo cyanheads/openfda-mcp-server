@@ -36,22 +36,16 @@ vi.mock('@/services/openfda/openfda-service.js', () => {
 
 import {
   AGGREGATE_ROUTE,
+  canvasIdInput,
   canvasOutputShape,
   canvasResult,
   OPENFDA_MAX_ROWS,
   spillSearch,
   stagingNotice,
 } from '@/services/openfda/canvas-spill.js';
-
-async function setCanvasMock(c: unknown) {
-  const mod = await import('@/services/canvas/canvas-accessor.js');
-  (mod as unknown as { __setMock: (c: unknown) => void }).__setMock(c);
-}
-
-async function setSvcMock(s: unknown) {
-  const mod = await import('@/services/openfda/openfda-service.js');
-  (mod as unknown as { __setMock: (s: unknown) => void }).__setMock(s);
-}
+import { inlinePage } from '@/services/openfda/page-budget.js';
+import { pageProjection } from '@/services/openfda/record-projection.js';
+import { setCanvasMock, setSvcMock } from '../../helpers/mock-setters.js';
 
 /**
  * Paged openFDA service stub over a synthetic dataset of `total` rows.
@@ -85,6 +79,7 @@ function makeCanvas(canvasId = 'cv_test') {
       async (
         name: string,
         source: AsyncIterable<Record<string, unknown>> | Record<string, unknown>[],
+        _options?: { signal?: AbortSignal },
       ) => {
         let rowCount = 0;
         for await (const _row of source as AsyncIterable<Record<string, unknown>>) rowCount++;
@@ -136,6 +131,22 @@ describe('spillSearch', () => {
     expect(result.stagedRows).toBe(2500);
     expect(result.truncated).toBe(false);
     expect(instance.registerTable).toHaveBeenCalledOnce();
+  });
+
+  /**
+   * The canvas stops reading the drain when this signal aborts. Without it a
+   * cancelled staged search keeps requesting pages up to the row ceiling.
+   */
+  it('hands the call signal to the canvas with the drain, so a cancelled call stops staging', async () => {
+    await setSvcMock(makeSvc(2500));
+    const { canvas, instance } = makeCanvas();
+    await setCanvasMock(canvas);
+
+    const { signal } = new AbortController();
+    const ctx = createMockContext({ signal });
+    await spillSearch({ endpoint: 'drug/event', schema: SCHEMA, ctx, limit: 10, skip: 0 });
+
+    expect(instance.registerTable.mock.calls[0]?.[2]?.signal).toBe(signal);
   });
 
   it('bounds the drain by a byte budget so large records cannot run away (#30)', async () => {
@@ -340,6 +351,101 @@ describe('spillSearch', () => {
 });
 
 /*
+ * #104 — the inline page of a staged call is cut exactly as the plain path cuts
+ * the same window (`inlinePage`), `omitted_fields` and `projected_fields`
+ * included, while the drain stages every record whole. Tabled across the whole
+ * matrix: `canvas_id` supplied or omitted × `skip` inside the probe window or
+ * past it (a separate page request) × `fields` set or not × `include` set or not.
+ */
+describe('spillSearch — the inline cut against the plain path (#104)', () => {
+  const ID = ['recall_number'];
+  const record = (i: number): Record<string, unknown> => ({
+    recall_number: `Z-${i}`,
+    recalling_firm: `Firm ${i}`,
+    code_info: `Lot ${i}`,
+    more_code_info: i % 2 === 0 ? '' : `More ${i}`,
+  });
+  function makeDeviceSvc(total: number) {
+    return {
+      query: vi.fn(async (_endpoint: string, params: { limit?: number; skip?: number }) => {
+        const skip = params.skip ?? 0;
+        const limit = params.limit ?? 1000;
+        const results: Record<string, unknown>[] = [];
+        for (let i = skip; i < Math.min(skip + limit, total); i++) results.push(record(i));
+        return { meta: { total, skip, limit, lastUpdated: '2026-11-22' }, results };
+      }),
+    };
+  }
+  function makeCapturingCanvas(canvasId: string) {
+    const rows: Record<string, unknown>[] = [];
+    const instance = {
+      canvasId,
+      isNew: true,
+      registerTable: vi.fn(async (name: string, source: AsyncIterable<Record<string, unknown>>) => {
+        for await (const row of source) rows.push(row);
+        return { tableName: name, rowCount: rows.length, columns: [] };
+      }),
+      drop: vi.fn(),
+    };
+    return { canvas: { acquire: vi.fn().mockResolvedValue(instance) }, rows };
+  }
+
+  const cells = [undefined, 'cv_prior00'].flatMap((canvasId) =>
+    [0, 150].flatMap((skip) =>
+      [undefined, ['recalling_firm']].flatMap((fields) =>
+        [undefined, ['code_info']].map((include) => ({ canvasId, skip, fields, include })),
+      ),
+    ),
+  );
+
+  it.each(cells)(
+    'agrees with inlinePage for $canvasId, skip $skip, fields $fields, include $include',
+    async ({ canvasId, skip, fields, include }) => {
+      const total = 300;
+      const svc = makeDeviceSvc(total);
+      await setSvcMock(svc);
+      const { canvas, rows } = makeCapturingCanvas(canvasId ?? 'cv_fresh');
+      await setCanvasMock(canvas);
+      const projection = pageProjection('device/enforcement', ID, { fields, include });
+
+      const spill = await spillSearch({
+        endpoint: 'device/enforcement',
+        schema: SCHEMA,
+        ctx: createMockContext(),
+        limit: 4,
+        skip,
+        canvasId,
+        projection,
+      });
+      const staged = canvasResult(spill);
+      const plain = inlinePage(
+        await makeDeviceSvc(total).query('device/enforcement', { limit: 4, skip }),
+        4,
+        projection,
+      );
+
+      expect(canvas.acquire).toHaveBeenCalledWith(canvasId, expect.anything());
+      expect(staged.results).toEqual(plain.results);
+      expect(staged.results.map((r) => r.recall_number)).toEqual(
+        [0, 1, 2, 3].map((i) => `Z-${skip + i}`),
+      );
+      expect(staged.omitted_fields).toEqual(plain.omitted_fields);
+      expect(staged.projected_fields).toEqual(plain.projected_fields);
+      if (fields) {
+        expect(staged).not.toHaveProperty('omitted_fields');
+        expect(staged.projected_fields).toEqual(include ? [...fields, ...include] : fields);
+      } else {
+        expect(staged.omitted_fields?.map((f) => f.path)).toEqual(
+          include ? ['more_code_info'] : ['code_info', 'more_code_info'],
+        );
+      }
+      // Every matched record reached the table whole, left-out paths included.
+      expect(rows).toEqual(Array.from({ length: total }, (_, i) => record(i)));
+    },
+  );
+});
+
+/*
  * #73, #92 — `meta.limit` is the page size applied to the request, as the call
  * resolved it. The staged response must report what the plain path reports for
  * the same request, so a short or empty window never reads as a smaller limit.
@@ -473,9 +579,21 @@ describe('canvasOutputShape', () => {
     expect(text).toContain('openfda_dataframe_query');
   });
 
-  it('leaves the canvas_id description unchanged', () => {
+  it('points canvas_id at both dataframe tools and a later staged search', () => {
     expect(canvasOutputShape.canvas_id.description).toBe(
-      'DataCanvas session id for the staged result set. Present when this call staged. Pass to openfda_dataframe_query / openfda_dataframe_describe, or back into this tool to accumulate more tables on the same canvas.',
+      'Canvas id of the staged set: pass to openfda_dataframe_describe, openfda_dataframe_query, or a later staged search.',
     );
+  });
+});
+
+describe('canvasIdInput', () => {
+  it('names the tools whose staged calls issue a canvas_id, and stages onto it', () => {
+    expect(canvasIdInput.description).toBe(
+      'canvas_id from an earlier staged call to openfda_search_* or openfda_lookup_ndc: stages this call onto that canvas too (as stage=true does), so its tables can be joined.',
+    );
+  });
+
+  it('is optional', () => {
+    expect(canvasIdInput.safeParse(undefined).success).toBe(true);
   });
 });

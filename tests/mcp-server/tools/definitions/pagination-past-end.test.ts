@@ -32,6 +32,8 @@ import { searchDrugShortagesTool } from '@/mcp-server/tools/definitions/search-d
 import { searchRecallsTool } from '@/mcp-server/tools/definitions/search-recalls.tool.js';
 import { searchTobaccoReportsTool } from '@/mcp-server/tools/definitions/search-tobacco-reports.tool.js';
 import { initOpenFdaService } from '@/services/openfda/openfda-service.js';
+import { textOfResult } from '../../../helpers/content.js';
+import { NO_MATCHES, UNAVAILABLE } from '../../../helpers/upstream-responses.js';
 
 const http = createFetchMock();
 
@@ -48,8 +50,6 @@ const PAGINATED_TOOLS: ReadonlyArray<readonly [AnyToolDefinition, Record<string,
   [getDrugLabelTool, { search: 'openfda.brand_name:"aspirin"' }],
 ];
 
-const NO_MATCHES = () =>
-  Response.json({ error: { code: 'NOT_FOUND', message: 'No matches found!' } }, { status: 404 });
 const TOTAL = (total: number) => () =>
   Response.json({
     meta: { results: { skip: 0, limit: 0, total }, last_updated: '2026-09-17' },
@@ -61,20 +61,11 @@ const EMPTY_PAGE = (lastUpdated: string) => () =>
     meta: { results: { skip: 0, limit: 2, total: 0 }, last_updated: lastUpdated },
     results: [],
   });
-const UNAVAILABLE = () =>
-  new Response('<html><body>503 Service Temporarily Unavailable</body></html>', { status: 503 });
 
 const params = (request: Request) => new URL(request.url).searchParams;
 /** The page request — anything but the `limit=0` total recovery. */
 const isPage = (request: Request) => params(request).get('limit') !== '0';
 const isRecovery = (request: Request) => params(request).get('limit') === '0';
-
-function textOfResult(result: Awaited<ReturnType<typeof runToolContract>>): string {
-  return result.content
-    .filter((block) => block.type === 'text')
-    .map((block) => block.text)
-    .join('\n');
-}
 
 interface SearchStructured {
   kind?: string;
@@ -247,6 +238,163 @@ describe.each(PAGINATED_TOOLS.map(([tool, input]) => [tool.name, tool, input] as
       const header = text.split('\n')[0]!;
       expect(header).toMatch(/^\*\*0 total results\*\* \(returned: 0, skip: 39, limit: 1\b/);
       expect(text.indexOf('either nothing matched')).toBeGreaterThan(header.length);
+    });
+  },
+);
+
+/* --- a search_after cursor walk through the real service (#97) --- */
+
+/**
+ * Every paginated tool that takes `cursor`; cosmetic events and device
+ * classification walk as rows of their own.
+ */
+const CURSOR_TOOLS: ReadonlyArray<readonly [AnyToolDefinition, Record<string, unknown>]> = [
+  [searchTobaccoReportsTool, {}],
+  [searchDrugShortagesTool, {}],
+  [searchRecallsTool, { category: 'drug' }],
+  [getDrugLabelTool, { search: 'openfda.brand_name:"aspirin"' }],
+  [searchAdverseEventsTool, { category: 'drug' }],
+  [searchAdverseEventsTool, { category: 'cosmetic' }],
+  [searchDeviceClearancesTool, { pathway: '510k' }],
+  [searchDeviceClearancesTool, { pathway: 'classification' }],
+  [lookupNdcTool, { search: 'aspirin' }],
+  [searchDrugApprovalsTool, {}],
+  [searchAnimalEventsTool, {}],
+];
+
+interface CursorPage extends SearchStructured {
+  next_cursor?: string;
+  results: { id?: string }[];
+}
+
+/**
+ * openFDA as the service meets it: a page read at `skip=0` or by `search_after`
+ * links the next by `search_after` — the exactly full last page included, a
+ * link that answers 404 — a page read at a later `skip` links by `skip`, and
+ * `meta.results.skip` reads 0 on every `search_after` page. A request by
+ * `search_after` resumes after the record its value names.
+ */
+function openFdaWalk(total: number) {
+  const ids = Array.from({ length: total }, (_, i) => `doc-${String(i).padStart(3, '0')}`);
+  return {
+    ids,
+    respond: (request: Request) => {
+      const url = new URL(request.url);
+      const q = url.searchParams;
+      const limit = Number(q.get('limit'));
+      const after = q.get('search_after');
+      const skip = Number(q.get('skip') ?? 0);
+      const from = after ? ids.indexOf(after.replace(/^0=/, '')) + 1 : skip;
+      const slice = ids.slice(from, from + limit);
+      if (slice.length === 0) return NO_MATCHES();
+      const next = new URL(url);
+      next.searchParams.delete('api_key');
+      if (after || skip === 0) {
+        next.searchParams.set('skip', '0');
+        next.searchParams.set('search_after', `0=${slice.at(-1)}`);
+      } else {
+        next.searchParams.set('skip', String(skip + limit));
+      }
+      return Response.json(
+        {
+          meta: { results: { skip: after ? 0 : skip, limit, total }, last_updated: '2026-11-21' },
+          results: slice.map((id) => ({ id })),
+        },
+        { headers: { link: `<${next.href}>; rel="next"` } },
+      );
+    },
+  };
+}
+
+describe.each(CURSOR_TOOLS.map(([tool, input]) => [tool.name, input, tool] as const))(
+  '%s %j — a cursor walk through the real service',
+  (_name, baseInput, tool) => {
+    beforeAll(() => {
+      initOpenFdaService();
+    });
+
+    beforeEach(() => {
+      http.reset();
+      http.install();
+    });
+
+    afterEach(() => {
+      http.restore();
+    });
+
+    it('follows next_cursor from skip 0 to the end of the match, every record once', async () => {
+      const upstream = openFdaWalk(12);
+      http.route({ match: () => true, respond: upstream.respond });
+      const seen: string[] = [];
+      const skips: number[] = [];
+      let page: CursorPage | undefined;
+      let last: Awaited<ReturnType<typeof runToolContract>> | undefined;
+
+      for (const limit of [5, 4, 3]) {
+        last = await runToolContract(tool, {
+          ...baseInput,
+          limit,
+          ...(page?.next_cursor && { cursor: page.next_cursor }),
+        });
+        page = last.structuredContent as unknown as CursorPage;
+        skips.push(page.meta.skip);
+        seen.push(...page.results.map((r) => String(r.id)));
+        if (!page.next_cursor) break;
+      }
+
+      expect(seen).toEqual(upstream.ids);
+      expect(skips).toEqual([0, 5, 9]);
+      // The last page was exactly full and openFDA still linked it: no next_cursor from it.
+      expect(page?.next_cursor).toBeUndefined();
+      expect(page?.notice).toContain('so the cursor walk is complete.');
+      expect(textOfResult(last!)).toContain('so the cursor walk is complete.');
+
+      expect(http.calls).toHaveLength(3);
+      const sent = http.calls.map((call) => params(call.request));
+      expect(sent.map((q) => q.get('search_after'))).toEqual([null, '0=doc-004', '0=doc-008']);
+      expect(sent.map((q) => q.get('skip'))).toEqual(['0', '0', '0']);
+      for (const q of sent.slice(1)) {
+        expect(q.get('search')).toBe(sent[0]!.get('search'));
+        expect(q.get('sort')).toBe(sent[0]!.get('sort'));
+      }
+    });
+
+    it('issues no next_cursor on a page read at skip > 0, whose link pages by skip', async () => {
+      http.route({ match: () => true, respond: openFdaWalk(12).respond });
+
+      const result = await runToolContract(tool, { ...baseInput, limit: 3, skip: 3 });
+
+      const page = result.structuredContent as unknown as CursorPage;
+      expect(page.results).toHaveLength(3);
+      expect(page.next_cursor).toBeUndefined();
+      expect(textOfResult(result)).not.toContain('next_cursor:');
+    });
+
+    it('takes the past-end recovery when a cursor page answers 404, and says the walk ended', async () => {
+      http.route({ match: () => true, once: true, respond: openFdaWalk(12).respond });
+      const first = await runToolContract(tool, { ...baseInput, limit: 5 });
+      const { next_cursor } = first.structuredContent as unknown as CursorPage;
+      // The match shrank to 4 records before the next page was read.
+      http.route({ match: isPage, respond: NO_MATCHES }, { match: isRecovery, respond: TOTAL(4) });
+
+      const result = await runToolContract(tool, { ...baseInput, limit: 5, cursor: next_cursor });
+
+      expect(result.isError).toBeFalsy();
+      expect(http.calls).toHaveLength(3);
+      expect(params(http.calls[1]!.request).get('search_after')).toBe('0=doc-004');
+      const recovery = params(http.calls[2]!.request);
+      expect(recovery.has('search_after')).toBe(false);
+      expect(recovery.get('limit')).toBe('0');
+
+      const page = result.structuredContent as unknown as CursorPage;
+      expect(page.meta).toMatchObject({ skip: 5, total: 4 });
+      expect(page.next_cursor).toBeUndefined();
+      expect(page.notice).toContain(
+        'No records at this cursor: its walk position (5) is past the last of the 4 matched records',
+      );
+      const text = textOfResult(result);
+      expect(text).toContain('4 matched, but skip=5 is past the end');
+      expect(text).not.toMatch(/^No .* found\.$/m);
     });
   },
 );

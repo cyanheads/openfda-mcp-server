@@ -4,9 +4,15 @@
  */
 
 import { markdown } from '@cyanheads/mcp-ts-core/utils';
+import { OPENFDA_MAX_SKIP } from '@/mcp-server/tools/schema-utils.js';
 import { AGGREGATE_ROUTE, stagingStopCause } from '@/services/openfda/canvas-spill.js';
 import { type OversizedRecordFields, oversizedRecordLine } from '@/services/openfda/page-budget.js';
-import { type ProjectionFields, projectionLine } from '@/services/openfda/record-projection.js';
+import {
+  type OmissionFields,
+  omissionLine,
+  type ProjectionFields,
+  projectionLine,
+} from '@/services/openfda/record-projection.js';
 
 /**
  * Caller text interpolated into server-authored prose — an enrichment notice —
@@ -338,15 +344,21 @@ export function formatRemainingFields(
  * "paginated past the end". A non-zero `total` settles it — records matched, so
  * the offset overshot and the field hints are noise. openFDA answers both cases
  * with the same 404, and the service recovers the real total for a page at
- * `skip > 0`; only when that recovery failed (`totalUnverified`) does the
- * message name both possibilities.
+ * `skip > 0` or read by cursor; only when that recovery failed
+ * (`totalUnverified`) does the message name both possibilities. `byCursor`
+ * marks a page read by cursor, whose `skip` is the walk position: past the end
+ * there, the walk has ended rather than overshot.
  */
 export function emptyResultMessage(
   skip: number,
   total: number,
   baseHint: string,
   totalUnverified?: boolean,
+  byCursor?: boolean,
 ): string {
+  if (total > 0 && byCursor) {
+    return `No records at this cursor: its walk position (${skip}) is past the last of the ${total} matched records, so the cursor walk has ended. Re-run the call from skip 0 to read them again.`;
+  }
   if (total > 0) {
     return `No records at skip=${skip}: ${total} matched, so the offset is past the end of the result set. Lower skip to read them.`;
   }
@@ -370,7 +382,7 @@ export interface CanvasResultFields {
  * staged-vs-matched count never hinge on the size of the inline page. Returns
  * null when the call did not stage.
  */
-export function canvasStagingLine(total: number, result: CanvasResultFields): string | null {
+function canvasStagingLine(total: number, result: CanvasResultFields): string | null {
   if (result.spilled === undefined) return null;
   if (!result.canvas_table) {
     return `> Canvas \`${result.canvas_id}\` acquired; no rows staged (spilled=${result.spilled}, ${total} matched).`;
@@ -389,13 +401,21 @@ export function canvasStagingLine(total: number, result: CanvasResultFields): st
  * start of the table: this note only fires once the offset has run past the
  * matched set, and the table never holds more rows than matched, so carrying
  * `skip` into the SQL would hand back a query that returns nothing.
+ *
+ * Only a page read by cursor reports a `skip` above the ceiling — its walk
+ * position — and no `skip` the caller can send reaches those records, so that
+ * note points at a walk from `skip: 0` instead.
  */
-export function emptyPageNote(
+function emptyPageNote(
   total: number,
   skip: number,
   result?: CanvasResultFields | undefined,
 ): string {
-  const base = `No records in this page: ${total} matched, but skip=${skip} is past the end of the result set. Lower skip to read matched records.`;
+  const route =
+    skip > OPENFDA_MAX_SKIP
+      ? 'Re-run the call from skip 0 and follow next_cursor to read matched records.'
+      : 'Lower skip to read matched records.';
+  const base = `No records in this page: ${total} matched, but skip=${skip} is past the end of the result set. ${route}`;
   if (!result?.canvas_table) return base;
   const held = result.truncated
     ? `the first ${result.staged_rows ?? 0} of them`
@@ -438,21 +458,31 @@ export function resultHeader(meta: ResultMeta, returned: number, kind?: string):
 
 /**
  * The lines that open a search tool's `content[]` on every branch, in order: the
- * metadata header, then the disclosures that hold regardless of row count — the
- * `fields` projection line, the oversized-record line, then the canvas staging
- * line whenever the call staged. The branch body (the no-match line, the
- * past-the-end note, or the records) follows. Each entry is one line — the
+ * metadata header, the `next_cursor` line when the page carries one — the same
+ * token as `structuredContent.next_cursor`, as a code span a caller copies back
+ * exactly — then the disclosures that hold regardless of row count — the
+ * `fields` projection line, the left-out paths line (`omitted_fields`), the
+ * oversized-record line, then the canvas staging line whenever the call staged.
+ * The branch body (the no-match line, the past-the-end note, or the records)
+ * follows. Each entry is one line — the
  * dataset date and the oversized record's field paths come from upstream —
  * ending in a newline, so joining on `\n` separates the blocks with a blank line.
  */
 export function searchLead(
   result: CanvasResultFields &
     OversizedRecordFields &
-    ProjectionFields & { meta: ResultMeta; results: unknown[] },
+    ProjectionFields &
+    OmissionFields & {
+      meta: ResultMeta;
+      next_cursor?: string | undefined;
+      results: unknown[];
+    },
 ): string[] {
   return [
     resultHeader(result.meta, result.results.length),
+    result.next_cursor ? `next_cursor: ${codeLiteral(result.next_cursor)}` : null,
     projectionLine(result),
+    omissionLine(result),
     oversizedRecordLine(result),
     canvasStagingLine(result.meta.total, result),
   ]
@@ -468,21 +498,39 @@ export function searchLead(
  * response cannot make. So a projected record gets its identity heading — the
  * first identity key it carries, by key name, which `structuredContent` uses too
  * — and then every field it holds, verbatim and nothing else.
+ *
+ * A dotted identity key (`products.application_number`) is read through every
+ * nested object and array, its values joined in element order. Only a top-level
+ * heading key leaves the field lines: a dotted key's top-level block renders
+ * whole, since it holds the record's other fields under that block.
  */
 export function projectedRecordLines(
   record: Record<string, unknown>,
   identityKeys: readonly string[],
 ): string[] {
-  const key = identityKeys.find((k) => record[k] != null && record[k] !== '');
-  const heading = key ? `### ${key}: ${String(record[key])}` : '### Record';
-  return [singleLine(heading), ...formatRemainingFields(record, new Set(key ? [key] : []))];
+  const valuesAt = (value: unknown, segments: readonly string[]): unknown[] => {
+    if (Array.isArray(value)) return value.flatMap((item) => valuesAt(item, segments));
+    if (segments.length === 0) return [value];
+    if (value === null || typeof value !== 'object') return [];
+    const [head = '', ...rest] = segments;
+    return Object.hasOwn(value, head)
+      ? valuesAt((value as Record<string, unknown>)[head], rest)
+      : [];
+  };
+  const heading = identityKeys
+    .map((key) => ({ key, value: renderValue(valuesAt(record, key.split('.'))) }))
+    .find((entry) => entry.value !== null);
+  return [
+    singleLine(heading ? `### ${heading.key}: ${heading.value}` : '### Record'),
+    ...formatRemainingFields(record, new Set(heading ? [heading.key] : [])),
+  ];
 }
 
 /**
  * Body for an empty inline page: the tool's own no-match line when nothing
  * matched, qualified when the zero total is unverified, and otherwise the
  * past-the-end note — a search that matched records never renders as no
- * results (#31).
+ * results.
  */
 export function emptyPageBody(
   result: CanvasResultFields & { meta: Pick<ResultMeta, 'skip' | 'total' | 'totalUnverified'> },

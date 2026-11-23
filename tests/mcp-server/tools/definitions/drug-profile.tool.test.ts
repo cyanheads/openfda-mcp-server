@@ -18,9 +18,13 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
   getOpenFdaService: vi.fn(),
 }));
 
-import { drugProfileTool, fanOutKeyFor } from '@/mcp-server/tools/definitions/drug-profile.tool.js';
-import { pickApplication } from '@/mcp-server/tools/drug-profile-sections.js';
-import { findSearchDelimiterFault } from '@/mcp-server/tools/schema-utils.js';
+import {
+  drugProfileTool,
+  fanOutKeyFor,
+  searchableName,
+} from '@/mcp-server/tools/definitions/drug-profile.tool.js';
+import { originalApproval, pickApplication } from '@/mcp-server/tools/drug-profile-sections.js';
+import { findSearchDelimiterFault } from '@/mcp-server/tools/search-expression.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import { codeLiteralsIn, renderCommonMark } from '../../../helpers/commonmark.js';
 import { textOf } from '../../../helpers/content.js';
@@ -478,6 +482,68 @@ const APPLICATION_ROWS = {
   ],
 } satisfies Record<string, ApplicationRow[]>;
 
+/*
+ * #106 fixtures — Drugs@FDA `submissions[]` in the order api.fda.gov returned them
+ * on 2026-11-22, trimmed to the fields the approval reads (Eliquis and Savaysa to
+ * their originals beside a few supplements). Rows are `[type, number, status, date,
+ * review priority, class code, class description]`; an `undefined` is a field the
+ * record leaves out.
+ */
+type SubmissionRow = [
+  type: string,
+  number?: string | undefined,
+  status?: string | undefined,
+  date?: string | undefined,
+  priority?: string | undefined,
+  classCode?: string | undefined,
+  classDescription?: string | undefined,
+];
+const SUBMISSION_KEYS = [
+  'submission_type',
+  'submission_number',
+  'submission_status',
+  'submission_status_date',
+  'review_priority',
+  'submission_class_code',
+  'submission_class_code_description',
+] as const;
+
+/** Drugs@FDA submission records from compact rows, omitting each `undefined` field. */
+const submissions = (rows: SubmissionRow[]) =>
+  rows.map((row) =>
+    Object.fromEntries(
+      SUBMISSION_KEYS.flatMap((key, i) => (row[i] === undefined ? [] : [[key, row[i]]])),
+    ),
+  );
+
+const NME = 'Type 1 - New Molecular Entity';
+const SUBMISSION_ROWS = {
+  /** NDA202155 ELIQUIS: one original, fifth in the array. */
+  eliquis: [
+    ['SUPPL', '20', 'AP', '20180628', 'STANDARD', 'LABELING', 'Labeling'],
+    ['SUPPL', '39', 'AP', '20250417', 'PRIORITY', 'EFFICACY', 'Efficacy'],
+    ['ORIG', '1', 'AP', '20121228', 'PRIORITY', 'TYPE 1', NME],
+    ['SUPPL', '1', 'AP', '20130716', 'PRIORITY', 'MANUF (CMC)', 'Manufacturing (CMC)'],
+  ],
+  /** NDA206316 SAVAYSA: two originals approved the same day. */
+  savaysa: [
+    ['SUPPL', '19', 'AP', '20231018', 'STANDARD', 'EFFICACY', 'Efficacy'],
+    ['ORIG', '1', 'AP', '20150108', 'STANDARD', 'TYPE 1', NME],
+    ['SUPPL', '1', 'AP', '20150824', 'STANDARD', 'MANUF (CMC)', 'Manufacturing (CMC)'],
+    ['ORIG', '2', 'AP', '20150108', 'STANDARD', 'EFFICACY', 'Efficacy'],
+  ],
+  /** BLA761298 PAVBLU: ORIG-2 listed before the earlier ORIG-1; neither carries a description. */
+  pavblu: [
+    ['ORIG', '2', 'AP', '20261022', 'STANDARD', 'UNKNOWN'],
+    ['SUPPL', '5', 'AP', '20260428', 'N/A', 'BIOEQUIV', 'Bioequivalence'],
+    ['ORIG', '1', 'AP', '20240823', 'STANDARD', 'UNKNOWN'],
+  ],
+  /** NDA221024 ABANTA: a tentative approval only. */
+  abanta: [['ORIG', '1', 'TA', '20260629', 'STANDARD', 'TYPE 3', 'Type 3 - New Dosage Form']],
+  /** NDA020559 TRITEC: the record starts at a supplement. */
+  tritec: [['SUPPL', '2', 'AP', '19980323', 'STANDARD', 'EFFICACY', 'Efficacy']],
+} satisfies Record<string, SubmissionRow[]>;
+
 /** A drug/shortages record, one presentation. */
 const shortageRecord = (o: {
   generic: string;
@@ -759,23 +825,24 @@ describe('openfda_drug_profile', () => {
    * read of the profile block gives back the exact string `structuredContent`
    * carries, with no emphasis made of its `*` and `_`. One case per side of
    * codeLiteral's branch: a span inside the heading and the line, and a fence on
-   * the lines after them — where a line of the name that reads as a heading
-   * stays text inside the fence (#67).
+   * the lines after the heading — where a line of the name that reads as a
+   * heading stays text inside the fence (#67). The key is the name as searched,
+   * its line break and `#` read as one space (#98), so it stays a span.
    */
   it.each([
-    ['*x*_y_', '<h1>Drug profile: <code>*x*_y_</code></h1>'],
-    ['*x*\n# _y_', '<h1>Drug profile:</h1>'],
-  ])('renders the caller drug name %j as a code literal in format()', async (drug, heading) => {
+    ['*x*_y_', '*x*_y_', '<h1>Drug profile: <code>*x*_y_</code></h1>'],
+    ['*x*\n# _y_', '*x* _y_', '<h1>Drug profile:</h1>'],
+  ])('renders the caller drug name %j as a code literal in format()', async (drug, key, h1) => {
     mockQuery.mockResolvedValue({ meta: meta(), results: [] });
 
     const result = await runToolContract(drugProfileTool, { drug });
     const structured = result.structuredContent as { meta: { drug: string; fanOutKey: string } };
-    expect(structured.meta).toMatchObject({ drug, fanOutKey: drug });
+    expect(structured.meta).toMatchObject({ drug, fanOutKey: key });
 
     const html = renderCommonMark(textOf(result.content, 0));
-    expect(html).toContain(heading);
+    expect(html).toContain(h1);
     expect(html.match(/<h\d>/g)).toHaveLength(7);
-    expect(codeLiteralsIn(html)).toEqual([drug, drug]);
+    expect(codeLiteralsIn(html)).toEqual([drug, key]);
     expect(html.match(/<em>[\s\S]*?<\/em>/g)).toEqual(['<em>Resolved via: none</em>']);
   });
 
@@ -1104,6 +1171,281 @@ describe('openfda_drug_profile', () => {
     });
   });
 
+  /**
+   * Issue #98 — openFDA answers HTTP 400 to a search holding `! # $ ; ? ^ ` | ~`, a
+   * tab or line break, or any character outside printable ASCII, inside a quoted
+   * phrase and after a backslash alike, so one such character in the name failed
+   * every section. A name with no letter or digit left every phrase wordless, and a
+   * wordless phrase drops out of an AND: `*` profiled an unrelated drug. The name is
+   * read once, each run of those characters and whitespace as one space — the word
+   * break openFDA's analyzer already makes at punctuation.
+   */
+  describe('drug names openFDA cannot search (#98)', () => {
+    /** Every `[endpoint, search]` the handler sent, in call order. */
+    const sent = () =>
+      mockQuery.mock.calls.map(([endpoint, params]) => [
+        endpoint,
+        (params as { search: string }).search,
+      ]);
+
+    /** What openFDA's search gate refuses, as measured upstream. */
+    const REFUSED = /[!#$;?^`|~]|[^\x20-\x7e]/u;
+
+    /** Every search sent passes openFDA's gate. */
+    const expectSearchable = () => {
+      expect(sent().length).toBeGreaterThan(0);
+      for (const [, search] of sent()) expect(search).not.toMatch(REFUSED);
+    };
+
+    /** Every search a profile that resolves nothing sends for the phrase `body`, in call order. */
+    const unresolvedProfile = (body: string) => [
+      ['drug/label', flaggedLabelSearch(body)],
+      ['drug/drugsfda', selectionSearch(body)],
+      ['drug/label', `openfda.generic_name:"${body}" OR openfda.brand_name:"${body}"`],
+      ['drug/ndc', `generic_name:"${body}" OR brand_name:"${body}"`],
+      ['drug/event', `patient.drug.medicinalproduct:"${body}"`],
+      ['drug/event', `patient.drug.medicinalproduct:"${body}"`],
+      ['drug/event', `patient.drug.medicinalproduct:"${body}"`],
+      ['drug/enforcement', `openfda.generic_name:"${body}" OR product_description:"${body}"`],
+      ['drug/shortages', `generic_name:"${body}"`],
+      [
+        'drug/drugsfda',
+        `openfda.generic_name:"${body}" OR products.active_ingredients.name:"${body}"`,
+      ],
+    ];
+
+    beforeEach(() => {
+      mockQuery.mockResolvedValue({ meta: meta(), results: [] });
+    });
+
+    it.each([
+      'acetaminophen codeine',
+      'Zyrtec-D',
+      "Children's Motrin",
+      'Aspirin & Caffeine',
+      // `*` is no wildcard inside a phrase: openFDA drops it like other punctuation.
+      'acet*',
+    ])('sends %j as it always did', async (drug) => {
+      const result = await drugProfileTool.handler(drugProfileTool.input.parse({ drug }), ctx);
+
+      expect(sent()).toEqual(unresolvedProfile(drug));
+      expect(result.meta).toEqual({ drug, resolvedVia: 'none', fanOutKey: drug });
+    });
+
+    it.each([
+      ['acetaminophen; codeine', 'acetaminophen codeine'],
+      ['Ozempic®', 'Ozempic'],
+      ['Eliquis™ 5 mg', 'Eliquis 5 mg'],
+      [`Tylenol 500${String.fromCodePoint(0xa0)}mg`, 'Tylenol 500 mg'],
+      ['insulin\tglargine', 'insulin glargine'],
+      ['insulin\r\nglargine', 'insulin glargine'],
+      ['insulin  glargine', 'insulin glargine'],
+      ['; Ozempic ;', 'Ozempic'],
+      ['zz`q`*x*', 'zz q *x*'],
+      // openFDA stores these names unaccented (NEORAL), so the accent is dropped, never a word break.
+      ['Néoral', 'Neoral'],
+      ['café', 'cafe'],
+      [`Ne${String.fromCodePoint(0x301)}oral`, 'Neoral'],
+    ])('searches %j as %j, echoing the name as typed', async (drug, searched) => {
+      const result = await drugProfileTool.handler(drugProfileTool.input.parse({ drug }), ctx);
+
+      expect(sent()).toEqual(unresolvedProfile(searched));
+      expect(result.meta).toEqual({ drug, resolvedVia: 'none', fanOutKey: searched });
+    });
+
+    it('reads the refused characters before escaping, so the quotes beside them stay escaped', async () => {
+      const result = await drugProfileTool.handler(
+        drugProfileTool.input.parse({ drug: 'Tylenol; "Extra"' }),
+        ctx,
+      );
+
+      expect(sent()).toEqual(unresolvedProfile('Tylenol \\"Extra\\"'));
+      expect(result.meta.fanOutKey).toBe('Tylenol "Extra"');
+    });
+
+    it.each([
+      '*',
+      '-',
+      '_',
+      '®',
+      '"""',
+      '.',
+      '&',
+      '***',
+      ';;',
+      '®\t™',
+      // Combining marks alone fold to nothing.
+      String.fromCodePoint(0x301),
+      ` ${String.fromCodePoint(0x301, 0x308)} `,
+    ])('raises blank_drug_name for %j without any upstream request', async (drug) => {
+      const err = (await Promise.resolve(
+        drugProfileTool.handler(drugProfileTool.input.parse({ drug }), ctx),
+      ).catch((e: unknown) => e)) as McpError;
+
+      expect(err).toBeInstanceOf(McpError);
+      expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
+      expect(err.data).toMatchObject({ reason: 'blank_drug_name' });
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('reports blank_drug_name and its recovery on both surfaces', async () => {
+      const result = await runToolContract(drugProfileTool, { drug: '®' });
+      const { error } = result.structuredContent as {
+        error: {
+          code: number;
+          message: string;
+          data?: { reason?: string; recovery?: { hint?: string } };
+        };
+      };
+      const message =
+        '"®" has no ASCII letter or digit to search for, so it cannot be resolved to an FDA drug.';
+      const hint =
+        'Supply a brand or generic drug name with at least one searchable character, for example "metformin".';
+
+      expect(result.isError).toBe(true);
+      expect(error.code).toBe(JsonRpcErrorCode.ValidationError);
+      expect(error.message).toBe(message);
+      expect(error.data?.reason).toBe('blank_drug_name');
+      expect(error.data?.recovery?.hint).toBe(hint);
+      const text = textOf(result.content);
+      expect(text).toContain(message);
+      expect(text).toContain(hint);
+      expect(text).toContain('blank_drug_name');
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('ranks labels on the name as searched, so the exact brand wins', async () => {
+      mockQuery.mockImplementation(
+        serveProfile({
+          flagged: [
+            { openfda: { brand_name: ['Wegovy'], generic_name: ['semaglutide'] } },
+            { openfda: { brand_name: ['Ozempic'], generic_name: ['semaglutide injection'] } },
+          ],
+        }),
+      );
+
+      const result = await drugProfileTool.handler(
+        drugProfileTool.input.parse({ drug: 'Ozempic®' }),
+        ctx,
+      );
+
+      expect(result.identity.brand_names).toEqual(['Ozempic']);
+      expect(result.meta.fanOutKey).toBe('semaglutide injection');
+    });
+
+    it('reads a fan-out key from the resolved label the same way', async () => {
+      mockQuery.mockImplementation(
+        serveProfile({
+          flagged: [
+            {
+              openfda: {
+                generic_name: ['ACETAMINOPHEN; CODEINE PHOSPHATE'],
+                brand_name: ['Tylenol-Codeine'],
+              },
+            },
+          ],
+        }),
+      );
+
+      const result = await drugProfileTool.handler(
+        drugProfileTool.input.parse({ drug: 'Tylenol-Codeine' }),
+        ctx,
+      );
+
+      const key = 'ACETAMINOPHEN CODEINE PHOSPHATE';
+      expect(result.meta.fanOutKey).toBe(key);
+      // The record's own value is reported as openFDA sent it.
+      expect(result.identity.generic_name).toBe('ACETAMINOPHEN; CODEINE PHOSPHATE');
+      expect(sent()).toEqual([
+        ['drug/label', flaggedLabelSearch('Tylenol-Codeine')],
+        ['drug/drugsfda', selectionSearch('Tylenol-Codeine')],
+        ['drug/event', 'patient.drug.medicinalproduct:"Tylenol-Codeine"'],
+        ['drug/event', 'patient.drug.medicinalproduct:"Tylenol-Codeine"'],
+        ['drug/event', 'patient.drug.medicinalproduct:"Tylenol-Codeine"'],
+        ['drug/enforcement', `openfda.generic_name:"${key}" OR product_description:"${key}"`],
+        ['drug/shortages', `generic_name:"${key}"`],
+        [
+          'drug/drugsfda',
+          `openfda.generic_name:"${key}" OR products.active_ingredients.name:"${key}"`,
+        ],
+      ]);
+    });
+
+    it('reads a fan-out key from a drug/ndc record the same way', async () => {
+      mockQuery.mockImplementation(
+        serveProfile({ ndc: [{ generic_name: 'SEMAGLUTIDE®', brand_name: 'Ozempic' }] }),
+      );
+
+      const result = await drugProfileTool.handler(
+        drugProfileTool.input.parse({ drug: 'Ozempic' }),
+        ctx,
+      );
+
+      expect(result.meta).toEqual({
+        drug: 'Ozempic',
+        resolvedVia: 'ndc',
+        fanOutKey: 'SEMAGLUTIDE',
+      });
+      expect(sent().slice(-3)).toEqual([
+        [
+          'drug/enforcement',
+          'openfda.generic_name:"SEMAGLUTIDE" OR product_description:"SEMAGLUTIDE"',
+        ],
+        ['drug/shortages', 'generic_name:"SEMAGLUTIDE"'],
+        [
+          'drug/drugsfda',
+          'openfda.generic_name:"SEMAGLUTIDE" OR products.active_ingredients.name:"SEMAGLUTIDE"',
+        ],
+      ]);
+      expectSearchable();
+    });
+
+    it('keeps every search searchable when the key from a record holds a line break', async () => {
+      mockQuery.mockImplementation(
+        serveProfile({
+          flagged: [
+            {
+              openfda: {
+                generic_name: ['METFORMIN\nHYDROCHLORIDE'],
+                brand_name: ['Glucophage'],
+                application_number: ['ANDA090000'],
+                is_original_packager: [true],
+              },
+            },
+          ],
+          selection: {
+            results: [
+              {
+                application_number: 'NDA020357',
+                products: [
+                  {
+                    brand_name: 'GLUCOPHAGE',
+                    active_ingredients: [{ name: 'METFORMIN HYDROCHLORIDE' }],
+                  },
+                ],
+              },
+            ],
+          },
+        }),
+      );
+
+      const result = await drugProfileTool.handler(
+        drugProfileTool.input.parse({ drug: 'Glucophage' }),
+        ctx,
+      );
+
+      expect(result.meta.fanOutKey).toBe('METFORMIN HYDROCHLORIDE');
+      // The picked application's own label is looked up beside the fan-out (#85).
+      expect(sent()).toContainEqual(['drug/label', ownLabelSearch('NDA020357')]);
+      expect(sent()).toContainEqual([
+        'drug/enforcement',
+        'openfda.generic_name:"METFORMIN HYDROCHLORIDE" OR product_description:"METFORMIN HYDROCHLORIDE"',
+      ]);
+      expect(sent()).toContainEqual(['drug/shortages', 'generic_name:"METFORMIN HYDROCHLORIDE"']);
+      expectSearchable();
+    });
+  });
+
   /** The search each structured sub-query (recalls, approval, shortage) sent. */
   const structuredSearches = () =>
     Object.fromEntries(
@@ -1395,6 +1737,9 @@ describe('openfda_drug_profile', () => {
         applicationNumber: 'ANDA076869',
         sponsor: 'Sponsor of ANDA076869',
         marketingStatus: 'Prescription',
+        approvalDate: null,
+        reviewPriority: null,
+        submissionClass: null,
         brandNames: ['METFORMIN HYDROCHLORIDE'],
         candidates: 214,
       });
@@ -1459,6 +1804,192 @@ describe('openfda_drug_profile', () => {
         applicationNumber: 'NDA020719',
         marketingStatus: 'Discontinued',
       });
+    });
+  });
+
+  /*
+   * #106 — the approval carries its original submission's date, review priority, and
+   * class, and each recall row its recall number and status, all read from records
+   * the profile already fetches. The pick is tabled at `originalApproval`; these
+   * prove the wiring on both surfaces.
+   */
+  describe('original approval and recall identifiers (#106)', () => {
+    type Structured = {
+      approval: Record<string, unknown> | null;
+      recalls: Array<Record<string, unknown>>;
+    };
+    /** Drug enforcement records as api.fda.gov returned them on 2026-11-22, trimmed. */
+    const ELIQUIS_RECALL = {
+      recall_number: 'D-0959-2017',
+      status: 'Terminated',
+      classification: 'Class I',
+      recalling_firm: 'Bristol-myers Squibb Company',
+      recall_initiation_date: '20170605',
+      report_date: '20170719',
+      reason_for_recall:
+        'Labeling: Label Mix-up: One bottle of Eliquis 5 mg tablet was found to contain lower-strength Eliquis 2.5 mg tablets only instead of the labeled 5 mg tablets.',
+    };
+    /** The one drug enforcement report whose recall_number is an empty string. */
+    const UNNUMBERED_RECALL = {
+      recall_number: '',
+      status: 'Ongoing',
+      classification: 'Not Yet Classified',
+      recalling_firm: 'Premium Health Care LLC',
+      recall_initiation_date: '20260508',
+      report_date: '20261111',
+      reason_for_recall:
+        'Microbial Contamination of Sterile Products: Out of specifications results were obtained for bacterial endotoxin.',
+    };
+    /** The Eliquis profile's upstream, NDA202155 with its submissions, the recall search answering `recalls`. */
+    const eliquis = (recalls: unknown[]) => {
+      const serve = serveProfile({
+        flagged: [],
+        unrestricted: [LABELS.eliquisAphena],
+        ndc: [{ brand_name: 'Eliquis', generic_name: 'apixaban', product_ndc: '0003-0893' }],
+        ownLabel: [],
+        selection: {
+          results: applications(APPLICATION_ROWS.eliquis).map((app) =>
+            app.application_number === 'NDA202155'
+              ? { ...app, submissions: submissions(SUBMISSION_ROWS.eliquis) }
+              : app,
+          ),
+          total: 2,
+        },
+      });
+      return async (
+        endpoint: string,
+        params: { search?: string; count?: string; limit?: number },
+      ) =>
+        endpoint === 'drug/enforcement'
+          ? { meta: meta({ total: recalls.length }), results: recalls }
+          : serve(endpoint, params);
+    };
+    const linesOf = (content: Parameters<typeof textOf>[0]) => textOf(content).split('\n');
+
+    it('keeps the approval and recall fields the profile already returned', async () => {
+      mockQuery.mockImplementation(
+        eliquis([ELIQUIS_RECALL, { classification: 'Class II', report_date: '20160101' }]),
+      );
+
+      const result = await runToolContract(drugProfileTool, { drug: 'Eliquis' });
+
+      const structured = result.structuredContent as Structured;
+      expect(structured.approval).toMatchObject({
+        applicationNumber: 'NDA202155',
+        sponsor: 'BRISTOL MYERS SQUIBB',
+        marketingStatus: 'Prescription',
+        brandNames: ['ELIQUIS'],
+        candidates: 2,
+      });
+      expect(structured.recalls[0]).toMatchObject({
+        classification: 'Class I',
+        reason: ELIQUIS_RECALL.reason_for_recall,
+        recalling_firm: 'Bristol-myers Squibb Company',
+        date: '20170605',
+      });
+      // A report with no initiation date is dated by its report date; omitted fields stay null.
+      expect(structured.recalls[1]).toMatchObject({
+        classification: 'Class II',
+        reason: null,
+        recalling_firm: null,
+        date: '20160101',
+      });
+      const lines = linesOf(result.content);
+      expect(lines).toContain(
+        '**Application number:** NDA202155 | **Sponsor:** BRISTOL MYERS SQUIBB | **Marketing status:** Prescription',
+      );
+      expect(lines).toContain('**Brand names:** ELIQUIS');
+      expect(lines).toContain(`  **Reason:** ${ELIQUIS_RECALL.reason_for_recall}`);
+    });
+
+    it('carries the original approval and the recall number and status, on both surfaces', async () => {
+      mockQuery.mockImplementation(eliquis([ELIQUIS_RECALL]));
+
+      const result = await runToolContract(drugProfileTool, { drug: 'Eliquis' });
+
+      expect(result.isError).toBeFalsy();
+      const structured = result.structuredContent as Structured;
+      expect(structured.approval).toEqual({
+        applicationNumber: 'NDA202155',
+        sponsor: 'BRISTOL MYERS SQUIBB',
+        marketingStatus: 'Prescription',
+        approvalDate: '20121228',
+        reviewPriority: 'PRIORITY',
+        submissionClass: 'Type 1 - New Molecular Entity',
+        brandNames: ['ELIQUIS'],
+        candidates: 2,
+      });
+      expect(structured.recalls).toEqual([
+        {
+          recall_number: 'D-0959-2017',
+          status: 'Terminated',
+          classification: 'Class I',
+          reason: ELIQUIS_RECALL.reason_for_recall,
+          recalling_firm: 'Bristol-myers Squibb Company',
+          date: '20170605',
+        },
+      ]);
+      // Read from records already in hand: the profile's request count is unchanged.
+      expect(mockQuery).toHaveBeenCalledTimes(10);
+
+      const lines = linesOf(result.content);
+      expect(lines).toContain(
+        '**Approval date:** 20121228 | **Review priority:** PRIORITY | **Submission class:** Type 1 - New Molecular Entity',
+      );
+      expect(lines).toContain(
+        '- **Recall number:** D-0959-2017 · **Status:** Terminated · **Classification:** Class I · **Recalling firm:** Bristol-myers Squibb Company · **Date:** 20170605',
+      );
+    });
+
+    it('reads an empty recall_number as null, on both surfaces', async () => {
+      mockQuery.mockImplementation(eliquis([UNNUMBERED_RECALL]));
+
+      const result = await runToolContract(drugProfileTool, { drug: 'Eliquis' });
+
+      const structured = result.structuredContent as Structured;
+      expect(structured.recalls[0]).toMatchObject({ recall_number: null, status: 'Ongoing' });
+      expect(linesOf(result.content)).toContain(
+        '- **Recall number:** n/a · **Status:** Ongoing · **Classification:** Not Yet Classified · **Recalling firm:** Premium Health Care LLC · **Date:** 20260508',
+      );
+    });
+
+    it('answers null for every new field when the records carry none, through the production parse', async () => {
+      // fullUpstream's application has no typed submission and its recall no number or status.
+      mockQuery.mockImplementation(async (endpoint: string, params: { count?: string }) =>
+        fullUpstream(endpoint, params),
+      );
+
+      const result = await runToolContract(drugProfileTool, { drug: 'metformin' });
+
+      expect(result.isError).toBeFalsy();
+      const structured = result.structuredContent as Structured;
+      expect(structured.approval).toMatchObject({
+        applicationNumber: 'NDA020357',
+        approvalDate: null,
+        reviewPriority: null,
+        submissionClass: null,
+      });
+      expect(structured.recalls[0]).toMatchObject({ recall_number: null, status: null });
+      const lines = linesOf(result.content);
+      expect(lines).toContain(
+        '**Approval date:** n/a | **Review priority:** n/a | **Submission class:** n/a',
+      );
+      expect(lines).toContain(
+        '- **Recall number:** n/a · **Status:** n/a · **Classification:** Class II · **Recalling firm:** Acme Pharma · **Date:** 20240110',
+      );
+    });
+
+    it('renders no approval-date line when no application matches', async () => {
+      mockQuery.mockImplementation(async (endpoint: string, params: { count?: string }) =>
+        endpoint === 'drug/drugsfda'
+          ? { meta: meta(), results: [] }
+          : fullUpstream(endpoint, params),
+      );
+
+      const result = await runToolContract(drugProfileTool, { drug: 'metformin' });
+
+      expect((result.structuredContent as Structured).approval).toBeNull();
+      expect(textOf(result.content)).not.toContain('**Approval date:**');
     });
   });
 
@@ -1717,6 +2248,9 @@ describe('openfda_drug_profile', () => {
         applicationNumber: 'NDA020357',
         sponsor: 'EMD SERONO INC',
         marketingStatus: 'Discontinued',
+        approvalDate: null,
+        reviewPriority: null,
+        submissionClass: null,
         brandNames: ['GLUCOPHAGE'],
         candidates: 28,
       });
@@ -1771,6 +2305,44 @@ describe('openfda_drug_profile', () => {
         sort: 'update_date:desc',
         limit: 100,
       });
+    });
+
+    it('tallies shortage statuses most frequent first, whatever order the records come in', async () => {
+      const record = (status: string, ndc: string) =>
+        shortageRecord({
+          generic: 'Metformin Hydrochloride Tablet',
+          status,
+          company: 'Mylan Pharmaceuticals Inc., a Viatris Company',
+          presentation: `Metformin Hydrochloride, Tablet, 500 mg (NDC ${ndc})`,
+          brand: 'METFORMIN HYDROCHLORIDE',
+          updated: '10/22/2026',
+        });
+      // First seen: Current, Resolved, To Be Discontinued; neither that order nor its reverse is the answer.
+      const shortages = [
+        record('Current', '0378-0001-01'),
+        record('Resolved', '0378-0002-01'),
+        record('To Be Discontinued', '0378-0003-01'),
+        record('To Be Discontinued', '0378-0004-01'),
+        record('Current', '0378-0005-01'),
+        record('To Be Discontinued', '0378-0006-01'),
+      ];
+      mockQuery.mockImplementation(
+        serveProfile({ ...METFORMIN, shortage: { results: shortages } }),
+      );
+
+      const result = await runToolContract(drugProfileTool, { drug: 'metformin' });
+
+      const shortage = (result.structuredContent as Structured).shortage as {
+        statusCounts: unknown;
+      };
+      expect(shortage.statusCounts).toEqual([
+        { status: 'To Be Discontinued', count: 3 },
+        { status: 'Current', count: 2 },
+        { status: 'Resolved', count: 1 },
+      ]);
+      expect(textOf(result.content)).toContain(
+        '**Records:** 6 — by status: To Be Discontinued 3, Current 2, Resolved 1',
+      );
     });
 
     it("adalimumab: a biosimilar's label gives way to BLA125057's original-packager label", async () => {
@@ -2958,6 +3530,100 @@ describe('pickApplication', () => {
 });
 
 /**
+ * The approval's original-submission pick at its own seam (#106): among `submissions[]`
+ * entries typed ORIG with status AP, the earliest `submission_status_date`, ties to the
+ * lowest `submission_number`. Array order is not chronology, so every case is also
+ * checked reversed. The handler tests above prove the wiring; this table is the rule.
+ */
+describe('originalApproval', () => {
+  const none = { approvalDate: null, reviewPriority: null, submissionClass: null };
+  const approved = (approvalDate: string | null, reviewPriority: string | null, cls: string) => ({
+    approvalDate,
+    reviewPriority,
+    submissionClass: cls,
+  });
+
+  it.each([
+    // [why, submission rows, expected]
+    [
+      'Eliquis: the one original among supplements',
+      SUBMISSION_ROWS.eliquis,
+      approved('20121228', 'PRIORITY', NME),
+    ],
+    [
+      'Pavblu: the earlier of two originals; no description falls back to the class code',
+      SUBMISSION_ROWS.pavblu,
+      approved('20240823', 'STANDARD', 'UNKNOWN'),
+    ],
+    [
+      'Savaysa: two originals the same day go to the lower number',
+      SUBMISSION_ROWS.savaysa,
+      approved('20150108', 'STANDARD', NME),
+    ],
+    [
+      'submission numbers compare as numbers, not text',
+      [
+        ['ORIG', '10', 'AP', '20150108', 'STANDARD', 'EFFICACY', 'Efficacy'],
+        ['ORIG', '9', 'AP', '20150108', 'PRIORITY', 'TYPE 1', NME],
+      ],
+      approved('20150108', 'PRIORITY', NME),
+    ],
+    [
+      'an original that is not approved is skipped, however early',
+      [
+        ['ORIG', '1', 'TA', '20100104', 'STANDARD', 'TYPE 3', 'Type 3 - New Dosage Form'],
+        ['ORIG', '2', 'AP', '20120601', 'PRIORITY', 'TYPE 5', 'Type 5 - New Formulation'],
+      ],
+      approved('20120601', 'PRIORITY', 'Type 5 - New Formulation'),
+    ],
+    ['Abanta: a tentative approval only', SUBMISSION_ROWS.abanta, none],
+    ["Tritec: a supplement's date is never the approval's", SUBMISSION_ROWS.tritec, none],
+    ['an empty submissions array', [], none],
+    [
+      'an undated original ranks after a dated one',
+      [
+        ['ORIG', '1', 'AP', undefined, 'STANDARD', 'TYPE 1', NME],
+        ['ORIG', '2', 'AP', '20150108', 'PRIORITY', 'EFFICACY', 'Efficacy'],
+      ],
+      approved('20150108', 'PRIORITY', 'Efficacy'),
+    ],
+    [
+      'an undated original alone still names its priority and class',
+      [['ORIG', '1', 'AP', undefined, 'STANDARD', 'TYPE 1', NME]],
+      approved(null, 'STANDARD', NME),
+    ],
+    [
+      'an unnumbered original ranks after a numbered one the same day',
+      [
+        ['ORIG', undefined, 'AP', '20150108', 'PRIORITY', 'TYPE 2'],
+        ['ORIG', '3', 'AP', '20150108', 'STANDARD', 'TYPE 1', NME],
+      ],
+      approved('20150108', 'STANDARD', NME),
+    ],
+    [
+      'an ANDA original with no priority or class leaves both null',
+      [['ORIG', '1', 'AP', '20031002']],
+      { approvalDate: '20031002', reviewPriority: null, submissionClass: null },
+    ],
+    [
+      'empty strings read as absent',
+      [['ORIG', '1', 'AP', '20121228', '', 'TYPE 1', '']],
+      approved('20121228', null, 'TYPE 1'),
+    ],
+  ] as Array<[string, SubmissionRow[], ReturnType<typeof originalApproval>]>)(
+    '%s',
+    (_why, rows, expected) => {
+      expect(originalApproval({ submissions: submissions(rows) })).toEqual(expected);
+      expect(originalApproval({ submissions: submissions([...rows].reverse()) })).toEqual(expected);
+    },
+  );
+
+  it('answers null for every field when the application has no submissions', () => {
+    expect(originalApproval({ application_number: 'NDA013448' })).toEqual(none);
+  });
+});
+
+/**
  * The fan-out key rule at its own seam (#82): the typed term when its words occur,
  * in order and case-insensitively, in the resolved generic name; otherwise the
  * resolved generic, then the brand, then the term, with #25's blank guard. The
@@ -3000,6 +3666,19 @@ describe('fanOutKeyFor', () => {
     ['notadrug', null, undefined, 'notadrug', 'nothing resolved'],
     ['metformin', '"', undefined, 'metformin', 'a blank resolved generic (#25)'],
     ['metform', '  METFORMIN HCL  ', undefined, 'METFORMIN HCL', 'a padded resolved generic'],
+    // A key taken from a record is read as the typed name is (#98).
+    [
+      'Tylenol-Codeine',
+      'ACETAMINOPHEN; CODEINE',
+      'Tylenol-Codeine',
+      'ACETAMINOPHEN CODEINE',
+      'a refused character in the resolved generic',
+    ],
+    ['Ozempic', 'SEMAGLUTIDE®', 'Ozempic', 'SEMAGLUTIDE', 'a trailing refused character'],
+    ['metform', 'METFORMIN\r\n\tHCL', undefined, 'METFORMIN HCL', 'a line break and a tab'],
+    ['metformin', null, 'Gluco;phage', 'Gluco phage', 'a refused character in the brand'],
+    ['Oddbrand', '*', 'Oddbrand', 'Oddbrand', 'a resolved generic with no letter or digit'],
+    ['x1', '®™', undefined, 'x1', 'a resolved generic of refused characters only'],
   ] as const)('%j in %j (brand %j) keys %j — %s', (term, generic, brand, key, _why) => {
     expect(fanOutKeyFor(term, generic, brand)).toBe(key);
   });
@@ -3025,6 +3704,96 @@ describe('fanOutKeyFor', () => {
       let ratio = 0;
       for (let n = 10_000; n <= 320_000; n *= 2) {
         const { t5k, t320k: tN } = linearTiming(run, build(5_000), build(n));
+        expect(tN).toBeLessThan(500_000);
+        ratio = tN / t5k;
+      }
+      expect(ratio).toBeLessThan(256);
+    });
+  });
+});
+
+/**
+ * The name as the profile searches it, at its own seam (#98): canonical
+ * diacritics are dropped, each run of whitespace and characters openFDA refuses
+ * becomes one space, then the ends are trimmed. The handler tests above prove
+ * the wiring; these tables are the rule.
+ */
+describe('searchableName', () => {
+  it.each([
+    ['acetaminophen; codeine', 'acetaminophen codeine'],
+    ['Ozempic®', 'Ozempic'],
+    ['  insulin \t\r\n glargine  ', 'insulin glargine'],
+    ['a ;® ™\tb', 'a b'],
+    ['café', 'cafe'],
+    ['a😀b', 'a b'],
+    ['a\x00b\x7fc', 'a b c'],
+    [`a${String.fromCodePoint(0xa0)}b`, 'a b'],
+    ['®™', ''],
+  ])('reads %j as %j', (name, searched) => {
+    expect(searchableName(name)).toBe(searched);
+  });
+
+  /**
+   * A letter with a canonical diacritic is read as the letter without it, before
+   * the refused-run rule: openFDA stores such names unaccented. Only canonical
+   * decomposition, so `™` stays one refused character (compatibility
+   * decomposition would make it `TM`), and a letter with no decomposition (`ø`,
+   * CJK) is refused as before.
+   */
+  it.each([
+    ['Néoral', 'Neoral'],
+    ['é', 'e'],
+    ['ÅñÜ', 'AnU'],
+    [`Ne${String.fromCodePoint(0x301)}oral`, 'Neoral'],
+    [`${String.fromCodePoint(0x212a)}2`, 'K2'],
+    ['Ozempic®', 'Ozempic'],
+    ['Humira™', 'Humira'],
+    ['Søren', 'S ren'],
+    ['a阿司匹林b', 'a b'],
+    ['阿司匹林', ''],
+    [`a ${String.fromCodePoint(0x301)}b`, 'a b'],
+    [String.fromCodePoint(0x301, 0x308), ''],
+    // A mark that overlays an ASCII symbol leaves the symbol, which a phrase reads as a word break too.
+    ['a≠b', 'a=b'],
+  ])('folds %j to %j', (name, searched) => {
+    expect(searchableName(name)).toBe(searched);
+  });
+
+  it.each([...'!#$;?^`|~'])('reads the refused mark %j as a word break', (mark) => {
+    expect(searchableName(`a${mark}b`)).toBe('a b');
+  });
+
+  it('keeps every other printable ASCII character as written', () => {
+    const accepted = Array.from({ length: 0x7e - 0x20 }, (_, i) => String.fromCharCode(0x21 + i))
+      .filter((c) => !'!#$;?^`|~'.includes(c))
+      .join('');
+
+    expect(accepted).toHaveLength(85);
+    expect(searchableName(`a ${accepted} b`)).toBe(`a ${accepted} b`);
+  });
+
+  /**
+   * The name is caller-sized, so the read is timed on its worst shapes — one per
+   * class of character it replaces — across a 64× span on this thread's CPU time.
+   */
+  describe('timing', { timeout: 120_000 }, () => {
+    const shapes: [string, (n: number) => string][] = [
+      ['a run of refused marks', (n) => ';'.repeat(n)],
+      ['words between refused marks', (n) => 'ab;'.repeat(n / 3)],
+      ['a run of non-ASCII and astral characters', (n) => '®😀'.repeat(n / 3)],
+      ['a run of accented letters', (n) => 'é'.repeat(n)],
+      [
+        'letters each followed by a combining mark',
+        (n) => `e${String.fromCodePoint(0x301)}`.repeat(n / 2),
+      ],
+      ['one long line ending in a break', (n) => `${'a'.repeat(n - 1)}\n`],
+      ['breaks throughout', (n) => '  \r\n'.repeat(n / 4)],
+    ];
+
+    it.each(shapes)('stays linear on %s', (_name, build) => {
+      let ratio = 0;
+      for (let n = 10_000; n <= 320_000; n *= 2) {
+        const { t5k, t320k: tN } = linearTiming(searchableName, build(5_000), build(n));
         expect(tN).toBeLessThan(500_000);
         ratio = tN / t5k;
       }

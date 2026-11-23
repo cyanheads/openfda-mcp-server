@@ -217,6 +217,24 @@ describe('mirror routing', () => {
     expect(mockFetch).toHaveBeenCalledOnce();
   });
 
+  it('routes a search_after continuation live even when the mirror holds the record', async () => {
+    await seedMirror('drug/enforcement', [ENFORCEMENT_RECORD]);
+    const service = new OpenFdaService({ baseUrl: 'https://api.fda.gov', mirrorEnabled: true });
+
+    const response = await service.query(
+      'drug/enforcement',
+      { ...lookup, searchAfter: { value: '0=abc', position: 1 } },
+      ctx,
+    );
+
+    expect(mockFetch).toHaveBeenCalledOnce();
+    expect(new URL(mockFetch.mock.calls[0]?.[0] as string).searchParams.get('search_after')).toBe(
+      '0=abc',
+    );
+    expect(response.results).toEqual([LIVE_RECORD]);
+    expect(response.meta.skip).toBe(1);
+  });
+
   it('keeps count aggregation on the live API', async () => {
     await seedMirror('drug/enforcement', [ENFORCEMENT_RECORD]);
     const service = new OpenFdaService({ baseUrl: 'https://api.fda.gov', mirrorEnabled: true });

@@ -68,7 +68,13 @@ it('instructs searching each endpoint’s own product field, not a top-level ope
   const { instructions } = options;
   expect(instructions).toContain('`patient.drug.medicinalproduct:"aspirin"`');
   expect(instructions).toContain('`patient.drug.openfda.brand_name`');
-  expect(instructions).toContain('absent from food, animal, and tobacco records');
+  // `_exists_:openfda` matches nothing on drug/orangebook, transparency/crl, or other/nsde (probed 2026-11-22).
+  expect(instructions).toContain(
+    'absent from food, cosmetic, animal, tobacco, Orange Book, Complete Response Letter, and NSDE records',
+  );
+  expect(instructions).toContain(
+    'drug approvals (with Orange Book patents and exclusivities, and Complete Response Letters)',
+  );
   expect(instructions).not.toContain('`openfda.brand_name:"aspirin"`');
   expect(instructions).not.toContain('cross-product fields use the `openfda.*` prefix');
 });

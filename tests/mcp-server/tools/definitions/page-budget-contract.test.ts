@@ -62,15 +62,7 @@ import { searchDrugApprovalsTool } from '@/mcp-server/tools/definitions/search-d
 import { searchDrugShortagesTool } from '@/mcp-server/tools/definitions/search-drug-shortages.tool.js';
 import { searchRecallsTool } from '@/mcp-server/tools/definitions/search-recalls.tool.js';
 import { searchTobaccoReportsTool } from '@/mcp-server/tools/definitions/search-tobacco-reports.tool.js';
-
-async function setCanvasMock(c: unknown) {
-  const mod = await import('@/services/canvas/canvas-accessor.js');
-  (mod as unknown as { __setMock: (c: unknown) => void }).__setMock(c);
-}
-async function setSvcMock(s: unknown) {
-  const mod = await import('@/services/openfda/openfda-service.js');
-  (mod as unknown as { __setMock: (s: unknown) => void }).__setMock(s);
-}
+import { setCanvasMock, setSvcMock } from '../../../helpers/mock-setters.js';
 
 /**
  * Paged service stub over `total` records, record `i` padded with `recordBytes`
@@ -108,22 +100,32 @@ function makeCanvas(canvasId = 'cv_pagesize') {
 }
 
 /**
- * Minimal valid input per multi-row search tool, before defaults are applied;
- * the endpoint that input selects and that endpoint's cap; and the tool's
- * largest cap, which strict mode advertises as the schema `maximum`.
+ * Minimal valid input per multi-row search tool and dataset, before defaults are
+ * applied; the endpoint that input selects and that endpoint's cap; and the
+ * tool's largest cap, which strict mode advertises as the schema `maximum`. A
+ * tool with several datasets has a row per dataset, each titled with its
+ * endpoint.
  */
 const SEARCH_TOOLS = [
   [searchAdverseEventsTool, { category: 'drug' }, 'drug/event', 25, 1000],
+  [searchAdverseEventsTool, { category: 'cosmetic' }, 'cosmetic/event', 1000, 1000],
   [searchAnimalEventsTool, {}, 'animalandveterinary/event', 450, 450],
-  [searchDeviceClearancesTool, { pathway: '510k' }, 'device/510k', 175, 575],
-  [searchDrugApprovalsTool, {}, 'drug/drugsfda', 375, 375],
+  [searchDeviceClearancesTool, { pathway: '510k' }, 'device/510k', 175, 600],
+  [searchDeviceClearancesTool, { pathway: 'classification' }, 'device/classification', 600, 600],
+  [searchDrugApprovalsTool, {}, 'drug/drugsfda', 375, 1000],
+  [searchDrugApprovalsTool, { dataset: 'orangebook' }, 'drug/orangebook', 1000, 1000],
+  [searchDrugApprovalsTool, { dataset: 'crl' }, 'transparency/crl', 75, 1000],
   [searchDrugShortagesTool, {}, 'drug/shortages', 1000, 1000],
   [searchRecallsTool, { category: 'drug' }, 'drug/enforcement', 1000, 1000],
   [searchTobaccoReportsTool, {}, 'tobacco/problem', 1000, 1000],
   [lookupNdcTool, { search: 'aspirin' }, 'drug/ndc', 1000, 1000],
+  [lookupNdcTool, { search: 'aspirin', dataset: 'nsde' }, 'other/nsde', 1000, 1000],
 ] as const;
 
 type SearchTool = (typeof SEARCH_TOOLS)[number][0];
+
+/** A table row's title: the tool and the endpoint its input selects, distinct across one tool's datasets. */
+const rowTitle = (tool: { name: string }, kind: string) => `${tool.name} (${kind})`;
 
 /** Serialized size above which a record is disclosed as oversized (`OVERSIZED_RECORD_BYTES`). */
 const OVERSIZED_BYTES = 24_000;
@@ -205,7 +207,8 @@ const clampHead = (kind: string, cap: number) =>
 
 describe.each(
   SEARCH_TOOLS.map(
-    ([tool, input, kind, cap, maximum]) => [tool.name, tool, input, kind, cap, maximum] as const,
+    ([tool, input, kind, cap, maximum]) =>
+      [rowTitle(tool, kind), tool, input, kind, cap, maximum] as const,
   ),
 )('%s — page-size contract (#92)', (_name, tool, baseInput, kind, cap, maximum) => {
   const run = (extra: Record<string, unknown> = {}) =>
@@ -376,19 +379,22 @@ describe.each(
 });
 
 /**
- * The three tools whose endpoint follows another input, each at a selection whose
- * cap sits below the tool's largest — the range where strict mode answers with
- * the typed reason rather than the schema `maximum`.
+ * The tools whose endpoint follows another input, each at a selection whose cap
+ * sits below the tool's largest — the range where strict mode answers with the
+ * typed reason rather than the schema `maximum`. A selection at its tool's
+ * largest cap (device classification, NSDE) has no such range.
  */
 const MULTI_ENDPOINT_TOOLS = [
   [searchAdverseEventsTool, { category: 'drug' }, 'drug/event', 25],
   [searchRecallsTool, { category: 'device', endpoint: 'recall' }, 'device/recall', 50],
   [searchDeviceClearancesTool, { pathway: '510k' }, 'device/510k', 175],
+  [searchDrugApprovalsTool, {}, 'drug/drugsfda', 375],
+  [searchDrugApprovalsTool, { dataset: 'crl' }, 'transparency/crl', 75],
 ] as const;
 
 describe.each(
   MULTI_ENDPOINT_TOOLS.map(
-    ([tool, input, kind, cap]) => [tool.name, tool, input, kind, cap] as const,
+    ([tool, input, kind, cap]) => [rowTitle(tool, kind), tool, input, kind, cap] as const,
   ),
 )(
   '%s — limit_above_cap with OPENFDA_CLAMP_LIMITS=false (#92)',
@@ -432,16 +438,21 @@ describe.each(
 
 /* --- #66: fields projection and the lone oversized record --- */
 
-/** The identity key each tool's projected records keep, for the record shape it serves. */
+/** A top-level identity key each endpoint's projected records keep, for the record shape it serves. */
 const IDENTITY_KEY: Record<string, string> = {
-  openfda_search_adverse_events: 'safetyreportid',
-  openfda_search_animal_events: 'unique_aer_id_number',
-  openfda_search_device_clearances: 'k_number',
-  openfda_search_drug_approvals: 'application_number',
-  openfda_search_drug_shortages: 'package_ndc',
-  openfda_search_recalls: 'recall_number',
-  openfda_search_tobacco_reports: 'report_id',
-  openfda_lookup_ndc: 'product_ndc',
+  'drug/event': 'safetyreportid',
+  'cosmetic/event': 'report_number',
+  'animalandveterinary/event': 'unique_aer_id_number',
+  'device/510k': 'k_number',
+  'device/classification': 'product_code',
+  'drug/drugsfda': 'application_number',
+  'drug/orangebook': 'product_number',
+  'transparency/crl': 'file_name',
+  'drug/shortages': 'package_ndc',
+  'drug/enforcement': 'recall_number',
+  'tobacco/problem': 'report_id',
+  'drug/ndc': 'product_ndc',
+  'other/nsde': 'package_ndc11',
 };
 
 /** The projection the issue's drug-report repro asks for. */
@@ -501,138 +512,137 @@ function makeCapturingCanvas() {
   return { canvas: { acquire: vi.fn().mockResolvedValue(instance) }, rows };
 }
 
-describe.each(SEARCH_TOOLS.map(([tool, input]) => [tool.name, tool, input] as const))(
-  '%s — fields projection and the lone oversized record (#66)',
-  (name, tool, baseInput) => {
-    const idKey = IDENTITY_KEY[name] as string;
-    const run = (extra: Record<string, unknown> = {}) =>
-      runToolContract(tool, { ...baseInput, ...extra } as never);
+describe.each(
+  SEARCH_TOOLS.map(([tool, input, kind]) => [rowTitle(tool, kind), tool, input, kind] as const),
+)('%s — fields projection and the lone oversized record (#66)', (_name, tool, baseInput, kind) => {
+  const idKey = IDENTITY_KEY[kind] as string;
+  const run = (extra: Record<string, unknown> = {}) =>
+    runToolContract(tool, { ...baseInput, ...extra } as never);
 
-    beforeEach(async () => {
-      await setCanvasMock(undefined);
+  beforeEach(async () => {
+    await setCanvasMock(undefined);
+  });
+
+  it('discloses a lone record that serializes above 24,000 bytes on its own, naming its largest field', async () => {
+    const svc = makeSvc(1, 200_000);
+    await setSvcMock(svc);
+    const result = await run();
+    const structured = wireStructured(result);
+    const text = wireText(result);
+    const pageBytes = structured.page_bytes ?? 0;
+
+    expect(result.isError).toBeFalsy();
+    expect(structured.results).toHaveLength(1);
+    expect(structured.results[0]?.blob).toHaveLength(200_000);
+    // Measured on the payload: the record's size is reported, and it came back whole.
+    expect(pageBytes).toBe(JSON.stringify(structured.results).length);
+    expect(pageBytes).toBeGreaterThan(OVERSIZED_BYTES);
+    expect(structured).not.toHaveProperty('page_omitted');
+    // meta.limit is the page size the call applied, not the one record the match held.
+    expect(structured.meta.limit).toBe(svc.query.mock.calls[0]?.[1]?.limit);
+
+    // `blob` serializes to its 200,000 characters plus two quotes.
+    for (const surface of [text, String(structured.notice)]) {
+      expect(surface).toContain(
+        `the one record on this page serializes to ${pageBytes - 2} bytes, over 24000 (page_bytes ${pageBytes})`,
+      );
+      expect(surface).toContain('blob (200002 bytes)');
+      expect(surface).toContain('Re-call with fields');
+      expect(surface).toContain('openfda_describe_fields');
+    }
+    expect(text).toMatch(/^> Oversized record: /m);
+  });
+
+  it('discloses the lone oversized record identically when the call staged', async () => {
+    await setSvcMock(makeSvc(1, 200_000));
+    const { canvas } = makeCapturingCanvas();
+    await setCanvasMock(canvas);
+    const structured = wireStructured(await run({ stage: true }));
+
+    expect(structured.results).toHaveLength(1);
+    expect(structured.page_bytes).toBe(JSON.stringify(structured.results).length);
+    expect(structured).not.toHaveProperty('page_omitted');
+    expect(String(structured.notice)).toContain('blob (200002 bytes)');
+    expect(structured.page_largest_fields).toEqual([{ path: 'blob', bytes: 200_002 }]);
+  });
+
+  it('projects each record to the requested paths plus its identity key, before measuring', async () => {
+    const svc = makeHeavySvc(idKey, 3);
+    await setSvcMock(svc);
+    const result = await run({ fields: REPRO_FIELDS });
+    const structured = wireStructured(result);
+    const text = wireText(result);
+
+    // Unprojected, one record is ~80 KB; projected, none is oversized, so nothing is disclosed.
+    expect(structured.results).toHaveLength(3);
+    expect(structured.page_bytes).toBeUndefined();
+    expect(structured).not.toHaveProperty('page_omitted');
+    for (const record of structured.results) {
+      expect(wireBytes(record)).toBeLessThanOrEqual(OVERSIZED_BYTES);
+    }
+    expect(structured.projected_fields).toEqual(REPRO_FIELDS);
+    expect(structured.results[0]).toEqual({
+      [idKey]: 'id-0',
+      receivedate: '20260100',
+      serious: '1',
+      patient: {
+        reaction: [{ reactionmeddrapt: 'Nausea', reactionoutcome: '1' }],
+        // The array keeps its length: the second drug carries no medicinalproduct.
+        drug: [{ medicinalproduct: 'DRUG-0' }, {}],
+      },
     });
+    expect(Object.keys(structured.results[0] ?? {})[0]).toBe(idKey);
 
-    it('discloses a lone record that serializes above 24,000 bytes on its own, naming its largest field', async () => {
-      const svc = makeSvc(1, 200_000);
-      await setSvcMock(svc);
-      const result = await run();
-      const structured = wireStructured(result);
-      const text = wireText(result);
-      const pageBytes = structured.page_bytes ?? 0;
+    // content[] carries the same records under their identity heading, and no placeholder.
+    for (const i of [0, 1, 2]) expect(text).toContain(`### ${idKey}: id-${i}`);
+    expect(text).toContain('DRUG-2');
+    expect(text).toContain('Nausea');
+    expect(text).not.toContain('CO-0');
+    expect(text).not.toMatch(/\bN\/A\b|\bUnknown\b|Unclassified/);
+    expect(text).toContain('> Records projected to the requested fields');
+  });
 
-      expect(result.isError).toBeFalsy();
-      expect(structured.results).toHaveLength(1);
-      expect(structured.results[0]?.blob).toHaveLength(200_000);
-      // Measured on the payload: the record's size is reported, and it came back whole.
-      expect(pageBytes).toBe(JSON.stringify(structured.results).length);
-      expect(pageBytes).toBeGreaterThan(OVERSIZED_BYTES);
-      expect(structured).not.toHaveProperty('page_omitted');
-      // meta.limit is the page size the call applied, not the one record the match held.
-      expect(structured.meta.limit).toBe(svc.query.mock.calls[0]?.[1]?.limit);
+  it('names a requested path no record on the page carries, without throwing', async () => {
+    await setSvcMock(makeHeavySvc(idKey, 2));
+    const result = await run({ fields: ['receivedate', 'patient.drug.no_such_leaf'] });
+    const structured = wireStructured(result);
 
-      // `blob` serializes to its 200,000 characters plus two quotes.
-      for (const surface of [text, String(structured.notice)]) {
-        expect(surface).toContain(
-          `the one record on this page serializes to ${pageBytes - 2} bytes, over 24000 (page_bytes ${pageBytes})`,
-        );
-        expect(surface).toContain('blob (200002 bytes)');
-        expect(surface).toContain('Re-call with fields');
-        expect(surface).toContain('openfda_describe_fields');
-      }
-      expect(text).toMatch(/^> Oversized record: /m);
-    });
+    expect(result.isError).toBeFalsy();
+    expect(structured.results).toHaveLength(2);
+    for (const surface of [wireText(result), String(structured.notice)]) {
+      expect(surface).toContain('No record in this page carries `patient.drug.no_such_leaf`');
+      expect(surface).not.toContain('carries `receivedate`');
+    }
+  });
 
-    it('discloses the lone oversized record identically when the call staged', async () => {
-      await setSvcMock(makeSvc(1, 200_000));
-      const { canvas } = makeCapturingCanvas();
-      await setCanvasMock(canvas);
-      const structured = wireStructured(await run({ stage: true }));
+  // The path grammar itself is tabled in input-validation.test.ts.
+  it('rejects a malformed path before any upstream request', async () => {
+    const svc = makeHeavySvc(idKey, 1);
+    await setSvcMock(svc);
+    const result = await run({ fields: ['receivedate', 'patient..drug'] });
 
-      expect(structured.results).toHaveLength(1);
-      expect(structured.page_bytes).toBe(JSON.stringify(structured.results).length);
-      expect(structured).not.toHaveProperty('page_omitted');
-      expect(String(structured.notice)).toContain('blob (200002 bytes)');
-      expect(structured.page_largest_fields).toEqual([{ path: 'blob', bytes: 200_002 }]);
-    });
+    expect(result.isError).toBe(true);
+    expect(wireText(result)).toContain('fields');
+    expect(svc.query).not.toHaveBeenCalled();
+  });
 
-    it('projects each record to the requested paths plus its identity key, before measuring', async () => {
-      const svc = makeHeavySvc(idKey, 3);
-      await setSvcMock(svc);
-      const result = await run({ fields: REPRO_FIELDS });
-      const structured = wireStructured(result);
-      const text = wireText(result);
+  it('shapes only the inline page when staged — the drain stages whole records', async () => {
+    await setSvcMock(makeHeavySvc(idKey, 3));
+    const { canvas, rows } = makeCapturingCanvas();
+    await setCanvasMock(canvas);
+    const structured = wireStructured(await run({ fields: REPRO_FIELDS, stage: true }));
 
-      // Unprojected, one record is ~80 KB; projected, none is oversized, so nothing is disclosed.
-      expect(structured.results).toHaveLength(3);
-      expect(structured.page_bytes).toBeUndefined();
-      expect(structured).not.toHaveProperty('page_omitted');
-      for (const record of structured.results) {
-        expect(wireBytes(record)).toBeLessThanOrEqual(OVERSIZED_BYTES);
-      }
-      expect(structured.projected_fields).toEqual(REPRO_FIELDS);
-      expect(structured.results[0]).toEqual({
-        [idKey]: 'id-0',
-        receivedate: '20260100',
-        serious: '1',
-        patient: {
-          reaction: [{ reactionmeddrapt: 'Nausea', reactionoutcome: '1' }],
-          // The array keeps its length: the second drug carries no medicinalproduct.
-          drug: [{ medicinalproduct: 'DRUG-0' }, {}],
-        },
-      });
-      expect(Object.keys(structured.results[0] ?? {})[0]).toBe(idKey);
-
-      // content[] carries the same records under their identity heading, and no placeholder.
-      for (const i of [0, 1, 2]) expect(text).toContain(`### ${idKey}: id-${i}`);
-      expect(text).toContain('DRUG-2');
-      expect(text).toContain('Nausea');
-      expect(text).not.toContain('CO-0');
-      expect(text).not.toMatch(/\bN\/A\b|\bUnknown\b|Unclassified/);
-      expect(text).toContain('> Records projected to the requested fields');
-    });
-
-    it('names a requested path no record on the page carries, without throwing', async () => {
-      await setSvcMock(makeHeavySvc(idKey, 2));
-      const result = await run({ fields: ['receivedate', 'patient.drug.no_such_leaf'] });
-      const structured = wireStructured(result);
-
-      expect(result.isError).toBeFalsy();
-      expect(structured.results).toHaveLength(2);
-      for (const surface of [wireText(result), String(structured.notice)]) {
-        expect(surface).toContain('No record in this page carries `patient.drug.no_such_leaf`');
-        expect(surface).not.toContain('carries `receivedate`');
-      }
-    });
-
-    // The path grammar itself is tabled in input-validation.test.ts.
-    it('rejects a malformed path before any upstream request', async () => {
-      const svc = makeHeavySvc(idKey, 1);
-      await setSvcMock(svc);
-      const result = await run({ fields: ['receivedate', 'patient..drug'] });
-
-      expect(result.isError).toBe(true);
-      expect(wireText(result)).toContain('fields');
-      expect(svc.query).not.toHaveBeenCalled();
-    });
-
-    it('shapes only the inline page when staged — the drain stages whole records', async () => {
-      await setSvcMock(makeHeavySvc(idKey, 3));
-      const { canvas, rows } = makeCapturingCanvas();
-      await setCanvasMock(canvas);
-      const structured = wireStructured(await run({ fields: REPRO_FIELDS, stage: true }));
-
-      expect(structured.projected_fields).toEqual(REPRO_FIELDS);
-      expect(structured.results).toHaveLength(3);
-      expect(structured.results[0]).not.toHaveProperty('companynumb');
-      // Measured after projection, as on the plain path: each ~80 KB record projects under 24,000 bytes.
-      expect(structured).not.toHaveProperty('page_bytes');
-      expect(structured).not.toHaveProperty('page_largest_fields');
-      // The table received the records as openFDA sent them.
-      expect(rows).toHaveLength(3);
-      expect(rows[0]).toEqual(heavyRecord(idKey, 0));
-    });
-  },
-);
+    expect(structured.projected_fields).toEqual(REPRO_FIELDS);
+    expect(structured.results).toHaveLength(3);
+    expect(structured.results[0]).not.toHaveProperty('companynumb');
+    // Measured after projection, as on the plain path: each ~80 KB record projects under 24,000 bytes.
+    expect(structured).not.toHaveProperty('page_bytes');
+    expect(structured).not.toHaveProperty('page_largest_fields');
+    // The table received the records as openFDA sent them.
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toEqual(heavyRecord(idKey, 0));
+  });
+});
 
 /**
  * The mechanisms behind the per-tool wiring above are one shared implementation —

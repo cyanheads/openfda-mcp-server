@@ -2,12 +2,12 @@
  * @fileoverview Oversized-record disclosure for the inline page a multi-row
  * search tool returns. `limit` is the page size (`resolvePageSize` in
  * `schema-utils.ts`), so a page holds every record its window addresses; this
- * module states the weight of a page whose records include one that serializes
- * above 24,000 bytes on its own — a `drug/event` report carrying 100 KB of
- * `patient.drug.openfda`, a `device/recall` record carrying megabytes of
- * `code_info` — naming the page's size, the largest record's biggest fields, and
- * the `fields` projection (`record-projection.ts`) that would shrink them. A page
- * whose records each serialize under that size carries nothing extra.
+ * module states the weight of a page whose records, as cut for the caller
+ * (`record-projection.ts`), include one that serializes above 24,000 bytes on its
+ * own — a `drug/event` report listing dozens of drugs, a `device/recall` record
+ * whose `code_info` the call asked for — naming the page's size, the largest
+ * record's biggest fields, and the `fields` projection that would shrink them. A
+ * page whose records each serialize under that size carries nothing extra.
  *
  * Every size is UTF-8 bytes of the serialized JSON — what the payload occupies on
  * the wire. JavaScript string length counts UTF-16 code units, which understates
@@ -20,9 +20,10 @@ import { Buffer } from 'node:buffer';
 import { z } from '@cyanheads/mcp-ts-core';
 import { DEFAULT_OUTLINE_BUDGET_BYTES } from '@cyanheads/mcp-ts-core/utils';
 import {
+  cutRecords,
+  type FieldSize,
+  type OmissionFields,
   type ProjectionFields,
-  projectionFields,
-  projectRecords,
   type RecordProjection,
 } from '@/services/openfda/record-projection.js';
 import type { OpenFdaMeta, OpenFdaResponse } from '@/services/openfda/types.js';
@@ -38,9 +39,14 @@ import type { OpenFdaMeta, OpenFdaResponse } from '@/services/openfda/types.js';
  */
 export const OVERSIZED_RECORD_BYTES = DEFAULT_OUTLINE_BUDGET_BYTES;
 
-/** UTF-8 byte length of serialized JSON text — the size it occupies on the wire. */
-function utf8Bytes(json: string): number {
-  return Buffer.byteLength(json, 'utf8');
+/**
+ * UTF-8 bytes of `value` serialized as JSON — the size it occupies on the wire,
+ * where a string's `length` undercounts non-ASCII text. A value JSON drops
+ * (`undefined`) measures 0.
+ */
+export function jsonBytes(value: unknown): number {
+  const json = JSON.stringify(value);
+  return json === undefined ? 0 : Buffer.byteLength(json, 'utf8');
 }
 
 /**
@@ -54,7 +60,7 @@ export const oversizedRecordOutputShape = {
     .number()
     .optional()
     .describe(
-      `Serialized size of results in this response, in UTF-8 bytes. Present only when a record on the page serializes above ${OVERSIZED_RECORD_BYTES} bytes on its own — page_largest_fields then names the largest record's biggest fields, and fields projects each record to the paths you need.`,
+      `UTF-8 size of results; present only when a record exceeds ${OVERSIZED_RECORD_BYTES} bytes, with page_largest_fields.`,
     ),
   page_largest_fields: z
     .array(
@@ -63,17 +69,15 @@ export const oversizedRecordOutputShape = {
           path: z
             .string()
             .describe(
-              'Dotted field path on the record. Fields of array elements share their array path, so patient.drug.openfda covers that block in every drug of the report.',
+              'Dotted path; array elements share one path (patient.drug.openfda covers every drug).',
             ),
-          bytes: z
-            .number()
-            .describe('Serialized UTF-8 bytes the field holds, totalled across array elements.'),
+          bytes: z.number().describe('UTF-8 bytes, summed across array elements.'),
         })
-        .describe('One field of the largest record and its serialized size.'),
+        .describe('A field and its size.'),
     )
     .optional()
     .describe(
-      `Present with page_bytes: the biggest fields of the largest record on the page, largest first — the deepest single field that holds that record's excess over ${OVERSIZED_RECORD_BYTES} bytes, or else up to three top-level fields. Leave them out with a fields projection to shrink the records.`,
+      "The largest record's biggest fields, largest first, beside page_bytes. Leave them out with fields.",
     ),
 };
 
@@ -100,7 +104,7 @@ export function oversizedRecordFields(
   let pageBytes = 2 + Math.max(0, records.length - 1);
   let largest: { bytes: number; record: Record<string, unknown> } | undefined;
   for (const record of records) {
-    const bytes = utf8Bytes(JSON.stringify(record));
+    const bytes = jsonBytes(record);
     pageBytes += bytes;
     if (!largest || bytes > largest.bytes) largest = { bytes, record };
   }
@@ -113,24 +117,26 @@ export function oversizedRecordFields(
 }
 
 /**
- * Shape an openFDA search response as the tool's return value: records projected
- * to the caller's `fields`, `meta.limit` set to the page size the call applied,
- * and the oversized-record disclosure measured on the projected records — what
- * the caller actually receives. A page without `fields` whose records each fit
- * carries exactly `{ meta, results }`.
+ * Shape an openFDA search response as the tool's return value: records cut to
+ * the call's projection — its `fields`, or the endpoint's left-out paths
+ * (`cutRecords`) — `meta.limit` set to the page size the call applied, and the
+ * oversized-record disclosure measured on the cut records, what the caller
+ * actually receives. A page that cut nothing and whose records each fit carries
+ * exactly `{ meta, results }`.
  */
 export function inlinePage(
   response: OpenFdaResponse,
   limit: number,
   projection?: RecordProjection | undefined,
 ): { meta: OpenFdaMeta; results: Record<string, unknown>[] } & OversizedRecordFields &
-  ProjectionFields {
-  const results = projectRecords(response.results, projection);
+  ProjectionFields &
+  OmissionFields {
+  const { results, ...disclosure } = cutRecords(response.results, projection);
   return {
     meta: { ...response.meta, limit },
     results,
     ...oversizedRecordFields(results),
-    ...projectionFields(projection),
+    ...disclosure,
   };
 }
 
@@ -168,17 +174,11 @@ function measureInto(value: unknown, node: SizeNode): number {
       }
       const childSize = measureInto(child, childNode);
       childNode.bytes += childSize;
-      size += utf8Bytes(JSON.stringify(key)) + 1 + childSize;
+      size += jsonBytes(key) + 1 + childSize;
     }
     return size;
   }
-  return utf8Bytes(JSON.stringify(value ?? null));
-}
-
-/** A record field and the serialized bytes its values hold. */
-export interface FieldSize {
-  bytes: number;
-  path: string;
+  return jsonBytes(value ?? null);
 }
 
 /**

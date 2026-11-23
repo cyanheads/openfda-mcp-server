@@ -12,13 +12,7 @@ import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { OpenFdaService } from '@/services/openfda/openfda-service.js';
-
-const NO_MATCHES = () =>
-  Response.json({ error: { code: 'NOT_FOUND', message: 'No matches found!' } }, { status: 404 });
-const NOTHING_TO_COUNT = () =>
-  Response.json({ error: { code: 'NOT_FOUND', message: 'Nothing to count' } }, { status: 404 });
-const UNAVAILABLE = () =>
-  new Response('<html><body>503 Service Temporarily Unavailable</body></html>', { status: 503 });
+import { NO_MATCHES, NOTHING_TO_COUNT, UNAVAILABLE } from '../../helpers/upstream-responses.js';
 
 const params = (url: string) => new URL(url).searchParams;
 

@@ -8,8 +8,9 @@
 /**
  * The sort a search tool sends upstream: the caller's `sort` as given, `newest`
  * when the call names neither `search` nor `sort`, and no sort when it names a
- * `search` alone (relevance order, and the mirror's exact-key routing, stay as
- * they are). Pass the result to both the inline query and the staged path.
+ * `search` alone (openFDA's index order, and the mirror's exact-key routing,
+ * stay as they are — an unsorted search is not ranked by relevance). Pass the
+ * result to both the inline query and the staged path.
  */
 export function sortOrNewest(
   input: { readonly search?: string | undefined; readonly sort?: string | undefined },

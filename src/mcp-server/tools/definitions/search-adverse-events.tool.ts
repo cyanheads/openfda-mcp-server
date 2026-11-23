@@ -1,15 +1,18 @@
 /**
  * @fileoverview Tool definition for searching openFDA adverse event reports across
- * drugs, food, and devices. `drug/event` is the largest-record endpoint openFDA
- * serves, so `limit`'s default and cap follow the category, and a page holding a
- * report over 24,000 bytes names its largest fields. A browse with neither
- * `search` nor `sort` leads with the category's newest reports.
+ * drugs, food, devices, and cosmetics. `drug/event` is the largest-record
+ * endpoint openFDA serves, so `limit`'s default and cap follow the category, a
+ * default drug page leaves each drug's `openfda` block out of its reports
+ * (`include` returns it), and a page holding a report over 24,000 bytes names
+ * its largest fields. A browse with neither `search` nor `sort` leads with the
+ * category's newest reports. A page read at `skip` 0 or by cursor continues past
+ * the `skip` ceiling through `next_cursor`.
  * @module mcp-server/tools/definitions/search-adverse-events
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { CanvasIdSchema, type ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { ADVERSE_EVENT_SCHEMAS } from '@/mcp-server/tools/adverse-event-canvas-schemas.js';
 import { sortOrNewest } from '@/mcp-server/tools/default-sort.js';
 import {
   ADMINISTRATION_ROUTES,
@@ -31,7 +34,7 @@ import {
   TREATMENT_DURATION_UNITS,
   withCodeLabels,
 } from '@/mcp-server/tools/drug-event-codes.js';
-import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
+import { formatFieldHint, OBJECT_ARRAY_PATHS } from '@/mcp-server/tools/field-catalog.js';
 import {
   codeLiteral,
   emptyPageBody,
@@ -44,27 +47,50 @@ import {
   singleLine,
 } from '@/mcp-server/tools/format-utils.js';
 import {
-  assertSearchDelimitersBalanced,
+  type CursorQuery,
+  cursorEndNotice,
+  cursorInput,
+  cursorOutputShape,
+  invalidCursorError,
+  nextCursorField,
+  resolveCursor,
+} from '@/mcp-server/tools/pagination-cursor.js';
+import {
   assertSkipWithinCeiling,
+  CONJOINED_ARRAY_NOTICE_TOPIC,
   fieldSelection,
   fieldsDescription,
   limitAboveCapError,
-  META_LIMIT_DESCRIPTION,
-  malformedSearchError,
   pageLimitBy,
+  pageMetaOutput,
   pageSizeNotice,
-  phrasePlusHint,
+  paginationLimitReachedError,
+  rateLimitedError,
   resolvePageSize,
-  SEARCH_SYNTAX_NOTE,
   SKIP_DESCRIPTION,
-  searchExpression,
+  searchNoticeField,
+  sortDescription,
   sortExpression,
-  totalUnverifiedField,
+  upstreamError,
 } from '@/mcp-server/tools/schema-utils.js';
+import {
+  type ArrayTieRoute,
+  arrayTieNotice,
+  fieldPathsNamed,
+} from '@/mcp-server/tools/search-clauses.js';
+import {
+  assertSearchDelimitersBalanced,
+  malformedSearchError,
+  phrasePlusHint,
+  SEARCH_SYNTAX_NOTE,
+  searchExpression,
+} from '@/mcp-server/tools/search-expression.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
+  CANVAS_DISABLED_MESSAGE,
   canvasCapacityExhaustedError,
   canvasDisabledError,
+  canvasIdInput,
   canvasNotFoundError,
   canvasOutputShape,
   canvasResult,
@@ -76,46 +102,61 @@ import {
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import {
   inlinePage,
-  OVERSIZED_RECORD_BYTES,
   oversizedRecordNotice,
   oversizedRecordOutputShape,
 } from '@/services/openfda/page-budget.js';
 import {
+  includeDescription,
+  LEFT_OUT_NOTICE_TOPIC,
+  omissionNotice,
+  omissionOutputShape,
+  pageProjection,
   projectionNotice,
   projectionOutputShape,
-  recordProjection,
 } from '@/services/openfda/record-projection.js';
 
 /**
  * Keys that tell one report apart, kept on every `fields`-projected record:
- * `safetyreportid` on drug reports, `report_number` on food and device reports,
- * plus `mdr_report_key` on device reports. A category's record carries only its
- * own, so one list serves all three.
+ * `safetyreportid` on drug reports, `report_number` on food, device, and
+ * cosmetic reports, plus `mdr_report_key` on device reports. A category's record
+ * carries only its own, so one list serves all four.
  */
 const IDENTITY_KEYS = ['safetyreportid', 'report_number', 'mdr_report_key'] as const;
 
-type Category = 'drug' | 'food' | 'device';
+/** The categories, each read from `<category>/event`. */
+const CATEGORIES = ['drug', 'food', 'device', 'cosmetic'] as const;
+
+type Category = (typeof CATEGORIES)[number];
 
 /**
  * The sort a browse with neither `search` nor `sort` sends: the category's
- * received date, newest first. Reports sharing a date page in a stable order on
- * the date alone, so no tie-breaker is added.
+ * received date, newest first. Cosmetic reports sort on the date FDA first
+ * received them, as `receivedate` is on drug reports: under
+ * `latest_received_date` a follow-up to a years-old report leads the browse.
+ * Reports sharing a date page in a stable order on the date alone, so no
+ * tie-breaker is added.
  */
 const NEWEST_FIRST: Record<Category, string> = {
   drug: 'receivedate:desc',
   food: 'date_created:desc',
   device: 'date_received:desc',
+  cosmetic: 'initial_received_date:desc',
 };
+
+/** {@link NEWEST_FIRST} as the `sort` description states it. */
+const NEWEST_FIRST_NOTE = `the category's received date (${CATEGORIES.map((category) => `${category} ${NEWEST_FIRST[category]}`).join(', ')})`;
 
 /**
  * The product-name field an empty result points each category at. No
  * adverse-event record carries a top-level `openfda` block: drug reports nest
- * it under `patient.drug`, device reports under `device`, food reports have none.
+ * it under `patient.drug`, device reports under `device`, food and cosmetic
+ * reports have none.
  */
 const PRODUCT_FIELD_HINT: Record<Category, string> = {
   drug: 'patient.drug.medicinalproduct (the name as reported) or patient.drug.openfda.brand_name',
   food: 'products.name_brand',
   device: 'device.brand_name',
+  cosmetic: 'products.product_name',
 };
 
 /**
@@ -192,65 +233,69 @@ function patientLines(patient: Record<string, unknown>): string[] {
 }
 
 /**
- * Canvas table projections per category — each call stages one category, so the
- * schema is selected by `input.category`. Scalars are VARCHAR (openFDA returns
- * most values as strings; CAST in SQL for math); nested objects/arrays are JSON
- * columns. All nullable — openFDA records are sparse.
+ * A cosmetic report: its `report_number` heading, both receipt dates, the
+ * patient, reactions, and outcomes, one list item per product with its role,
+ * then every other field. A line renders only what the record carries.
  */
-const ADVERSE_EVENT_SCHEMAS: Record<Category, ColumnSchema[]> = {
-  drug: [
-    { name: 'safetyreportid', type: 'VARCHAR', nullable: true },
-    { name: 'receivedate', type: 'VARCHAR', nullable: true },
-    { name: 'receiptdate', type: 'VARCHAR', nullable: true },
-    { name: 'serious', type: 'VARCHAR', nullable: true },
-    { name: 'seriousnessdeath', type: 'VARCHAR', nullable: true },
-    { name: 'seriousnesshospitalization', type: 'VARCHAR', nullable: true },
-    { name: 'occurcountry', type: 'VARCHAR', nullable: true },
-    { name: 'primarysourcecountry', type: 'VARCHAR', nullable: true },
-    { name: 'companynumb', type: 'VARCHAR', nullable: true },
-    { name: 'patient', type: 'JSON', nullable: true },
-    { name: 'openfda', type: 'JSON', nullable: true },
-  ],
-  food: [
-    { name: 'report_number', type: 'VARCHAR', nullable: true },
-    { name: 'date_created', type: 'VARCHAR', nullable: true },
-    { name: 'date_started', type: 'VARCHAR', nullable: true },
-    { name: 'outcomes', type: 'JSON', nullable: true },
-    { name: 'reactions', type: 'JSON', nullable: true },
-    { name: 'products', type: 'JSON', nullable: true },
-    { name: 'consumer', type: 'JSON', nullable: true },
-  ],
-  device: [
-    { name: 'report_number', type: 'VARCHAR', nullable: true },
-    { name: 'mdr_report_key', type: 'VARCHAR', nullable: true },
-    { name: 'event_type', type: 'VARCHAR', nullable: true },
-    { name: 'date_received', type: 'VARCHAR', nullable: true },
-    { name: 'date_of_event', type: 'VARCHAR', nullable: true },
-    { name: 'manufacturer_name', type: 'VARCHAR', nullable: true },
-    { name: 'device', type: 'JSON', nullable: true },
-    { name: 'patient', type: 'JSON', nullable: true },
-    { name: 'mdr_text', type: 'JSON', nullable: true },
-    { name: 'openfda', type: 'JSON', nullable: true },
-  ],
-};
+function cosmeticLines(r: Record<string, unknown>): string[] {
+  const id = renderValue(r.report_number);
+  const lines = [singleLine(`### Report${id ? ` ${id}` : ''}`)];
+  const received = [
+    ['Initial received', renderValue(r.initial_received_date)],
+    ['Latest received', renderValue(r.latest_received_date)],
+  ].flatMap(([label, date]) => (date ? [`**${label}:** ${date}`] : []));
+  if (received.length > 0) lines.push(singleLine(received.join(' | ')));
+  for (const [label, key] of [
+    ['Patient', 'patient'],
+    ['Reactions', 'reactions'],
+    ['Outcomes', 'outcomes'],
+  ] as const) {
+    const value = renderValue(r[key]);
+    if (value) lines.push(singleLine(`**${label}:** ${value}`));
+  }
+  const rendered = new Set([
+    'report_number',
+    'initial_received_date',
+    'latest_received_date',
+    'patient',
+    'reactions',
+    'outcomes',
+  ]);
+  // A `products` that is not a list falls through to the remaining fields whole.
+  const products = Array.isArray(r.products) ? (r.products as Record<string, unknown>[]) : null;
+  if (products) rendered.add('products');
+  if (products?.length) {
+    lines.push('**Products:**');
+    for (const p of products) {
+      const role = renderValue(p.role);
+      const item = [renderValue(p.product_name), role ? `(role: ${role})` : null];
+      lines.push(`- ${lineContent(item.filter(Boolean).join(' '))}`);
+      lines.push(...formatRemainingFields(p, new Set(['product_name', 'role'])));
+    }
+    // A blank line ends the list, so the fields below stay outside the last product's item.
+    lines.push('');
+  }
+  lines.push(...formatRemainingFields(r, rendered));
+  return lines;
+}
 
 export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
-  description: `Search adverse event reports across drugs, food, and devices. Use to investigate safety signals, find reports for a specific product, or explore reactions by demographics.${STAGING_WORKFLOW}`,
+  description: `Search adverse event reports across drugs, food, devices, and cosmetics. Use to investigate safety signals, find reports for a specific product, or explore reactions by demographics.${STAGING_WORKFLOW}`,
   annotations: { readOnlyHint: true },
 
   input: z.object({
     category: z
-      .enum(['drug', 'food', 'device'])
+      .enum(CATEGORIES)
       .describe('Product category — each has different field schemas in the response'),
     search: searchExpression()
       .optional()
       .describe(
-        `openFDA search query. Examples: patient.drug.medicinalproduct:"aspirin", patient.reaction.reactionmeddrapt:"nausea" AND serious:"1". Omit both search and sort to browse the newest reports first. ${SEARCH_SYNTAX_NOTE}`,
+        `openFDA search query, e.g. patient.drug.medicinalproduct:"aspirin", patient.reaction.reactionmeddrapt:"nausea" AND serious:"1". Omit both search and sort to browse the newest reports first. ${SEARCH_SYNTAX_NOTE}`,
       ),
     sort: sortExpression()
       .optional()
       .describe(
-        "Sort expression — a field path optionally suffixed with :asc or :desc (any letter case; :ascending and :descending are also accepted, and every direction is sent as asc or desc); comma-separate for multi-field sort. Field paths take only letters, digits, underscores, and dots; any other character or direction is rejected before the request. Sortable date fields are category-specific: drug → receivedate (or receiptdate), food → date_created (or date_started), device → date_received (or date_of_event). A field from another category (e.g. receivedate on food or device) causes a query error — use the field for this category. With search also omitted, the default is newest first: drug receivedate:desc, food date_created:desc, device date_received:desc. A search with no sort keeps openFDA's own order.",
+        `${sortDescription({ newest: NEWEST_FIRST_NOTE })} Sortable date fields are category-specific: drug → receivedate (or receiptdate), food → date_created (or date_started), device → date_received (or date_of_event), cosmetic → initial_received_date (or latest_received_date).`,
       ),
     limit: pageLimitBy(
       'category',
@@ -258,36 +303,33 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
         ['drug', 'drug/event'],
         ['food', 'food/event'],
         ['device', 'device/event'],
+        ['cosmetic', 'cosmetic/event'],
       ],
       'Records per page.',
     ),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
+    cursor: cursorInput,
     fields: fieldSelection()
       .optional()
       .describe(fieldsDescription(IDENTITY_KEYS, ['receivedate', 'patient.drug.medicinalproduct'])),
+    include: fieldSelection()
+      .optional()
+      .describe(includeDescription([['drug', 'drug/event']])),
     stage: stageInput,
-    canvas_id: CanvasIdSchema.optional().describe(
-      'Canvas ID returned by a prior stage=true call to this tool or another openFDA search tool (openfda_search_* or openfda_lookup_ndc). Passing one stages this search onto that canvas (same effect as stage=true) so result sets accumulate for cross-table joins. Omit to stage onto a fresh canvas.',
-    ),
+    canvas_id: canvasIdInput,
   }),
 
   output: z.object({
-    meta: z
-      .object({
-        total: z.number().describe('Total matching records in the database'),
-        skip: z.number().describe('Pagination offset'),
-        limit: z.number().describe(META_LIMIT_DESCRIPTION),
-        lastUpdated: z.string().describe('Dataset last updated date'),
-        totalUnverified: totalUnverifiedField,
-      })
-      .describe('Response metadata'),
+    meta: pageMetaOutput,
     results: z
       .array(z.record(z.string(), z.any()))
       .describe(
-        'Adverse event records — fields vary by category (drug: patient/reactions/drugs, device: device details/event type, food: products/outcomes)',
+        'Adverse event records — fields vary by category (drug: patient/reactions/drugs, device: device details/event type, food: products/outcomes, cosmetic: products/reactions/outcomes)',
       ),
+    ...cursorOutputShape,
     ...oversizedRecordOutputShape,
     ...projectionOutputShape,
+    ...omissionOutputShape,
     ...canvasOutputShape,
   }),
 
@@ -297,12 +339,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       .string()
       .optional()
       .describe('Search filter applied to the query, as submitted to openFDA'),
-    notice: z
-      .string()
-      .optional()
-      .describe(
-        `Canvas staging disclosure when the call staged, the limit clamp when limit exceeded the category's cap (requested value, cap, next skip), the fields projection and any requested path no record carries, the size and largest fields when a report on the page exceeds ${OVERSIZED_RECORD_BYTES} bytes, and guidance when results are empty or paging overshot — how to broaden filters or adjust the query.`,
-      ),
+    notice: searchNoticeField([LEFT_OUT_NOTICE_TOPIC, CONJOINED_ARRAY_NOTICE_TOPIC]),
   },
 
   errors: [
@@ -310,23 +347,8 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
     canvasDisabledError,
     canvasNotFoundError,
     canvasCapacityExhaustedError,
-    {
-      reason: 'rate_limited',
-      code: JsonRpcErrorCode.RateLimited,
-      when: 'The openFDA daily or per-minute request limit is exceeded.',
-      retryable: true,
-      recovery:
-        'Wait briefly and retry, or configure OPENFDA_API_KEY to raise the daily limit to 120K requests.',
-      thrownBy: 'service',
-    },
-    {
-      reason: 'upstream_error',
-      code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'The openFDA API returned a 5xx server error.',
-      retryable: true,
-      recovery: 'Retry after a short wait; if the error persists check api.fda.gov status.',
-      thrownBy: 'service',
-    },
+    rateLimitedError,
+    upstreamError,
     malformedSearchError,
     {
       reason: 'query_error',
@@ -336,14 +358,8 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
         'Verify field names using the openFDA field reference and correct boolean operators (AND/OR, quoted phrases).',
       thrownBy: 'service',
     },
-    {
-      reason: 'pagination_limit_reached',
-      code: JsonRpcErrorCode.ValidationError,
-      when: 'skip exceeds the 25000 record pagination ceiling.',
-      recovery:
-        'Narrow the search query with additional filters or date ranges instead of increasing skip.',
-      thrownBy: 'service',
-    },
+    paginationLimitReachedError,
+    invalidCursorError,
   ],
 
   async handler(input, ctx) {
@@ -352,30 +368,42 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
 
     const endpoint = `${input.category}/event` as const;
     const size = resolvePageSize(input.limit, endpoint, ctx);
-    const sort = sortOrNewest(input, NEWEST_FIRST[input.category]);
+    const query: CursorQuery = {
+      endpoint,
+      search: input.search,
+      sort: sortOrNewest(input, NEWEST_FIRST[input.category]),
+    };
+    const searchAfter = resolveCursor(input, query, ctx);
     const emptyNotice = (skip: number, total: number, totalUnverified?: boolean) =>
       emptyResultMessage(
         skip,
         total,
         `No adverse event reports matched${input.search ? ` search: ${codeLiteral(input.search)}` : ''} in ${endpoint}. Try broadening filters or checking field names (for product searches use ${PRODUCT_FIELD_HINT[input.category]}). ${formatFieldHint(endpoint)}`,
         totalUnverified,
+        searchAfter !== undefined,
       );
+    // An endpoint the array table has not surveyed raises no notice.
+    const tieNotice = (total: number, route: ArrayTieRoute) => {
+      const arrays = OBJECT_ARRAY_PATHS[endpoint];
+      return arrays && arrayTieNotice(input.search, total, arrays, route);
+    };
 
-    const projection = recordProjection(input.fields, IDENTITY_KEYS);
+    const projection = pageProjection(endpoint, IDENTITY_KEYS, {
+      fields: input.fields,
+      include: input.include,
+      searched: input.search ? fieldPathsNamed(input.search) : undefined,
+    });
     const canvas = getCanvas();
     const staging = input.stage || input.canvas_id !== undefined;
     if (staging && !canvas) {
-      throw ctx.fail(
-        'canvas_disabled',
-        'Staging requires DataCanvas. Set CANVAS_PROVIDER_TYPE=duckdb, or drop stage/canvas_id for the inline page.',
-      );
+      throw ctx.fail('canvas_disabled', CANVAS_DISABLED_MESSAGE);
     }
 
     if (canvas && staging) {
       const spill = await spillSearch({
-        endpoint,
-        search: input.search,
-        sort,
+        endpoint: query.endpoint,
+        search: query.search,
+        sort: query.sort,
         canvasId: input.canvas_id,
         schema: ADVERSE_EVENT_SCHEMAS[input.category],
         limit: size.limit,
@@ -392,8 +420,13 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
           phrasePlusHint(input.search, spill.total),
           pageSizeNotice(size, staged),
           projectionNotice(staged),
+          omissionNotice(staged),
           oversizedRecordNotice(staged),
           stagingNotice(spill),
+          tieNotice(
+            spill.total,
+            spill.tableName ? { kind: 'staged', table: spill.tableName } : { kind: 'restage' },
+          ),
         ]
           .filter(Boolean)
           .join(' '),
@@ -403,17 +436,21 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
 
     const svc = getOpenFdaService();
     const response = await svc.query(
-      endpoint,
+      query.endpoint,
       {
-        search: input.search,
-        sort,
+        search: query.search,
+        sort: query.sort,
         limit: size.limit,
         skip: input.skip,
+        searchAfter,
       },
       ctx,
     );
 
-    const page = inlinePage(response, size.limit, projection);
+    const page = {
+      ...inlinePage(response, size.limit, projection),
+      ...nextCursorField(response, query),
+    };
 
     ctx.log.info('Adverse event search completed', {
       category: input.category,
@@ -428,9 +465,11 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
         ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
         : undefined,
       phrasePlusHint(input.search, response.meta.total),
-      pageSizeNotice(size, page),
+      pageSizeNotice(size, page) ?? cursorEndNotice(page, searchAfter),
       projectionNotice(page),
+      omissionNotice(page),
       oversizedRecordNotice(page),
+      tieNotice(response.meta.total, { kind: 'restage', byCursor: searchAfter !== undefined }),
     ].filter(Boolean);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
@@ -449,9 +488,11 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
         lines.push(...projectedRecordLines(r, IDENTITY_KEYS), '');
         continue;
       }
-      // Device adverse events. Checked before `patient`: a device/event record
-      // also carries a `patient` array, so a patient-first branch would route
-      // every device report into the drug renderer.
+      /**
+       * Device adverse events. Checked before `patient`: a device/event record
+       * also carries a `patient` array, so a patient-first branch would route
+       * every device report into the drug renderer.
+       */
       if (r.device) {
         lines.push(singleLine(`### Report ${r.report_number ?? r.mdr_report_key ?? 'N/A'}`));
         if (r.event_type) lines.push(singleLine(`**Event type:** ${r.event_type}`));
@@ -472,6 +513,13 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
         // Remaining top-level fields (date_of_event, source_type, patient, etc.)
         const renderedTop = new Set(['device', 'report_number', 'event_type', 'mdr_text']);
         lines.push(...formatRemainingFields(r, renderedTop));
+      } else if (r.initial_received_date != null) {
+        /**
+         * Cosmetic adverse events, keyed on the date every cosmetic report carries
+         * and no drug, food, or device report does. Checked before `patient`: most
+         * cosmetic reports also carry a `patient` object.
+         */
+        lines.push(...cosmeticLines(r));
       }
       // Drug adverse events
       else if (r.patient) {
@@ -530,8 +578,10 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
         // Remaining patient fields (onset age, age group, weight, death, sex code, etc.)
         lines.push(...patientLines(patient));
 
-        // Remaining top-level fields (companynumb, sender, primarysource, the
-        // serious code, FDA workflow timestamps, ...).
+        /**
+         * Remaining top-level fields (companynumb, sender, primarysource, the
+         * serious code, FDA workflow timestamps, ...).
+         */
         const renderedTop = new Set(['patient', 'safetyreportid', 'receivedate']);
         lines.push(...formatRemainingFields(withCodeLabels(r, REPORT_CODES), renderedTop));
       }

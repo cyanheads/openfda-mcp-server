@@ -5,10 +5,10 @@
  */
 
 import { tool, z } from '@cyanheads/mcp-ts-core';
-import { CanvasIdSchema, type ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
+import type { ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { sortOrNewest } from '@/mcp-server/tools/default-sort.js';
-import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
+import { formatFieldHint, OBJECT_ARRAY_PATHS } from '@/mcp-server/tools/field-catalog.js';
 import {
   codeLiteral,
   emptyPageBody,
@@ -21,26 +21,45 @@ import {
   singleLine,
 } from '@/mcp-server/tools/format-utils.js';
 import {
-  assertSearchDelimitersBalanced,
+  type CursorQuery,
+  cursorEndNotice,
+  cursorInput,
+  cursorOutputShape,
+  invalidCursorError,
+  nextCursorField,
+  resolveCursor,
+} from '@/mcp-server/tools/pagination-cursor.js';
+import {
   assertSkipWithinCeiling,
+  CONJOINED_ARRAY_NOTICE_TOPIC,
   fieldSelection,
   fieldsDescription,
-  META_LIMIT_DESCRIPTION,
-  malformedSearchError,
   pageLimit,
+  pageMetaOutput,
   pageSizeNotice,
-  phrasePlusHint,
+  paginationLimitReachedError,
+  rateLimitedError,
   resolvePageSize,
-  SEARCH_SYNTAX_NOTE,
   SKIP_DESCRIPTION,
-  searchExpression,
+  searchNoticeField,
+  sortDescription,
   sortExpression,
-  totalUnverifiedField,
+  upstreamError,
 } from '@/mcp-server/tools/schema-utils.js';
+import { arrayTieNotice, fieldPathsNamed } from '@/mcp-server/tools/search-clauses.js';
+import {
+  assertSearchDelimitersBalanced,
+  malformedSearchError,
+  phrasePlusHint,
+  SEARCH_SYNTAX_NOTE,
+  searchExpression,
+} from '@/mcp-server/tools/search-expression.js';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import {
+  CANVAS_DISABLED_MESSAGE,
   canvasCapacityExhaustedError,
   canvasDisabledError,
+  canvasIdInput,
   canvasNotFoundError,
   canvasOutputShape,
   canvasResult,
@@ -48,11 +67,11 @@ import {
   spillSearch,
   stageInput,
   stagingNotice,
+  varcharColumns,
 } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import {
   inlinePage,
-  OVERSIZED_RECORD_BYTES,
   oversizedRecordNotice,
   oversizedRecordOutputShape,
 } from '@/services/openfda/page-budget.js';
@@ -67,6 +86,14 @@ import {
  * `unique_aer_id_number`.
  */
 const IDENTITY_KEYS = ['unique_aer_id_number'] as const;
+
+/**
+ * The record's arrays of objects, by full path, from the field catalog (which
+ * lists none for an endpoint it has not surveyed). openFDA tests each clause
+ * against the whole report, so AND-ed clauses on one array's fields can be met
+ * by different entries; each is a column of the staged table.
+ */
+const ARRAY_PATHS = OBJECT_ARRAY_PATHS['animalandveterinary/event'] ?? [];
 
 /** The sort a bare browse sends: the report FDA received most recently first. */
 const NEWEST_FIRST = 'original_receive_date:desc';
@@ -83,23 +110,37 @@ const MASKED_FIELDS = ['drug.brand_name', 'drug.manufacturer.name'] as const;
 const MASKED_FIELD_GUIDANCE = `drug.brand_name and drug.manufacturer.name hold only "${MASKED}" (masked on every record), so a brand or manufacturer filter matches nothing. Search the ingredient on drug.active_ingredients.name, unsuffixed, or narrow to one approval with drug.manufacturer.registration_number (the full value, e.g. "USA-USFDACVM-N141426").`;
 
 /**
- * Canvas table projection for veterinary adverse event records. Scalars are
- * VARCHAR (CAST in SQL for math); the animal/drug/reaction/outcome structures are
- * JSON columns. All nullable.
+ * Canvas table projection for veterinary adverse event records: one column per
+ * top-level field the endpoint returns (verified live), fixed so every staging
+ * of this endpoint unions with another. Scalars are VARCHAR (CAST in SQL for
+ * math); objects and arrays are JSON columns. All nullable. The 0.10.0 columns
+ * keep their positions and the later ones follow them.
  */
 const ANIMAL_EVENTS_CANVAS_SCHEMA: ColumnSchema[] = [
-  { name: 'unique_aer_id_number', type: 'VARCHAR', nullable: true },
-  { name: 'original_receive_date', type: 'VARCHAR', nullable: true },
-  { name: 'serious_ae', type: 'VARCHAR', nullable: true },
-  { name: 'primary_reporter', type: 'VARCHAR', nullable: true },
-  { name: 'type_of_information', type: 'VARCHAR', nullable: true },
-  { name: 'number_of_animals_affected', type: 'VARCHAR', nullable: true },
-  { name: 'number_of_animals_treated', type: 'VARCHAR', nullable: true },
-  { name: 'foreign_or_domestic', type: 'VARCHAR', nullable: true },
+  ...varcharColumns([
+    'unique_aer_id_number',
+    'original_receive_date',
+    'serious_ae',
+    'primary_reporter',
+    'type_of_information',
+    'number_of_animals_affected',
+    'number_of_animals_treated',
+    'foreign_or_domestic',
+  ]),
   { name: 'animal', type: 'JSON', nullable: true },
   { name: 'drug', type: 'JSON', nullable: true },
   { name: 'reaction', type: 'JSON', nullable: true },
   { name: 'outcome', type: 'JSON', nullable: true },
+  ...varcharColumns([
+    'report_id',
+    'onset_date',
+    'secondary_reporter',
+    'treated_for_ae',
+    'time_between_exposure_and_onset',
+  ]),
+  { name: 'receiver', type: 'JSON', nullable: true },
+  { name: 'health_assessment_prior_to_exposure', type: 'JSON', nullable: true },
+  { name: 'duration', type: 'JSON', nullable: true },
 ];
 
 export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
@@ -110,39 +151,29 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
     search: searchExpression()
       .optional()
       .describe(
-        `openFDA search query using field:value syntax. Examples: animal.species:"Dog", drug.active_ingredients.name:"Fluralaner", reaction.veddra_term_name:"Vomiting", serious_ae:"true". Omit to browse newest first, sorted by ${NEWEST_FIRST}. ${SEARCH_SYNTAX_NOTE}`,
+        `openFDA search query, e.g. animal.species:"Dog", drug.active_ingredients.name:"Fluralaner", reaction.veddra_term_name:"Vomiting", serious_ae:"true". Omit to browse newest first. ${SEARCH_SYNTAX_NOTE}`,
       ),
     sort: sortExpression()
       .optional()
-      .describe(
-        `Sort expression — a field path optionally suffixed with :asc or :desc (any letter case; :ascending and :descending are also accepted, and every direction is sent as asc or desc); comma-separate for multi-field sort. Omitted with no search, defaults to ${NEWEST_FIRST}, newest first; omitted with a search, results come in openFDA's relevance order. Field paths take only letters, digits, underscores, and dots; any other character or direction is rejected before the request. A well-formed but non-sortable field still causes a query error — use a documented field name.`,
-      ),
+      .describe(sortDescription({ newest: NEWEST_FIRST })),
     limit: pageLimit('animalandveterinary/event', 'Records per page.'),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
+    cursor: cursorInput,
     fields: fieldSelection()
       .optional()
       .describe(fieldsDescription(IDENTITY_KEYS, ['original_receive_date', 'animal.species'])),
     stage: stageInput,
-    canvas_id: CanvasIdSchema.optional().describe(
-      'Canvas ID returned by a prior stage=true call to this tool or another openFDA search tool (openfda_search_* or openfda_lookup_ndc). Passing one stages this search onto that canvas (same effect as stage=true) so result sets accumulate for cross-table joins. Omit to stage onto a fresh canvas.',
-    ),
+    canvas_id: canvasIdInput,
   }),
 
   output: z.object({
-    meta: z
-      .object({
-        total: z.number().describe('Total matching records in the dataset'),
-        skip: z.number().describe('Pagination offset'),
-        limit: z.number().describe(META_LIMIT_DESCRIPTION),
-        lastUpdated: z.string().describe('Dataset last updated date'),
-        totalUnverified: totalUnverifiedField,
-      })
-      .describe('Response metadata'),
+    meta: pageMetaOutput,
     results: z
       .array(z.record(z.string(), z.any()))
       .describe(
         'Animal adverse event records. Key fields: unique_aer_id_number, original_receive_date, serious_ae, animal (species, gender, breed, age, weight), drug[] (brand_name, active_ingredients, route, dose, administered_by), reaction[] (veddra_term_name, number_of_animals_affected), outcome[] (medical_status), primary_reporter, type_of_information.',
       ),
+    ...cursorOutputShape,
     ...oversizedRecordOutputShape,
     ...projectionOutputShape,
     ...canvasOutputShape,
@@ -154,35 +185,15 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       .string()
       .optional()
       .describe('Search filter applied to the query, as submitted to openFDA'),
-    notice: z
-      .string()
-      .optional()
-      .describe(
-        `Canvas staging disclosure when the call staged, the limit clamp when limit exceeded the cap (requested value, cap, next skip), the fields projection and any requested path no record carries, the size and largest fields when a record on the page exceeds ${OVERSIZED_RECORD_BYTES} bytes, and guidance when results are empty or paging overshot — how to broaden filters or adjust the query.`,
-      ),
+    notice: searchNoticeField([CONJOINED_ARRAY_NOTICE_TOPIC]),
   },
 
   errors: [
     canvasDisabledError,
     canvasNotFoundError,
     canvasCapacityExhaustedError,
-    {
-      reason: 'rate_limited',
-      code: JsonRpcErrorCode.RateLimited,
-      when: 'The openFDA daily or per-minute request limit is exceeded.',
-      retryable: true,
-      recovery:
-        'Wait briefly and retry, or configure OPENFDA_API_KEY to raise the daily limit to 120K requests.',
-      thrownBy: 'service',
-    },
-    {
-      reason: 'upstream_error',
-      code: JsonRpcErrorCode.ServiceUnavailable,
-      when: 'The openFDA API returned a 5xx server error.',
-      retryable: true,
-      recovery: 'Retry after a short wait; if the error persists check api.fda.gov status.',
-      thrownBy: 'service',
-    },
+    rateLimitedError,
+    upstreamError,
     malformedSearchError,
     {
       reason: 'query_error',
@@ -192,23 +203,23 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
         'Verify field names using the openFDA field reference and correct boolean operators (AND/OR, quoted phrases).',
       thrownBy: 'service',
     },
-    {
-      reason: 'pagination_limit_reached',
-      code: JsonRpcErrorCode.ValidationError,
-      when: 'skip exceeds the 25000 record pagination ceiling.',
-      recovery:
-        'Narrow the search query with additional filters or date ranges instead of increasing skip.',
-      thrownBy: 'service',
-    },
+    paginationLimitReachedError,
+    invalidCursorError,
   ],
 
   async handler(input, ctx) {
     assertSkipWithinCeiling(input.skip, ctx);
     assertSearchDelimitersBalanced(input.search, ctx);
     const size = resolvePageSize(input.limit, 'animalandveterinary/event', ctx);
-    const sort = sortOrNewest(input, NEWEST_FIRST);
+    const query: CursorQuery = {
+      endpoint: 'animalandveterinary/event',
+      search: input.search,
+      sort: sortOrNewest(input, NEWEST_FIRST),
+    };
+    const searchAfter = resolveCursor(input, query, ctx);
 
-    const maskedFieldNote = MASKED_FIELDS.some((field) => input.search?.includes(field))
+    const named = input.search ? fieldPathsNamed(input.search) : [];
+    const maskedFieldNote = MASKED_FIELDS.some((field) => named.includes(field))
       ? ` ${MASKED_FIELD_GUIDANCE}`
       : '';
     const emptyNotice = (skip: number, total: number, totalUnverified?: boolean) =>
@@ -217,23 +228,21 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
         total,
         `No animal adverse event reports matched${input.search ? ` search: ${codeLiteral(input.search)}` : ''}. Try broader filters — use animal.species, drug.active_ingredients.name, or reaction.veddra_term_name fields.${maskedFieldNote} ${formatFieldHint('animalandveterinary/event')}`,
         totalUnverified,
+        searchAfter !== undefined,
       );
 
     const projection = recordProjection(input.fields, IDENTITY_KEYS);
     const canvas = getCanvas();
     const staging = input.stage || input.canvas_id !== undefined;
     if (staging && !canvas) {
-      throw ctx.fail(
-        'canvas_disabled',
-        'Staging requires DataCanvas. Set CANVAS_PROVIDER_TYPE=duckdb, or drop stage/canvas_id for the inline page.',
-      );
+      throw ctx.fail('canvas_disabled', CANVAS_DISABLED_MESSAGE);
     }
 
     if (canvas && staging) {
       const spill = await spillSearch({
-        endpoint: 'animalandveterinary/event',
-        search: input.search,
-        sort,
+        endpoint: query.endpoint,
+        search: query.search,
+        sort: query.sort,
         canvasId: input.canvas_id,
         schema: ANIMAL_EVENTS_CANVAS_SCHEMA,
         limit: size.limit,
@@ -252,6 +261,12 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
           projectionNotice(staged),
           oversizedRecordNotice(staged),
           stagingNotice(spill),
+          arrayTieNotice(
+            input.search,
+            spill.total,
+            ARRAY_PATHS,
+            spill.tableName ? { kind: 'staged', table: spill.tableName } : { kind: 'restage' },
+          ),
         ]
           .filter(Boolean)
           .join(' '),
@@ -261,17 +276,21 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
 
     const svc = getOpenFdaService();
     const response = await svc.query(
-      'animalandveterinary/event',
+      query.endpoint,
       {
-        search: input.search,
-        sort,
+        search: query.search,
+        sort: query.sort,
         limit: size.limit,
         skip: input.skip,
+        searchAfter,
       },
       ctx,
     );
 
-    const page = inlinePage(response, size.limit, projection);
+    const page = {
+      ...inlinePage(response, size.limit, projection),
+      ...nextCursorField(response, query),
+    };
 
     ctx.log.info('Animal adverse event search completed', {
       total: response.meta.total,
@@ -285,9 +304,13 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
         ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
         : undefined,
       phrasePlusHint(input.search, response.meta.total),
-      pageSizeNotice(size, page),
+      pageSizeNotice(size, page) ?? cursorEndNotice(page, searchAfter),
       projectionNotice(page),
       oversizedRecordNotice(page),
+      arrayTieNotice(input.search, response.meta.total, ARRAY_PATHS, {
+        kind: 'restage',
+        byCursor: searchAfter !== undefined,
+      }),
     ].filter(Boolean);
     if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
 
@@ -383,8 +406,10 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
             .filter(Boolean)
             .join('; ');
           lines.push(`- ${lineContent(`${name}${qualifiers ? ` (${qualifiers})` : ''}`)}`);
-          // Ingredient doses, lot number, dosage form, manufacturer, ATC code — a
-          // masked manufacturer name labelled the way the brand is, never shown as a firm.
+          /**
+           * Ingredient doses, lot number, dosage form, manufacturer, ATC code — a
+           * masked manufacturer name labelled the way the brand is, never shown as a firm.
+           */
           const maker = d.manufacturer as Record<string, unknown> | undefined;
           const remaining =
             maker?.name === MASKED
@@ -424,8 +449,10 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       if (r.type_of_information) lines.push(singleLine(`**Type:** ${r.type_of_information}`));
       if (r.foreign_or_domestic) lines.push(singleLine(`**Origin:** ${r.foreign_or_domestic}`));
 
-      // Render remaining top-level fields — the serious_ae code, receiver,
-      // secondary reporter, treatment context, health assessment, counts.
+      /**
+       * Render remaining top-level fields — the serious_ae code, receiver,
+       * secondary reporter, treatment context, health assessment, counts.
+       */
       const rendered = new Set([
         'unique_aer_id_number',
         'original_receive_date',

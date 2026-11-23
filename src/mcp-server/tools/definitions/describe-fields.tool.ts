@@ -61,8 +61,10 @@ export const describeFieldsTool = tool('openfda_describe_fields', {
   handler(input, ctx) {
     const groups = getFieldGroups(input.endpoint);
 
-    // This should not happen since input is constrained to cataloged endpoints,
-    // but guard defensively so a future catalog gap doesn't silently return wrong data.
+    /**
+     * Unreachable while input is constrained to cataloged endpoints; fails loudly
+     * so a future catalog gap doesn't silently return wrong data.
+     */
     if (!groups) {
       throw internalError(`No field catalog found for endpoint: ${input.endpoint}`, {
         endpoint: input.endpoint,
@@ -72,14 +74,7 @@ export const describeFieldsTool = tool('openfda_describe_fields', {
     ctx.log.info('Describe fields requested', { endpoint: input.endpoint });
 
     const queryTips =
-      'Use field:value syntax (e.g. generic_name:"carboplatin"). ' +
-      'Phrase matching requires double quotes. ' +
-      'Combine filters with AND or OR. ' +
-      'Every double quote, parenthesis, and range bracket must close, and a query cannot end on a backslash — write a literal delimiter as \\" \\( \\[ or \\\\. ' +
-      'For aggregation in openfda_count_values, pass the countAs expression listed for each field; null means openFDA cannot aggregate that field bare or with .exact. ' +
-      'For a field not listed here, count identifier fields bare (product_ndc, application_number, pma_number, unique_aer_id_number) — openFDA already indexes them as keywords and rejects .exact on them as not countable. ' +
-      'Free-text fields are the opposite: count them with .exact (e.g. patient.reaction.reactionmeddrapt.exact, openfda.brand_name.exact), since openFDA refuses to aggregate the analyzed field bare rather than tallying its words. ' +
-      "Date fields take YYYYMMDD and range syntax [20200101 TO 20221231] unless the field's note names another form.";
+      'Use field:value syntax (e.g. generic_name:"carboplatin"). Phrase matching requires double quotes. Combine filters with AND or OR. Every double quote, parenthesis, and range bracket must close, and a query cannot end on a backslash — write a literal delimiter as \\" \\( \\[ or \\\\. For aggregation in openfda_count_values, pass the countAs expression listed for each field; null means openFDA cannot aggregate that field bare or with .exact. For a field not listed here, count identifier fields bare (product_ndc, application_number, pma_number, unique_aer_id_number) — openFDA already indexes them as keywords and rejects .exact on them as not countable. Free-text fields are the opposite: count them with .exact (e.g. patient.reaction.reactionmeddrapt.exact, openfda.brand_name.exact), since openFDA refuses to aggregate the analyzed field bare rather than tallying its words. Date fields take YYYYMMDD and range syntax [20200101 TO 20221231] unless the field\'s note names another form.';
 
     return {
       endpoint: input.endpoint,

@@ -6,7 +6,7 @@
  */
 
 import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
-import { createMockContext, getEnrichment } from '@cyanheads/mcp-ts-core/testing';
+import { createMockContext, getEnrichment, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@/services/openfda/openfda-service.js', () => ({
@@ -27,7 +27,7 @@ import { searchTobaccoReportsTool } from '@/mcp-server/tools/definitions/search-
 import {
   findSearchDelimiterFault,
   type SearchDelimiterFault,
-} from '@/mcp-server/tools/schema-utils.js';
+} from '@/mcp-server/tools/search-expression.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import { textOf } from '../../../helpers/content.js';
 
@@ -570,14 +570,14 @@ describe('openfda_search_drug_approvals (edge cases)', () => {
     expect(text).toContain('Prescription');
   });
 
-  it('format renders the metadata header, then "No drug approvals found.", for empty results (#68)', () => {
+  it('format renders the metadata header, then "No drug application records found.", for empty results (#68)', () => {
     const content = searchDrugApprovalsTool.format!({
       meta: { total: 0, skip: 0, limit: 10, lastUpdated: '2026-07-31' },
       results: [],
     });
 
     expect(textOf(content)).toBe(
-      '**0 total results** (returned: 0, skip: 0, limit: 10) | Data updated: 2026-07-31\n\nNo drug approvals found.',
+      '**0 total results** (returned: 0, skip: 0, limit: 10) | Data updated: 2026-07-31\n\nNo drug application records found.',
     );
   });
 
@@ -734,14 +734,14 @@ describe('openfda_search_device_clearances (edge cases)', () => {
     expect(text).toContain('some value');
   });
 
-  it('format renders the metadata header, then "No device clearances found.", for empty results (#68)', () => {
+  it('format renders the metadata header, then "No device records found.", for empty results (#68)', () => {
     const content = searchDeviceClearancesTool.format!({
       meta: { total: 0, skip: 0, limit: 10, lastUpdated: '2026-07-31' },
       results: [],
     });
 
     expect(textOf(content)).toBe(
-      '**0 total results** (returned: 0, skip: 0, limit: 10) | Data updated: 2026-07-31\n\nNo device clearances found.',
+      '**0 total results** (returned: 0, skip: 0, limit: 10) | Data updated: 2026-07-31\n\nNo device records found.',
     );
   });
 });
@@ -995,6 +995,12 @@ describe('search delimiter precheck (#38)', () => {
     ['report_date:20200101]', /closes a range that was never opened/i],
     ['reason_for_recall:foo[bar', /leaves a range open/i],
     ['recalling_firm:pfizer\\', /ends on a backslash/i],
+    // 400 `Search not supported` from openFDA, quoted, escaped, or bare (#103).
+    ['brand_name:"Tylenol; Extra"', /holds ";" at position 20,/],
+    ['brand_name:"Tylenol\\; Extra"', /holds ";" at position 21,/],
+    ['brand_name:tyl?nol', /holds "\?" at position 15, .* write \*/],
+    ['!brand_name:tylenol', /holds "!" at position 1, .* write NOT/],
+    [`brand_name:"Ozempic${String.fromCodePoint(0xae)}"`, /holds U\+00AE at position 20,/],
   ] as const;
 
   /** Exotic but valid — each returns a real answer from api.fda.gov. */
@@ -1008,6 +1014,9 @@ describe('search delimiter precheck (#38)', () => {
     'report_date:[(20200101 TO 20201231]', // a paren inside a range is literal data
     'recalling_firm:pfizer\\\\', // an escaped backslash is not a dangling one
     'recalling_firm:pfizer*', // wildcard
+    'brand_name:"tylenol & extra"', // 29 — & is accepted, in a phrase or out (#103)
+    'brand_name:tylenol && brand_name:extra', // 49, as AND
+    'brand_name:"tylenol <=> @ % \' , / extra"', // each accepted inside a phrase
   ];
 
   beforeEach(() => {
@@ -1020,9 +1029,16 @@ describe('search delimiter precheck (#38)', () => {
   });
 
   for (const [label, toolDef, base] of SEARCH_TOOLS) {
+    /**
+     * The handler on the input the framework hands it: parsed through the tool's
+     * schema, so defaults (`dataset`, `skip`) are set and `search` is the string
+     * openFDA would be sent. Every MALFORMED value passes the schema and is
+     * refused by the handler's delimiter guard.
+     */
     const call = (search: string) => {
       const ctx = createMockContext({ errors: toolDef.errors });
-      return { ctx, run: Promise.resolve(toolDef.handler({ ...base, search } as never, ctx)) };
+      const input = toolDef.input.parse({ ...base, search });
+      return { ctx, run: Promise.resolve(toolDef.handler(input as never, ctx)) };
     };
 
     it(`${label} declares the malformed_search contract with a recovery hint`, () => {
@@ -1053,6 +1069,32 @@ describe('search delimiter precheck (#38)', () => {
         ctx,
       );
     });
+
+    // 400 as written; 49 on drug/ndc spaced (#103).
+    it(`${label} sends a tab, line break, or no-break space in search as a space`, async () => {
+      const ctx = createMockContext({ errors: toolDef.errors });
+      const search = `brand_name:tylenol\tAND\r\nbrand_name:extra${String.fromCodePoint(0xa0)}OR x:y`;
+      await toolDef.handler(toolDef.input.parse({ ...base, search }) as never, ctx);
+
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ search: 'brand_name:tylenol AND  brand_name:extra OR x:y' }),
+        ctx,
+      );
+    });
+
+    // drug/ndc 0003-0894: 259 unquoted, 1 quoted; the NOT clause stays as written (#101).
+    it(`${label} sends an unquoted hyphenated term quoted, keeping a NOT clause as written`, async () => {
+      const ctx = createMockContext({ errors: toolDef.errors });
+      const search = '0003-0894 -dosage_form:tablet';
+      await toolDef.handler(toolDef.input.parse({ ...base, search }) as never, ctx);
+
+      expect(mockQuery).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ search: '"0003-0894" -dosage_form:tablet' }),
+        ctx,
+      );
+    });
   }
 
   // A tool that composes its own query is deliberately not covered — the precheck
@@ -1061,6 +1103,50 @@ describe('search delimiter precheck (#38)', () => {
   it('openfda_drug_profile declares no malformed_search reason', () => {
     const reasons = drugProfileTool.errors?.map((e) => e.reason);
     expect(reasons).not.toContain('malformed_search');
+  });
+
+  // #103 — through the production argument path, onto both surfaces.
+  it('renders a refused character on structuredContent and content[] alike', async () => {
+    const result = await runToolContract(lookupNdcTool, { search: 'brand_name:"Tylenol; Extra"' });
+
+    expect(result.isError).toBe(true);
+    const { error } = result.structuredContent as {
+      error: { code: number; message: string; data?: Record<string, unknown> };
+    };
+    expect(error.code).toBe(JsonRpcErrorCode.ValidationError);
+    expect(error.message).toBe(
+      'Search query holds ";" at position 20, a character openFDA refuses anywhere in a query, quoted or escaped. Remove it or put a space in its place.',
+    );
+    expect(error.data).toMatchObject({
+      reason: 'malformed_search',
+      recovery: {
+        hint: expect.stringContaining(
+          'replace the character the message names as the message says',
+        ),
+      },
+    });
+    const text = textOf(result.content as never);
+    expect(text).toContain('holds ";" at position 20');
+    expect(text).toContain('replace the character the message names as the message says');
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  // #101 — the quoted form is what is sent and what both surfaces echo.
+  it('echoes a quoted hyphenated term on structuredContent and content[] alike', async () => {
+    mockQuery.mockResolvedValue({
+      meta: { total: 1, skip: 0, limit: 10, lastUpdated: '2026-11-22' },
+      results: [{ product_ndc: '0003-0894', brand_name: 'ELIQUIS' }],
+    });
+
+    const result = await runToolContract(lookupNdcTool, { search: '0003-0894' });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockQuery.mock.calls[0]?.[1]).toMatchObject({ search: '"0003-0894"' });
+    expect((result.structuredContent as { effectiveQuery?: string }).effectiveQuery).toBe(
+      '"0003-0894"',
+    );
+    const text = result.content.flatMap((block) => (block.type === 'text' ? [block.text] : []));
+    expect(text.join('\n')).toContain('**effectiveQuery:** `"0003-0894"`');
   });
 
   /**
@@ -1299,6 +1385,8 @@ describe('record headings and list items stay on one line (#67)', () => {
             },
             recalls: [
               {
+                recall_number: 'D-1\n# x',
+                status: 'Ongoing\r\n- x',
                 classification: 'Class II\n- x',
                 recalling_firm: null,
                 date: null,
@@ -1313,7 +1401,7 @@ describe('record headings and list items stay on one line (#67)', () => {
         ),
       [
         '- NAUSEA - x: 1',
-        '- **Classification:** Class II - x · **Recalling firm:** n/a · **Date:** n/a',
+        '- **Recall number:** D-1 # x · **Status:** Ongoing - x · **Classification:** Class II - x · **Recalling firm:** n/a · **Date:** n/a',
         '  **Reason:** r # x',
       ],
     ],
@@ -1352,6 +1440,9 @@ describe('record headings and list items stay on one line (#67)', () => {
               applicationNumber: 'NDA1',
               sponsor: 'BAYER\n# x',
               marketingStatus: 'OTC',
+              approvalDate: '20121228\n- x',
+              reviewPriority: 'PRIORITY\n# x',
+              submissionClass: 'Type 1\r\n> x',
               brandNames: ['BAYER\n> x'],
               candidates: 3,
             },
@@ -1379,6 +1470,7 @@ describe('record headings and list items stay on one line (#67)', () => {
         '- \\# NAUSEA: 2',
         '- 1\\. VOMITING: 1',
         '**Application number:** NDA1 | **Sponsor:** BAYER # x | **Marketing status:** OTC',
+        '**Approval date:** 20121228 - x | **Review priority:** PRIORITY # x | **Submission class:** Type 1 > x',
         '**Brand names:** BAYER > x',
         'The identity and label above come from NDA2 - x, a different application.',
         '**Status:** Current - x',

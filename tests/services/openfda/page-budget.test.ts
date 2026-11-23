@@ -20,7 +20,7 @@ import {
   oversizedRecordLine,
   oversizedRecordNotice,
 } from '@/services/openfda/page-budget.js';
-import { recordProjection } from '@/services/openfda/record-projection.js';
+import { pageProjection, recordProjection } from '@/services/openfda/record-projection.js';
 import type { OpenFdaResponse } from '@/services/openfda/types.js';
 import { linearTiming } from '../../helpers/cpu-timing.js';
 
@@ -146,6 +146,56 @@ describe('inlinePage', () => {
     expect(page.projected_fields).toEqual(['recalling_firm']);
     expect(page).not.toHaveProperty('page_bytes');
     expect(page).not.toHaveProperty('page_largest_fields');
+  });
+
+  // #104 — the left-out paths come out before the page is measured.
+  it('leaves the endpoint paths out before measuring, so a page whose bulk they held carries no oversized disclosure', () => {
+    const omission = pageProjection('device/recall', ['product_res_number'], {});
+    const page = inlinePage(response([RECALL]), 1, omission);
+    expect(page).toEqual({
+      meta: { total: 1000, skip: 0, limit: 1, lastUpdated: '2026-11-10' },
+      results: [
+        {
+          product_res_number: 'Z-0030-2018',
+          recalling_firm: 'ACME',
+          openfda: { device_name: 'PUMP' },
+        },
+      ],
+      omitted_fields: [{ path: 'code_info', bytes: size(RECALL.code_info) }],
+    });
+  });
+
+  it('measures what a report keeps once its drug blocks are out, naming no left-out path', () => {
+    // Each drug keeps a 15 KB indication after its 60 KB openfda block comes out: still over 24,000 bytes.
+    const report = {
+      safetyreportid: '1',
+      patient: {
+        drug: REPORT.patient.drug.map((drug) => ({ ...drug, drugindication: 'i'.repeat(15_000) })),
+      },
+    };
+    const page = inlinePage(
+      response([report]),
+      1,
+      pageProjection('drug/event', ['safetyreportid'], {}),
+    );
+    const kept = page.results;
+    expect(JSON.stringify(kept)).not.toContain('openfda');
+    expect(page.page_bytes).toBe(size(kept));
+    expect(page.page_largest_fields).toEqual([
+      { path: 'patient.drug.drugindication', bytes: 2 * 15_002 },
+    ]);
+    expect(page.omitted_fields).toEqual([
+      {
+        path: 'patient.drug.openfda',
+        bytes: REPORT.patient.drug.reduce((sum, d) => sum + size(d.openfda), 0),
+      },
+    ]);
+  });
+
+  it('returns exactly meta and results on a left-out endpoint whose records carry none of the paths', () => {
+    const records = [{ product_res_number: 'Z-1', recalling_firm: 'ACME' }];
+    const page = inlinePage(response(records), 1, pageProjection('device/recall', [], {}));
+    expect(Object.keys(page)).toEqual(['meta', 'results']);
   });
 });
 
@@ -302,6 +352,42 @@ describe('largestFields timing', { timeout: 60_000 }, () => {
   ])('stays linear on %s', (_name, build) => {
     const { t5k, t320k } = linearTiming(
       (record) => largestFields(record, 1),
+      build(5_000),
+      build(320_000),
+    );
+    expect(t320k / t5k).toBeLessThan(256);
+    expect(t320k).toBeLessThan(500_000);
+  });
+
+  it.each([
+    [
+      'one report with a huge drug array',
+      (n: number) => [
+        {
+          safetyreportid: '1',
+          patient: {
+            drug: Array.from({ length: n / 60 }, () => ({
+              medicinalproduct: 'A',
+              openfda: { unii: ['é'], brand_name: ['x'] },
+            })),
+          },
+        },
+      ],
+    ],
+    [
+      'many small reports',
+      (n: number) =>
+        Array.from({ length: n / 100 }, (_, i) => ({
+          safetyreportid: `${i}`,
+          patient: {
+            drug: [{ medicinalproduct: 'A', openfda: { unii: ['é'], brand_name: ['x'] } }],
+          },
+        })),
+    ],
+  ])('cuts and measures a left-out page linearly: %s, stays linear', (_label, build) => {
+    const omission = pageProjection('drug/event', ['safetyreportid'], {});
+    const { t5k, t320k } = linearTiming(
+      (records) => inlinePage(response(records), records.length, omission),
       build(5_000),
       build(320_000),
     );

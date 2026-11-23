@@ -11,15 +11,17 @@
  *    no ranges, no second clause;
  * 2. on a field declared in the dataset's `keys`, with a value that is a whole
  *    canonical identifier in its canonical case;
- * 3. no `count`, no `sort`, and `skip === 0` — aggregation and ordering are
- *    upstream's to define;
+ * 3. no `count`, no `sort`, `skip === 0`, and no `search_after` continuation —
+ *    aggregation, ordering, and walk position are upstream's to define (a
+ *    mirror a refresh cycle behind can hold one record where live holds two,
+ *    and would answer a continuation with page one again);
  * 4. and the value addresses exactly one record, so the response is the whole
  *    answer and there is no order to disagree about.
  *
  * Anything else returns `undefined` and is routed live.
  *
- * Selection is reproduced; ordering is not. Upstream orders an unsorted match by
- * Elasticsearch relevance, which no local index can recompute. Condition 4 is
+ * Selection is reproduced; ordering is not. Upstream returns an unsorted match in
+ * its index's document order, which no local index can recompute. Condition 4 is
  * what keeps that from mattering: a lookup on a non-unique key (`event_id`,
  * `product_ndc`, `set_id`) is served only where that key happens to address a
  * single record, and two or more records route live whatever the page size. A
@@ -62,7 +64,7 @@ export function planMirrorLookup(
   params: OpenFdaQueryParams,
 ): MirrorLookup | undefined {
   if (params.count !== undefined || params.sort !== undefined) return;
-  if ((params.skip ?? 0) !== 0) return;
+  if ((params.skip ?? 0) !== 0 || params.searchAfter !== undefined) return;
 
   const dataset = datasetFor(endpoint);
   if (!dataset || params.search === undefined) return;
@@ -87,8 +89,9 @@ export function planMirrorLookup(
 
 /**
  * Answer a planned lookup from the mirror, or return `undefined` when the value
- * matches more than one record — upstream ranks a multi-record match by
- * relevance and the mirror cannot recompute that, so the caller routes live.
+ * matches more than one record — upstream returns a multi-record match in its
+ * index's document order and the mirror cannot recompute that, so the caller
+ * routes live.
  *
  * A zero-match is answered rather than declined: an empty result is a fact about
  * the corpus, and whether a mirror that may be a refresh cycle behind is allowed

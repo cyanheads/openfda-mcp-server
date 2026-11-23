@@ -37,15 +37,7 @@ vi.mock('@/services/openfda/openfda-service.js', () => {
 
 import { searchRecallsTool } from '@/mcp-server/tools/definitions/search-recalls.tool.js';
 import { textOf } from '../../../helpers/content.js';
-
-async function setCanvasMock(c: unknown) {
-  const mod = await import('@/services/canvas/canvas-accessor.js');
-  (mod as unknown as { __setMock: (c: unknown) => void }).__setMock(c);
-}
-async function setSvcMock(s: unknown) {
-  const mod = await import('@/services/openfda/openfda-service.js');
-  (mod as unknown as { __setMock: (s: unknown) => void }).__setMock(s);
-}
+import { setCanvasMock, setSvcMock } from '../../../helpers/mock-setters.js';
 
 function makeSvc(total: number) {
   return {
@@ -233,6 +225,87 @@ describe('openfda_search_recalls — canvas enabled', () => {
       ),
     ).rejects.toThrow(/only available for devices/i);
   });
+});
+
+/*
+ * #104 — the inline page of a staged call is cut the way the plain call's is,
+ * left-out paths and their disclosure included, while the drain stages every
+ * record whole. The staging × canvas_id × skip × fields × include matrix is
+ * tabled at the `spillSearch` seam in `canvas-spill.test.ts`; these cases prove
+ * the tool hands its left-out paths to both paths.
+ */
+describe('openfda_search_recalls — left-out paths when staged (#104)', () => {
+  /** Record `i` of each device shape, carrying its endpoint's left-out paths. */
+  const deviceRecord = (endpoint: string, i: number): Record<string, unknown> =>
+    endpoint === 'device/recall'
+      ? {
+          product_res_number: `Z-${i}`,
+          code_info: `Lot ${i}`,
+          openfda: { device_class: '2', k_number: [`K${i}`], fei_number: [`F${i}`] },
+        }
+      : { recall_number: `Z-${i}`, code_info: `Lot ${i}`, more_code_info: '' };
+
+  function makeDeviceSvc(total: number) {
+    return {
+      query: vi.fn(async (endpoint: string, params: { limit?: number; skip?: number }) => {
+        const skip = params.skip ?? 0;
+        const limit = params.limit ?? 1000;
+        const results: Record<string, unknown>[] = [];
+        for (let i = skip; i < Math.min(skip + limit, total); i++) {
+          results.push(deviceRecord(endpoint, i));
+        }
+        return { meta: { total, skip, limit, lastUpdated: '2026-11-22' }, results };
+      }),
+    };
+  }
+
+  /** Canvas stub that keeps every row the drain staged. */
+  function makeCapturingCanvas() {
+    const rows: Record<string, unknown>[] = [];
+    const instance = {
+      canvasId: 'cv_leftout',
+      isNew: true,
+      registerTable: vi.fn(async (name: string, source: AsyncIterable<Record<string, unknown>>) => {
+        for await (const row of source) rows.push(row);
+        return { tableName: name, rowCount: rows.length, columns: [] };
+      }),
+      drop: vi.fn(),
+    };
+    return { canvas: { acquire: vi.fn().mockResolvedValue(instance) }, rows };
+  }
+
+  const handle = async (input: Record<string, unknown>) =>
+    searchRecallsTool.handler(
+      searchRecallsTool.input.parse(input),
+      createMockContext({ errors: searchRecallsTool.errors }),
+    );
+
+  it.each([
+    ['device/enforcement', { category: 'device' }, ['code_info', 'more_code_info']],
+    [
+      'device/recall',
+      { category: 'device', endpoint: 'recall', skip: 3 },
+      ['code_info', 'openfda.k_number', 'openfda.fei_number'],
+    ],
+  ] as const)(
+    'cuts the staged inline %s page as the plain one, and stages whole records',
+    async (endpoint, base, paths) => {
+      await setSvcMock(makeDeviceSvc(8));
+      const { canvas, rows } = makeCapturingCanvas();
+      await setCanvasMock(canvas);
+      const staged = await handle({ ...base, limit: 3, stage: true });
+
+      await setCanvasMock(undefined);
+      const plain = await handle({ ...base, limit: 3 });
+
+      expect(staged.results).toEqual(plain.results);
+      expect(staged.omitted_fields).toEqual(plain.omitted_fields);
+      expect(staged.omitted_fields?.map((f) => f.path)).toEqual(paths);
+      for (const record of staged.results) expect(record).not.toHaveProperty('code_info');
+      // The table received every record as openFDA sent it.
+      expect(rows).toEqual(Array.from({ length: 8 }, (_, i) => deviceRecord(endpoint, i)));
+    },
+  );
 });
 
 describe('openfda_search_recalls — format', () => {

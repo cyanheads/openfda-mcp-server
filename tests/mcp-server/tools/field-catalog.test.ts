@@ -9,15 +9,24 @@ import { describe, expect, it } from 'vitest';
 import {
   type Countable,
   countVerdict,
+  type FieldEntry,
   formatFieldHint,
   getCatalogedEndpoints,
   getFieldGroups,
+  OBJECT_ARRAY_PATHS,
+  SINGLE_ENTRY_ARRAYS,
 } from '@/mcp-server/tools/field-catalog.js';
 
 const allEntries = () =>
   getCatalogedEndpoints().flatMap((endpoint) =>
     (getFieldGroups(endpoint) ?? []).flatMap((g) => g.fields.map((field) => ({ endpoint, field }))),
   );
+
+/** Every cataloged field of an endpoint, in catalog order. */
+const fieldsOf = (endpoint: string) => (getFieldGroups(endpoint) ?? []).flatMap((g) => g.fields);
+
+/** The cataloged entry for one path, or undefined. */
+const entryAt = (endpoint: string, path: string) => fieldsOf(endpoint).find((f) => f.path === path);
 
 describe('field catalog', () => {
   // #49 — the annotation is the only source of countability a caller gets; an
@@ -73,12 +82,15 @@ describe('field catalog', () => {
       expect(piped.map(({ endpoint, field }) => `${endpoint} ${field.path}`)).toEqual([]);
     });
 
-    /** The query forms drug/shortages dates accept — every YYYYMMDD query answers 404. */
+    /**
+     * drug/shortages dates read an 8-digit value as epoch milliseconds, so the
+     * shortage search and count tools rewrite a calendar date to YYYY-MM-DD (#102).
+     */
     const SHORTAGE_DATE_FORMS = [
       'stored MM/DD/YYYY',
+      'queried as YYYY-MM-DD',
       '[2026-01-01 TO 2026-12-31]',
-      '[01/01/2026 TO 12/31/2026]',
-      'never YYYYMMDD',
+      'a YYYYMMDD, M/D/YYYY, or YYYY-M-D date is rewritten to that form',
     ];
     /** HDE is indexed lowercase on the harmonized openfda.* paths: `"F"` answers 404, `"f"` matches. */
     const HARMONIZED_DEVICE_CLASS = ['"U"', '"N"', '"f"', '"F" matches nothing'];
@@ -98,6 +110,8 @@ describe('field catalog', () => {
       ],
       ['drug/shortages', 'initial_posting_date', SHORTAGE_DATE_FORMS],
       ['drug/shortages', 'update_date', SHORTAGE_DATE_FORMS],
+      ['drug/shortages', 'discontinued_date', SHORTAGE_DATE_FORMS],
+      ['drug/shortages', 'change_date', SHORTAGE_DATE_FORMS],
       ['drug/event', 'patient.patientsex', ['0 = unknown', '1 = male', '2 = female']],
       [
         'drug/event',
@@ -123,7 +137,18 @@ describe('field catalog', () => {
       ['device/recall', 'openfda.device_class', HARMONIZED_DEVICE_CLASS],
       ['device/registrationlisting', 'products.openfda.device_class', HARMONIZED_DEVICE_CLASS],
       ['device/udi', 'product_codes.openfda.device_class', HARMONIZED_DEVICE_CLASS],
-      ['device/classification', 'device_class', ['"U"', '"N"', '"F" (HDE)']],
+      // #96 — records store HDE as a lowercase "f"; a search matches either case.
+      ['device/classification', 'device_class', ['"U"', '"N"', '"f" (HDE, stored lowercase']],
+      [
+        'device/classification',
+        'submission_type_id',
+        ['"1" = 510(k)', '"2" = PMA', '"3" = contact ODE', '"4" = 510(k) exempt', '6, 7, 8'],
+      ],
+      [
+        'device/classification',
+        'unclassified_reason',
+        ['"1" = pre-amendment', '"6" = enforcement discretion', '9 and 11'],
+      ],
       ['device/udi', 'identifiers.issuing_agency', ['NDC/NHRIC']],
       ['device/510k', 'decision_date', ['stored YYYY-MM-DD', 'query as YYYYMMDD']],
       ['device/pma', 'decision_date', ['stored YYYY-MM-DD', 'query as YYYYMMDD']],
@@ -138,6 +163,8 @@ describe('field catalog', () => {
     });
 
     it.each<[string, string, string]>([
+      ['drug/shortages', 'initial_posting_date', 'never YYYYMMDD'],
+      ['drug/shortages', 'update_date', 'never YYYYMMDD'],
       ['drug/event', 'patient.reaction.reactionoutcome', '4 = fatal'],
       ['drug/enforcement', 'product_type', 'Biologics'],
       ['drug/ndc', 'product_ndc', '10-digit'],
@@ -321,6 +348,360 @@ describe('field catalog', () => {
     });
   });
 
+  /**
+   * Entries this batch adds to an existing endpoint, each count form probed live
+   * 2026-11-22: `bare` answered 200 bare and `Nothing to count` with .exact,
+   * `none` a 5xx bare and `Nothing to count` with .exact, `both` 200 either way.
+   */
+  describe('fields added to existing endpoints', () => {
+    it.each<[string, string, FieldEntry['type'], Countable]>([
+      // #96
+      ['device/classification', 'submission_type_id', 'string', 'none'],
+      ['device/classification', 'summary_malfunction_reporting', 'string', 'bare'],
+      ['device/classification', 'openfda.pma_number', 'string', 'bare'],
+      ['device/classification', 'review_panel', 'string', 'none'],
+      ['device/classification', 'medical_specialty', 'string', 'none'],
+      ['device/classification', 'definition', 'string', 'none'],
+      ['device/classification', 'unclassified_reason', 'string', 'none'],
+      // #100
+      ['drug/drugsfda', 'submissions.submission_class_code', 'string', 'bare'],
+      // #102 — both bucket by YYYYMMDD date when counted bare.
+      ['drug/shortages', 'discontinued_date', 'date', 'bare'],
+      ['drug/shortages', 'change_date', 'date', 'bare'],
+      // #107 — tallies as 1 bare and "true" with .exact; no label stores false.
+      ['drug/label', 'openfda.is_original_packager', 'boolean', 'both'],
+      // Tallies as 1 bare (5,873 products, probed 2026-11-22); .exact has nothing to count.
+      ['drug/orangebook', 'approved_prior_to_1982', 'boolean', 'bare'],
+    ])('%s catalogs %s as a %s counted %s', (endpoint, path, type, countable) => {
+      expect(entryAt(endpoint, path)).toMatchObject({ type, countable });
+    });
+
+    it('drug/orangebook approved_prior_to_1982 counts bare and says it stands in for approval_date', () => {
+      expect(countVerdict('drug/orangebook', 'approved_prior_to_1982.exact')).toEqual({
+        kind: 'wrong_form',
+        use: 'approved_prior_to_1982',
+      });
+      const note = entryAt('drug/orangebook', 'approved_prior_to_1982')?.note ?? '';
+      expect(note).toContain('approved before 1982');
+      expect(note).toContain('no approval_date');
+      expect(note).toContain('approved_prior_to_1982:true');
+    });
+
+    it('drug/label openfda.is_original_packager counts either way and names its filter', () => {
+      const path = 'openfda.is_original_packager';
+      for (const expression of [path, `${path}.exact`]) {
+        expect(countVerdict('drug/label', expression), expression).toEqual({ kind: 'countable' });
+      }
+      const note = entryAt('drug/label', path)?.note ?? '';
+      expect(note).toContain('openfda.is_original_packager:true');
+      expect(note).toContain('never stored false');
+    });
+
+    // #100 — the new-molecular-entity code, which a prefix reading would conflate with "TYPE 1/4".
+    it('drug/drugsfda submissions.submission_class_code counts bare and names the NME code', () => {
+      expect(countVerdict('drug/drugsfda', 'submissions.submission_class_code')).toEqual({
+        kind: 'countable',
+      });
+      expect(countVerdict('drug/drugsfda', 'submissions.submission_class_code.exact')).toEqual({
+        kind: 'wrong_form',
+        use: 'submissions.submission_class_code',
+      });
+      const note = entryAt('drug/drugsfda', 'submissions.submission_class_code')?.note ?? '';
+      expect(note).toContain('"TYPE 1" (new molecular entity');
+      expect(note).toContain('"TYPE 1/4" is a separate value');
+    });
+
+    it('keeps the empty-result hint on device/classification led by its search keys', () => {
+      expect(formatFieldHint('device/classification')).toContain(
+        'device/classification: product_code, device_name, device_class, regulation_number, submission_type_id, medical_specialty_description.',
+      );
+    });
+  });
+
+  /**
+   * Endpoints this batch catalogs, each field's count form probed live
+   * 2026-11-22 (dates bucket by YYYYMMDD bare; booleans tally as 1 and 0).
+   */
+  describe('endpoints added for openfda_count_values and openfda_describe_fields', () => {
+    const countForms = (endpoint: string) =>
+      Object.fromEntries(fieldsOf(endpoint).map((f) => [f.path, f.countable]));
+    /** The note an endpoint's entry for a path carries, or '' when uncataloged. */
+    const noteOn = (endpoint: string) => (path: string) => entryAt(endpoint, path)?.note ?? '';
+
+    // #93
+    it('catalogs drug/orangebook with its probed count forms', () => {
+      expect(countForms('drug/orangebook')).toEqual({
+        'products.application_number': 'bare',
+        'products.application_type': 'bare',
+        'products.application_name': 'exact',
+        product_number: 'bare',
+        'products.brand_name': 'exact',
+        approval_date: 'bare',
+        approved_prior_to_1982: 'bare',
+        'products.marketing_status': 'exact',
+        'products.dosage_form': 'exact',
+        'products.route': 'exact',
+        'products.therapeutic_equivalence_codes': 'bare',
+        'products.reference_listed_drug': 'bare',
+        'products.reference_standard': 'bare',
+        'products.active_ingredients.name': 'exact',
+        'products.active_ingredients.strength': 'bare',
+        'patents.patent_number': 'bare',
+        'patents.expiration_date': 'bare',
+        'patents.patent_use_code': 'bare',
+        'patents.patent_submission_date': 'bare',
+        'patents.drug_substance_flag': 'bare',
+        'patents.drug_product_flag': 'bare',
+        'exclusivity.exclusivity_code': 'bare',
+        'exclusivity.exclusivity_expiration_date': 'bare',
+      });
+    });
+
+    it('notes the Orange Book application-number form and the pediatric patent suffix', () => {
+      const note = noteOn('drug/orangebook');
+      expect(note('products.application_number')).toContain('six digits with no prefix');
+      expect(note('products.application_number')).toContain('products.application_type');
+      expect(note('products.application_type')).toContain('"N" (NDA) or "A" (ANDA)');
+      expect(note('patents.patent_number')).toContain('"*PED"');
+      expect(countVerdict('drug/orangebook', 'products.brand_name')).toEqual({
+        kind: 'wrong_form',
+        use: 'products.brand_name.exact',
+      });
+    });
+
+    // #93
+    it('catalogs transparency/crl with its probed count forms', () => {
+      expect(countForms('transparency/crl')).toEqual({
+        application_number: 'bare',
+        company_name: 'exact',
+        letter_date: 'bare',
+        letter_type: 'bare',
+        approval_status: 'bare',
+        letter_year: 'bare',
+        file_name: 'bare',
+        approver_name: 'exact',
+        approver_center: 'exact',
+        text: 'none',
+      });
+    });
+
+    it('notes the CRL application-number spelling, letter-date form, and status case', () => {
+      const note = noteOn('transparency/crl');
+      expect(note('application_number')).toContain('"NDA 210274"');
+      expect(note('application_number')).toContain('text:"217225"');
+      expect(note('letter_date')).toContain('stored MM/DD/YYYY; query as YYYYMMDD');
+      expect(note('approval_status')).toContain('"unapproved" matches nothing');
+      const verdict = countVerdict('transparency/crl', 'text');
+      expect(verdict.kind).toBe('none');
+      if (verdict.kind === 'none') expect(verdict.alternatives).toContain('company_name.exact');
+    });
+
+    // #94 — every field counts bare except package_ndc.
+    it('catalogs other/nsde with its probed count forms', () => {
+      expect(countForms('other/nsde')).toEqual({
+        package_ndc11: 'bare',
+        package_ndc: 'none',
+        proprietary_name: 'bare',
+        dosage_form: 'bare',
+        product_type: 'bare',
+        billing_unit: 'bare',
+        marketing_category: 'bare',
+        application_number_or_citation: 'bare',
+        marketing_start_date: 'bare',
+        marketing_end_date: 'bare',
+        inactivation_date: 'bare',
+        reactivation_date: 'bare',
+      });
+    });
+
+    it('notes the spelling each NSDE identifier field matches', () => {
+      const note = noteOn('other/nsde');
+      expect(note('package_ndc11')).toContain('11 digits, no hyphens');
+      expect(note('package_ndc')).toContain('Hyphenated 10-digit');
+      expect(note('package_ndc')).toContain('every package of the product');
+      expect(note('proprietary_name')).toContain('stored case');
+      expect(formatFieldHint('other/nsde')).toContain(
+        'other/nsde: package_ndc11, package_ndc, proprietary_name,',
+      );
+    });
+
+    // #95 — .exact on the product name, reactions, and outcomes; bare on the rest.
+    it('catalogs cosmetic/event with its probed count forms', () => {
+      expect(countForms('cosmetic/event')).toEqual({
+        report_number: 'bare',
+        initial_received_date: 'bare',
+        latest_received_date: 'bare',
+        event_date: 'bare',
+        'products.product_name': 'exact',
+        'products.role': 'bare',
+        reactions: 'exact',
+        outcomes: 'exact',
+        report_type: 'bare',
+        report_version: 'bare',
+        legacy_report_id: 'bare',
+        meddra_version: 'bare',
+        'patient.gender': 'bare',
+        'patient.age': 'bare',
+        'patient.age_unit': 'bare',
+      });
+    });
+
+    it('notes the free-text event_date, the food/event link, and the gender case', () => {
+      const note = noteOn('cosmetic/event');
+      expect(entryAt('cosmetic/event', 'event_date')?.type).toBe('string');
+      expect(note('event_date')).toContain('free text, not a date');
+      expect(note('event_date')).toContain('a YYYYMMDD range matches nothing');
+      expect(note('legacy_report_id')).toContain('its report_number on food/event');
+      expect(note('patient.gender')).toContain('"female" matches nothing');
+      expect(formatFieldHint('cosmetic/event')).toContain(
+        'cosmetic/event: report_number, initial_received_date, latest_received_date, event_date, products.product_name, products.role.',
+      );
+    });
+  });
+
+  /**
+   * #100 — arrays of objects, where AND-ed clauses on two of an array's fields can
+   * be met by different elements. Each path was read as an array of objects on a
+   * live record (2026-11-22).
+   */
+  describe('OBJECT_ARRAY_PATHS (#100)', () => {
+    /** Arrays no cataloged field sits under, each with the leaf keys live records carry. */
+    const UNCATALOGED_PARENTS = new Map([
+      [
+        'drug/drugsfda submissions.application_docs',
+        'live leaves date, id, type, url; the catalog lists no application document field',
+      ],
+      [
+        'drug/drugsfda submissions.submission_property_type',
+        'live leaf code; the catalog lists no submission property field',
+      ],
+      [
+        'drug/drugsfda products.active_ingredients',
+        'live leaves name, strength; the catalog lists products.brand_name only',
+      ],
+      [
+        'device/event mdr_text',
+        'live leaves text, text_type_code, mdr_text_key, patient_sequence_number; uncataloged',
+      ],
+      [
+        'drug/ndc packaging',
+        'live leaves package_ndc, description, marketing_start_date, sample; uncataloged',
+      ],
+    ]);
+    const tablePairs = () =>
+      Object.entries(OBJECT_ARRAY_PATHS).flatMap(([endpoint, paths]) =>
+        paths.map((path) => ({ endpoint, path })),
+      );
+    /** The cataloged paths of an endpoint that sit under `path`. */
+    const fieldsUnder = (endpoint: string, path: string) =>
+      fieldsOf(endpoint)
+        .map((f) => f.path)
+        .filter((field) => field.startsWith(`${path}.`));
+
+    /**
+     * Also read on live records: 466 transparency/crl letters, whose only arrays
+     * (`application_number`, `approver_center`) hold strings, and 100 other/nsde
+     * rows, which are flat. Both stay out of the table.
+     */
+    it('lists the arrays of the six #100 endpoints, Orange Book, and cosmetic reports', () => {
+      expect(OBJECT_ARRAY_PATHS).toEqual({
+        'drug/drugsfda': [
+          'submissions',
+          'submissions.application_docs',
+          'submissions.submission_property_type',
+          'products',
+          'products.active_ingredients',
+        ],
+        'drug/event': ['patient.drug', 'patient.reaction'],
+        'device/event': ['device', 'patient', 'mdr_text'],
+        'food/event': ['products'],
+        'animalandveterinary/event': ['drug', 'drug.active_ingredients', 'reaction', 'outcome'],
+        'drug/ndc': ['active_ingredients', 'packaging'],
+        'drug/orangebook': ['products', 'products.active_ingredients', 'patents', 'exclusivity'],
+        'cosmetic/event': ['products'],
+      });
+      expect(OBJECT_ARRAY_PATHS['transparency/crl']).toBeUndefined();
+      expect(OBJECT_ARRAY_PATHS['other/nsde']).toBeUndefined();
+    });
+
+    it('keys only cataloged endpoints', () => {
+      const cataloged = getCatalogedEndpoints();
+      for (const endpoint of Object.keys(OBJECT_ARRAY_PATHS)) {
+        expect(cataloged).toContain(endpoint);
+      }
+    });
+
+    it('lists a nested array by its full path, after the array that holds it', () => {
+      for (const paths of Object.values(OBJECT_ARRAY_PATHS)) {
+        expect(new Set(paths).size).toBe(paths.length);
+        for (const [i, path] of paths.entries()) {
+          for (const [j, outer] of paths.entries()) {
+            if (path.startsWith(`${outer}.`)) expect(j).toBeLessThan(i);
+          }
+        }
+      }
+    });
+
+    it.each([
+      ['drug/drugsfda', 'submissions.application_docs', 'submissions'],
+      ['drug/drugsfda', 'submissions.submission_property_type', 'submissions'],
+      ['drug/drugsfda', 'products.active_ingredients', 'products'],
+      ['animalandveterinary/event', 'drug.active_ingredients', 'drug'],
+      ['drug/orangebook', 'products.active_ingredients', 'products'],
+    ])('%s lists %s after %s, the array that holds it', (endpoint, nested, holder) => {
+      const paths = OBJECT_ARRAY_PATHS[endpoint] ?? [];
+      expect(paths).toContain(holder);
+      expect(paths.indexOf(holder)).toBeLessThan(paths.indexOf(nested));
+    });
+
+    it('names a prefix of a cataloged field, or records why the catalog lists none under it', () => {
+      const unexplained = tablePairs().filter(
+        ({ endpoint, path }) =>
+          fieldsUnder(endpoint, path).length === 0 &&
+          !UNCATALOGED_PARENTS.has(`${endpoint} ${path}`),
+      );
+      expect(unexplained).toEqual([]);
+    });
+
+    it.each([
+      ['drug/orangebook', 'products', 'products.application_number'],
+      ['drug/orangebook', 'products.active_ingredients', 'products.active_ingredients.name'],
+      ['drug/orangebook', 'patents', 'patents.patent_number'],
+      ['drug/orangebook', 'exclusivity', 'exclusivity.exclusivity_code'],
+      ['cosmetic/event', 'products', 'products.product_name'],
+    ])('%s %s holds the cataloged %s, so it needs no recorded reason', (endpoint, path, field) => {
+      expect(fieldsUnder(endpoint, path)).toContain(field);
+      expect(UNCATALOGED_PARENTS.has(`${endpoint} ${path}`)).toBe(false);
+    });
+
+    it('keeps a recorded reason only for a listed path the catalog still lists nothing under', () => {
+      const listed = new Set(tablePairs().map(({ endpoint, path }) => `${endpoint} ${path}`));
+      for (const key of UNCATALOGED_PARENTS.keys()) {
+        expect(listed).toContain(key);
+        const [endpoint = '', path = ''] = key.split(' ');
+        expect(fieldsUnder(endpoint, path), key).toEqual([]);
+      }
+    });
+  });
+
+  /**
+   * Arrays holding one entry on every record, where two clauses on the array's
+   * own fields cannot be met by different entries. A walk of all 48,990
+   * drug/orangebook records (2026-11-22) found one `products` entry on each;
+   * its `patents` and `exclusivity` hold up to 149 and 12.
+   */
+  describe('SINGLE_ENTRY_ARRAYS', () => {
+    it('marks the Orange Book products block alone', () => {
+      expect(SINGLE_ENTRY_ARRAYS).toEqual({ 'drug/orangebook': ['products'] });
+    });
+
+    it('marks only arrays its endpoint lists', () => {
+      for (const [endpoint, paths] of Object.entries(SINGLE_ENTRY_ARRAYS)) {
+        for (const path of paths) expect(OBJECT_ARRAY_PATHS[endpoint], endpoint).toContain(path);
+      }
+    });
+  });
+
   describe('countVerdict', () => {
     it('accepts the recorded expression', () => {
       expect(countVerdict('drug/enforcement', 'classification.exact')).toEqual({
@@ -355,6 +736,21 @@ describe('field catalog', () => {
         expect(verdict.alternatives).toContain('medical_specialty_description.exact');
         expect(verdict.alternatives).not.toContain('device_class');
         expect(verdict.alternatives).not.toContain('device_class.exact');
+      }
+    });
+
+    /**
+     * #96 — `submission_type_id` answers a 5xx bare and `Nothing to count` with
+     * .exact (probed 2026-11-22). Uncataloged, each failure's hint offered the
+     * other form; cataloged `none`, both forms fail without one.
+     */
+    it('reports device/classification submission_type_id as counting in no form', () => {
+      for (const expression of ['submission_type_id', 'submission_type_id.exact']) {
+        const verdict = countVerdict('device/classification', expression);
+        expect(verdict.kind, expression).toBe('none');
+        if (verdict.kind !== 'none') return;
+        expect(verdict.alternatives).not.toContain('submission_type_id');
+        expect(verdict.alternatives).not.toContain('submission_type_id.exact');
       }
     });
 

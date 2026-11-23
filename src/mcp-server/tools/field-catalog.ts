@@ -2,10 +2,13 @@
  * @fileoverview Static catalog of searchable openFDA field paths, grouped by endpoint.
  * Used by openfda_describe_fields (proactive discovery), the empty-result/error
  * notice enrichment in search tools (reactive guidance), and the openFDA service's
- * `count` error classification (via {@link countVerdict}).
+ * `count` error classification (via {@link countVerdict}). Also records the paths
+ * that hold arrays of objects per endpoint ({@link OBJECT_ARRAY_PATHS}), and
+ * which of them hold one entry per record ({@link SINGLE_ENTRY_ARRAYS}).
  * @module mcp-server/tools/field-catalog
  */
 
+import { DEVICE_CLASSES, SUBMISSION_TYPES } from '@/mcp-server/tools/device-codes.js';
 import {
   ADMINISTRATION_ROUTES,
   codeList,
@@ -22,6 +25,13 @@ import {
   REPORTER_QUALIFICATIONS,
   TREATMENT_DURATION_UNITS,
 } from '@/mcp-server/tools/drug-event-codes.js';
+
+/** The label a catalog note quotes for one code; throws on a code the table lacks, like {@link codeList}. */
+function deviceCode(codes: ReadonlyMap<string, string>, code: string): string {
+  const label = codes.get(code);
+  if (label === undefined) throw new Error(`No label for code ${code}`);
+  return label;
+}
 
 /**
  * How openFDA aggregates a field in a `count` query, verified by probing
@@ -270,6 +280,12 @@ const FIELD_CATALOG: Record<string, FieldGroup[]> = {
           type: 'string',
           countable: 'exact',
           note: 'NDA, ANDA, or BLA number, or an OTC monograph ID (e.g. "M020")',
+        },
+        {
+          path: 'openfda.is_original_packager',
+          type: 'boolean',
+          countable: 'both',
+          note: "Set true on the original packager's label (filter with openfda.is_original_packager:true); absent on repackagers' copies and on labels with an empty openfda block, never stored false",
         },
       ],
     },
@@ -524,6 +540,12 @@ const FIELD_CATALOG: Record<string, FieldGroup[]> = {
           note: 'Status date (YYYYMMDD)',
         },
         {
+          path: 'submissions.submission_class_code',
+          type: 'string',
+          countable: 'bare',
+          note: 'Submission class: "TYPE 1" (new molecular entity; "TYPE 1/4" is a separate value) through "TYPE 10", or a supplement class such as "LABELING", "EFFICACY", "MANUF (CMC)"',
+        },
+        {
           path: 'submissions.review_priority',
           type: 'string',
           countable: 'bare',
@@ -553,6 +575,172 @@ const FIELD_CATALOG: Record<string, FieldGroup[]> = {
           type: 'string',
           countable: 'exact',
           note: 'Substance name',
+        },
+      ],
+    },
+  ],
+
+  'drug/orangebook': [
+    {
+      label: 'Application',
+      fields: [
+        {
+          path: 'products.application_number',
+          type: 'string',
+          countable: 'bare',
+          note: 'Application number, six digits with no prefix (e.g. "202155", which Drugs@FDA writes NDA202155); pair it with products.application_type',
+        },
+        {
+          path: 'products.application_type',
+          type: 'string',
+          countable: 'bare',
+          note: 'Application type: "N" (NDA) or "A" (ANDA)',
+        },
+        {
+          path: 'products.application_name',
+          type: 'string',
+          countable: 'exact',
+          note: 'Applicant (e.g. "BRISTOL MYERS SQUIBB")',
+        },
+      ],
+    },
+    {
+      label: 'Product',
+      fields: [
+        {
+          path: 'product_number',
+          type: 'string',
+          countable: 'bare',
+          note: 'Product number within the application (e.g. "001"); each strength is its own product record',
+        },
+        {
+          path: 'products.brand_name',
+          type: 'string',
+          countable: 'exact',
+          note: 'Brand name (e.g. "ELIQUIS")',
+        },
+        {
+          path: 'approval_date',
+          type: 'date',
+          countable: 'bare',
+          note: 'Product approval date (YYYYMMDD)',
+        },
+        {
+          path: 'approved_prior_to_1982',
+          type: 'boolean',
+          countable: 'bare',
+          note: 'Set true on a product approved before 1982, which carries no approval_date (approved_prior_to_1982:true); absent otherwise',
+        },
+        {
+          path: 'products.marketing_status',
+          type: 'string',
+          countable: 'exact',
+          note: 'Marketing status (e.g. "HUMAN PRESCRIPTION DRUG", "HUMAN OTC DRUG", "DISCONTINUED")',
+        },
+        {
+          path: 'products.dosage_form',
+          type: 'string',
+          countable: 'exact',
+          note: 'Dosage form (e.g. "TABLET")',
+        },
+        {
+          path: 'products.route',
+          type: 'string',
+          countable: 'exact',
+          note: 'Route of administration (e.g. "ORAL")',
+        },
+        {
+          path: 'products.therapeutic_equivalence_codes',
+          type: 'string',
+          countable: 'bare',
+          note: 'Therapeutic equivalence codes (e.g. "AB"), on rated products only',
+        },
+        {
+          path: 'products.reference_listed_drug',
+          type: 'boolean',
+          countable: 'bare',
+          note: 'Whether the product is a reference listed drug (true or false)',
+        },
+        {
+          path: 'products.reference_standard',
+          type: 'boolean',
+          countable: 'bare',
+          note: 'Whether FDA selected the product as the reference standard for ANDA bioequivalence studies (true or false)',
+        },
+      ],
+    },
+    {
+      label: 'Active ingredients',
+      fields: [
+        {
+          path: 'products.active_ingredients.name',
+          type: 'string',
+          countable: 'exact',
+          note: 'Active ingredient name (e.g. "APIXABAN")',
+        },
+        {
+          path: 'products.active_ingredients.strength',
+          type: 'string',
+          countable: 'bare',
+          note: 'Active ingredient strength (e.g. "5MG")',
+        },
+      ],
+    },
+    {
+      label: 'Patents',
+      fields: [
+        {
+          path: 'patents.patent_number',
+          type: 'string',
+          countable: 'bare',
+          note: 'Patent number (e.g. "6967208"); a "*PED" suffix marks its pediatric exclusivity extension',
+        },
+        {
+          path: 'patents.expiration_date',
+          type: 'date',
+          countable: 'bare',
+          note: 'Patent expiration date with extensions (YYYYMMDD)',
+        },
+        {
+          path: 'patents.patent_use_code',
+          type: 'string',
+          countable: 'bare',
+          note: 'Method-of-use code (e.g. "U-1729")',
+        },
+        {
+          path: 'patents.patent_submission_date',
+          type: 'date',
+          countable: 'bare',
+          note: 'Date FDA received the patent information (YYYYMMDD); not every patent entry carries one',
+        },
+        {
+          path: 'patents.drug_substance_flag',
+          type: 'boolean',
+          countable: 'bare',
+          note: 'Set true when the patent claims the drug substance; absent otherwise',
+        },
+        {
+          path: 'patents.drug_product_flag',
+          type: 'boolean',
+          countable: 'bare',
+          note: 'Set true when the patent claims the drug product; absent otherwise',
+        },
+      ],
+    },
+    {
+      label: 'Exclusivity',
+      fields: [
+        {
+          path: 'exclusivity.exclusivity_code',
+          type: 'string',
+          countable: 'bare',
+          note: 'Exclusivity code (e.g. "NCE", "PED", "NPP")',
+        },
+        {
+          path: 'exclusivity.exclusivity_expiration_date',
+          type: 'date',
+          countable: 'bare',
+          note: 'Exclusivity expiration date (YYYYMMDD)',
         },
       ],
     },
@@ -630,13 +818,25 @@ const FIELD_CATALOG: Record<string, FieldGroup[]> = {
           path: 'initial_posting_date',
           type: 'date',
           countable: 'bare',
-          note: 'Date the shortage was first posted — stored MM/DD/YYYY; query as [2026-01-01 TO 2026-12-31] or [01/01/2026 TO 12/31/2026], never YYYYMMDD (matches nothing)',
+          note: 'Date the shortage was first posted — stored MM/DD/YYYY, queried as YYYY-MM-DD (e.g. [2026-01-01 TO 2026-12-31]); a YYYYMMDD, M/D/YYYY, or YYYY-M-D date is rewritten to that form',
         },
         {
           path: 'update_date',
           type: 'date',
           countable: 'bare',
-          note: 'Date of the last update — stored MM/DD/YYYY; query as [2026-01-01 TO 2026-12-31] or [01/01/2026 TO 12/31/2026], never YYYYMMDD (matches nothing)',
+          note: 'Date of the last update — stored MM/DD/YYYY, queried as YYYY-MM-DD (e.g. [2026-01-01 TO 2026-12-31]); a YYYYMMDD, M/D/YYYY, or YYYY-M-D date is rewritten to that form',
+        },
+        {
+          path: 'discontinued_date',
+          type: 'date',
+          countable: 'bare',
+          note: 'Date the presentation was discontinued — stored MM/DD/YYYY, queried as YYYY-MM-DD (e.g. [2026-01-01 TO 2026-12-31]); a YYYYMMDD, M/D/YYYY, or YYYY-M-D date is rewritten to that form',
+        },
+        {
+          path: 'change_date',
+          type: 'date',
+          countable: 'bare',
+          note: 'Date of the last change to the presentation — stored MM/DD/YYYY, queried as YYYY-MM-DD (e.g. [2026-01-01 TO 2026-12-31]); a YYYYMMDD, M/D/YYYY, or YYYY-M-D date is rewritten to that form',
         },
       ],
     },
@@ -795,6 +995,119 @@ const FIELD_CATALOG: Record<string, FieldGroup[]> = {
           type: 'date',
           countable: 'bare',
           note: 'Recall initiation date',
+        },
+      ],
+    },
+  ],
+
+  'cosmetic/event': [
+    {
+      label: 'Report',
+      fields: [
+        {
+          path: 'report_number',
+          type: 'string',
+          countable: 'bare',
+          note: 'Report ID, unique per report',
+        },
+        {
+          path: 'initial_received_date',
+          type: 'date',
+          countable: 'bare',
+          note: 'Date FDA first received the report (YYYYMMDD)',
+        },
+        {
+          path: 'latest_received_date',
+          type: 'date',
+          countable: 'bare',
+          note: 'Date FDA received the latest version of the report (YYYYMMDD)',
+        },
+        {
+          path: 'event_date',
+          type: 'string',
+          countable: 'bare',
+          note: 'Event start date as free text, not a date ("08-Jul-14", "01-Apr", "2015"): search a written value (event_date:"2015"); a YYYYMMDD range matches nothing',
+        },
+      ],
+    },
+    {
+      label: 'Products and reactions',
+      fields: [
+        {
+          path: 'products.product_name',
+          type: 'string',
+          countable: 'exact',
+          note: 'Product name as reported (e.g. "J And J Baby Powder")',
+        },
+        {
+          path: 'products.role',
+          type: 'string',
+          countable: 'bare',
+          note: 'Product role: "Suspect" or "Concomitant"',
+        },
+        {
+          path: 'reactions',
+          type: 'string',
+          countable: 'exact',
+          note: 'Reported reactions — an array of MedDRA terms (e.g. "Ovarian Cancer")',
+        },
+        {
+          path: 'outcomes',
+          type: 'string',
+          countable: 'exact',
+          note: 'Outcomes (e.g. "Death", "Hospitalization", "Other Serious or Important Medical Event")',
+        },
+      ],
+    },
+    {
+      label: 'Report details',
+      fields: [
+        {
+          path: 'report_type',
+          type: 'string',
+          countable: 'bare',
+          note: 'Report type (e.g. "Pre-MoCRA", "Expedited (15-Day)", "Direct")',
+        },
+        {
+          path: 'report_version',
+          type: 'string',
+          countable: 'bare',
+          note: 'Report version (e.g. "1")',
+        },
+        {
+          path: 'legacy_report_id',
+          type: 'string',
+          countable: 'bare',
+          note: 'CAERS number of the same report, its report_number on food/event (e.g. "2023-CFS-006510"); absent on some reports',
+        },
+        {
+          path: 'meddra_version',
+          type: 'string',
+          countable: 'bare',
+          note: 'MedDRA version of the reaction terms (e.g. "28")',
+        },
+      ],
+    },
+    {
+      label: 'Patient',
+      fields: [
+        {
+          path: 'patient.gender',
+          type: 'string',
+          countable: 'bare',
+          note: 'Patient gender in stored case: "Female" or "Male" ("female" matches nothing)',
+        },
+        {
+          path: 'patient.age',
+          type: 'string',
+          countable: 'bare',
+          note: 'Patient age as a numeric string (unit in patient.age_unit)',
+        },
+        {
+          path: 'patient.age_unit',
+          type: 'string',
+          countable: 'bare',
+          note: 'Age unit (e.g. "Year(s)", "Month(s)", "Decade(s)")',
         },
       ],
     },
@@ -1138,7 +1451,7 @@ const FIELD_CATALOG: Record<string, FieldGroup[]> = {
           path: 'device_class',
           type: 'string',
           countable: 'none',
-          note: 'Device class: "1", "2", "3", "U" (unclassified), "N" (not classified), or "F" (HDE)',
+          note: `Device class: "1", "2", "3", "U" (${deviceCode(DEVICE_CLASSES, 'U')}), "N" (${deviceCode(DEVICE_CLASSES, 'N')}), or "f" (${deviceCode(DEVICE_CLASSES, 'f')}, stored lowercase; "F" matches too)`,
         },
         {
           path: 'regulation_number',
@@ -1147,10 +1460,40 @@ const FIELD_CATALOG: Record<string, FieldGroup[]> = {
           note: 'CFR regulation number (e.g. "878.4800")',
         },
         {
+          path: 'submission_type_id',
+          type: 'string',
+          countable: 'none',
+          note: `Premarket path the code is limited to: ${[...SUBMISSION_TYPES].map(([code, label]) => `"${code}" = ${label}`).join(', ')}; also stores 6, 7, 8, and empty`,
+        },
+        {
           path: 'medical_specialty_description',
           type: 'string',
           countable: 'exact',
           note: 'Review panel / medical specialty (e.g. "General, Plastic Surgery")',
+        },
+        {
+          path: 'medical_specialty',
+          type: 'string',
+          countable: 'none',
+          note: 'Two-letter code of the regulation medical specialty (e.g. "OR"), empty where regulation_number is; medical_specialty_description names it',
+        },
+        {
+          path: 'review_panel',
+          type: 'string',
+          countable: 'none',
+          note: 'Two-letter 510(k) review panel code (e.g. "CH"), as advisory_committee on 510(k) records; can differ from medical_specialty',
+        },
+        {
+          path: 'definition',
+          type: 'string',
+          countable: 'none',
+          note: 'Definition of the device type, empty on most codes',
+        },
+        {
+          path: 'unclassified_reason',
+          type: 'string',
+          countable: 'none',
+          note: 'Why a "U" (unclassified) or "N" (not classified) code has no class: "1" = pre-amendment, "3" = for export only, "4" = unknown, "6" = enforcement discretion; also stores 9 and 11; empty on classified codes',
         },
       ],
     },
@@ -1181,6 +1524,12 @@ const FIELD_CATALOG: Record<string, FieldGroup[]> = {
           countable: 'none',
           note: '"Y" if eligible for third-party 510(k) review',
         },
+        {
+          path: 'summary_malfunction_reporting',
+          type: 'string',
+          countable: 'bare',
+          note: 'Voluntary Malfunction Summary Reporting eligibility: "Eligible" or "Ineligible"',
+        },
       ],
     },
     {
@@ -1203,6 +1552,12 @@ const FIELD_CATALOG: Record<string, FieldGroup[]> = {
           type: 'string',
           countable: 'bare',
           note: 'FDA Establishment Identifier numbers',
+        },
+        {
+          path: 'openfda.pma_number',
+          type: 'string',
+          countable: 'bare',
+          note: 'PMA numbers mapped to this product code (e.g. "P950037")',
         },
       ],
     },
@@ -1734,6 +2089,208 @@ const FIELD_CATALOG: Record<string, FieldGroup[]> = {
       ],
     },
   ],
+
+  'other/nsde': [
+    {
+      label: 'Package',
+      fields: [
+        {
+          path: 'package_ndc11',
+          type: 'string',
+          countable: 'bare',
+          note: 'NDC11: 11 digits, no hyphens (e.g. "00093171201"); one row per package',
+        },
+        {
+          path: 'package_ndc',
+          type: 'string',
+          countable: 'none',
+          note: 'Hyphenated 10-digit package NDC (e.g. "0093-1712-01"); a two-segment product NDC ("63629-3292") matches every package of the product',
+        },
+        {
+          path: 'proprietary_name',
+          type: 'string',
+          countable: 'bare',
+          note: 'Proprietary name, matched as the whole value in stored case ("Warfarin Sodium"; "warfarin sodium" or "Warfarin" match nothing)',
+        },
+        {
+          path: 'dosage_form',
+          type: 'string',
+          countable: 'bare',
+          note: 'Dosage form (e.g. "TABLET", "TABLET, FILM COATED")',
+        },
+        {
+          path: 'product_type',
+          type: 'string',
+          countable: 'bare',
+          note: 'Product type (e.g. "HUMAN PRESCRIPTION DRUG", "HUMAN OTC DRUG")',
+        },
+        {
+          path: 'billing_unit',
+          type: 'string',
+          countable: 'bare',
+          note: 'NCPDP billing unit (e.g. "EA", "ML", "GM"), set on some packages only',
+        },
+      ],
+    },
+    {
+      label: 'Marketing',
+      fields: [
+        {
+          path: 'marketing_category',
+          type: 'string',
+          countable: 'bare',
+          note: 'Marketing category in stored case (e.g. "ANDA", "OTC Monograph Drug"; "anda" matches nothing)',
+        },
+        {
+          path: 'application_number_or_citation',
+          type: 'string',
+          countable: 'bare',
+          note: 'Application number or monograph citation (e.g. "ANDA040616", "M020", "part333A")',
+        },
+        {
+          path: 'marketing_start_date',
+          type: 'date',
+          countable: 'bare',
+          note: 'Date marketing of the package began (YYYYMMDD)',
+        },
+        {
+          path: 'marketing_end_date',
+          type: 'date',
+          countable: 'bare',
+          note: 'Expiration date of the last lot distributed (YYYYMMDD), absent while the package is marketed and possibly in the future',
+        },
+        {
+          path: 'inactivation_date',
+          type: 'date',
+          countable: 'bare',
+          note: 'Date FDA inactivated the listing data (YYYYMMDD)',
+        },
+        {
+          path: 'reactivation_date',
+          type: 'date',
+          countable: 'bare',
+          note: 'Date FDA reactivated listing data it had inactivated (YYYYMMDD)',
+        },
+      ],
+    },
+  ],
+
+  'transparency/crl': [
+    {
+      label: 'Letter',
+      fields: [
+        {
+          path: 'application_number',
+          type: 'string',
+          countable: 'bare',
+          note: 'Application number with a space (e.g. "NDA 210274", "BLA 761082"), matched only whole and as stored: a wildcard reaches the prefix (NDA*), never the number past the space; a few letters spell it otherwise ("BL 125745", "NDA 217225/S-001"), which text:"217225" reaches',
+        },
+        {
+          path: 'company_name',
+          type: 'string',
+          countable: 'exact',
+          note: 'Applicant company name',
+        },
+        {
+          path: 'letter_date',
+          type: 'date',
+          countable: 'bare',
+          note: 'Date the letter was signed — stored MM/DD/YYYY; query as YYYYMMDD (e.g. [20240101 TO 20241231])',
+        },
+        {
+          path: 'letter_type',
+          type: 'string',
+          countable: 'bare',
+          note: 'Letter type (e.g. "COMPLETE RESPONSE", "TENTATIVE APPROVAL")',
+        },
+        {
+          path: 'approval_status',
+          type: 'string',
+          countable: 'bare',
+          note: 'Approval status of the application: "Approved" or "Unapproved", in that case ("unapproved" matches nothing)',
+        },
+        {
+          path: 'letter_year',
+          type: 'string',
+          countable: 'bare',
+          note: 'Year of the letter (e.g. "2024")',
+        },
+        {
+          path: 'file_name',
+          type: 'string',
+          countable: 'bare',
+          note: 'Source PDF (e.g. "210274_2023_Orig1s000OtherActionLtrs.pdf"); one PDF can hold several letters',
+        },
+      ],
+    },
+    {
+      label: 'Signer',
+      fields: [
+        {
+          path: 'approver_name',
+          type: 'string',
+          countable: 'exact',
+          note: 'Signing official as printed; some letters name an FDA center instead, or "(b) (4)" where the name is withheld',
+        },
+        {
+          path: 'approver_center',
+          type: 'string',
+          countable: 'exact',
+          note: 'FDA center and offices that issued the letter (e.g. "Center for Drug Evaluation and Research", "Office of New Drugs")',
+        },
+      ],
+    },
+    {
+      label: 'Text',
+      fields: [
+        {
+          path: 'text',
+          type: 'string',
+          countable: 'none',
+          note: 'Full letter text, phrase-searchable (e.g. text:"bioequivalence")',
+        },
+      ],
+    },
+  ],
+};
+
+/**
+ * Per-endpoint dotted paths whose value is an array of objects, read from live
+ * records (2026-11-22). openFDA tests each search clause against the whole
+ * record, so AND-ed clauses on fields under one of these arrays can be met by
+ * different elements. A nested array is listed by its full path after its
+ * parent (`submissions`, `submissions.application_docs`). `transparency/crl`
+ * and `other/nsde` were read too and hold none (their arrays carry strings, or
+ * the record is flat); any other endpoint absent here has not been surveyed,
+ * which is not a claim that it has no such array.
+ */
+export const OBJECT_ARRAY_PATHS: Readonly<Record<string, readonly string[]>> = {
+  'drug/drugsfda': [
+    'submissions',
+    'submissions.application_docs',
+    'submissions.submission_property_type',
+    'products',
+    'products.active_ingredients',
+  ],
+  'drug/event': ['patient.drug', 'patient.reaction'],
+  'device/event': ['device', 'patient', 'mdr_text'],
+  'food/event': ['products'],
+  'animalandveterinary/event': ['drug', 'drug.active_ingredients', 'reaction', 'outcome'],
+  'drug/ndc': ['active_ingredients', 'packaging'],
+  'drug/orangebook': ['products', 'products.active_ingredients', 'patents', 'exclusivity'],
+  'cosmetic/event': ['products'],
+};
+
+/**
+ * Arrays in {@link OBJECT_ARRAY_PATHS} that hold exactly one entry on every
+ * record of their endpoint, read from every record: each of the 48,990
+ * `drug/orangebook` records (2026-11-22) carries one `products` entry, while
+ * its `patents` and `exclusivity` hold up to 149 and 12. Two clauses on an
+ * array's own fields here cannot be met by different entries; an array listed
+ * under it still can (one product, several ingredients).
+ */
+export const SINGLE_ENTRY_ARRAYS: Readonly<Record<string, readonly string[]>> = {
+  'drug/orangebook': ['products'],
 };
 
 /**

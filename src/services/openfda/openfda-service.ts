@@ -3,7 +3,7 @@
  * @module services/openfda/openfda-service
  */
 
-import type { Context } from '@cyanheads/mcp-ts-core';
+import { type Context, z } from '@cyanheads/mcp-ts-core';
 import {
   forbidden,
   McpError,
@@ -16,6 +16,8 @@ import {
 import { fetchWithTimeout, type RetryOptions, withRetry } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig, type ServerConfig } from '@/config/server-config.js';
 import { type CountVerdict, countVerdict } from '@/mcp-server/tools/field-catalog.js';
+import { OPENFDA_MAX_SKIP } from '@/mcp-server/tools/schema-utils.js';
+import { decodeEntities } from './html-entities.js';
 import { getMirror, planMirrorLookup, runMirrorLookup } from './mirror/index.js';
 import type { OpenFdaMeta, OpenFdaQueryParams, OpenFdaResponse } from './types.js';
 
@@ -101,6 +103,15 @@ const OPENFDA_NOTHING_TO_COUNT = /nothing to count/i;
 const HTML_TITLE = /<title[^>]*>([^<]*)<\/title>/i;
 
 /**
+ * The fields of an openFDA error body the classifier reads. A body off this
+ * shape — a field of another type, a bare `error` string, JSON that is no
+ * object — contributes its raw text instead. A null field reads as absent.
+ */
+const OPENFDA_ERROR_BODY = z.object({
+  error: z.object({ message: z.string().nullish(), details: z.string().nullish() }),
+});
+
+/**
  * openFDA's marker for aggregating an analyzed text field: Elasticsearch refuses
  * to build fielddata for it and answers HTTP 5xx with
  * `illegal_argument_exception`. On a `count` query that is the `.exact`-missing
@@ -113,6 +124,45 @@ const OPENFDA_NOT_AGGREGATABLE_5XX = /illegal_argument_exception/i;
 
 /** Countable expressions a no-countable-form `not_aggregatable` lists before truncating. */
 const MAX_ALTERNATIVES = 8;
+
+/**
+ * openFDA's 400 message for a `skip` above its ceiling (`Skip value must 25000
+ * or less.`). Anchored at the start of the message: a refused search echoes the
+ * caller's query in its message, and a `25000` inside it is not this failure.
+ */
+const OPENFDA_SKIP_CEILING = /^skip value must 25000\b/i;
+
+/** One link-value of a `Link` header (RFC 8288): its `<target>`, then its parameters. */
+const LINK_VALUE = /<([^<>]*)>([^<,]*)/g;
+
+/**
+ * The `search_after` parameter of the `rel="next"` target in an openFDA `Link`
+ * header, or `undefined` when there is no header, no next link, or a next link
+ * without one — from a page read at `skip > 0` openFDA links by `skip` instead.
+ * An empty value is no continuation (openFDA reads it as the first page). The
+ * target URL echoes the request and goes no further than this function.
+ */
+export function searchAfterOfNextLink(header: string | null): string | undefined {
+  for (const [, target = '', params = ''] of header?.matchAll(LINK_VALUE) ?? []) {
+    if (namesNextRel(params)) {
+      return URL.parse(target)?.searchParams.get('search_after') || undefined;
+    }
+  }
+  return undefined;
+}
+
+/** Whether a link-value's parameters hold a `rel` whose relation types include `next`. */
+function namesNextRel(params: string): boolean {
+  return params.split(';').some((param) => {
+    const eq = param.indexOf('=');
+    if (eq === -1 || param.slice(0, eq).trim().toLowerCase() !== 'rel') return false;
+    const types = param
+      .slice(eq + 1)
+      .trim()
+      .replace(/^"|"$/g, '');
+    return types.toLowerCase().split(/\s+/).includes('next');
+  });
+}
 
 /**
  * The slice of {@link ServerConfig} the client reads. Mirror settings are
@@ -263,7 +313,9 @@ export class OpenFdaService {
             { signal: ctx.signal, expectedStatuses: [404] },
           );
           const data = (await response.json()) as Record<string, unknown>;
-          return this.normalizeResponse<T>(data, endpoint);
+          // Read with the body it came with, so a retried attempt keeps only its own link.
+          const nextSearchAfter = searchAfterOfNextLink(response.headers.get('link'));
+          return this.normalizeResponse<T>(data, endpoint, params, nextSearchAfter);
         } catch (error) {
           return await this.classifyError<T>(error, endpoint, params, ctx, deadlineAtMs);
         }
@@ -289,6 +341,10 @@ export class OpenFdaService {
    * wrap lives here, at the one place every request is built — side requests and
    * server-composed queries included — so callers, the mirror gate, and echoed
    * queries all keep the unwrapped string.
+   *
+   * A `search_after` continuation goes out as openFDA's own next link does:
+   * `skip=0` beside the value, whatever `skip` the params carry — openFDA
+   * answers a skip above 0 with `search_after` with a 400.
    */
   private buildUrl(endpoint: string, params: OpenFdaQueryParams): URL {
     const url = new URL(`/${endpoint}.json`, this.baseUrl);
@@ -296,14 +352,25 @@ export class OpenFdaService {
     if (params.count) url.searchParams.set('count', params.count);
     if (params.sort) url.searchParams.set('sort', params.sort);
     if (params.limit !== undefined) url.searchParams.set('limit', String(params.limit));
-    if (params.skip !== undefined) url.searchParams.set('skip', String(params.skip));
+    if (params.searchAfter) {
+      url.searchParams.set('skip', '0');
+      url.searchParams.set('search_after', params.searchAfter.value);
+    } else if (params.skip !== undefined) {
+      url.searchParams.set('skip', String(params.skip));
+    }
     if (this.apiKey) url.searchParams.set('api_key', this.apiKey);
     return url;
   }
 
+  /**
+   * The normalized page. openFDA reports `skip: 0` on every `search_after`
+   * page, so a continuation reports its walk position instead.
+   */
   private normalizeResponse<T>(
     data: Record<string, unknown>,
     endpoint: string,
+    params: OpenFdaQueryParams,
+    nextSearchAfter: string | undefined,
   ): OpenFdaResponse<T> {
     const meta = data.meta as Record<string, unknown> | undefined;
     const pagination = meta?.results as Record<string, unknown> | undefined;
@@ -314,11 +381,12 @@ export class OpenFdaService {
     return {
       meta: {
         total: (pagination?.total as number) ?? 0,
-        skip: (pagination?.skip as number) ?? 0,
+        skip: params.searchAfter?.position ?? (pagination?.skip as number) ?? 0,
         limit: (pagination?.limit as number) ?? 0,
         lastUpdated,
       },
       results: (data.results as T[]) ?? [],
+      ...(nextSearchAfter !== undefined && { nextSearchAfter }),
     };
   }
 
@@ -370,7 +438,7 @@ export class OpenFdaService {
             deadlineAtMs,
           );
         }
-      } else if ((params.skip ?? 0) > 0) {
+      } else if (params.searchAfter || (params.skip ?? 0) > 0) {
         return await this.resolvePastEnd<T>(endpoint, params, ctx, deadlineAtMs);
       }
       return this.emptyResult<T>(endpoint, params);
@@ -405,14 +473,12 @@ export class OpenFdaService {
     }
 
     if (status === 400) {
-      if (/25000/i.test(body)) {
-        throw validationError(
-          'Pagination limit reached: skip cannot exceed 25000. Narrow the search query with additional filters or date ranges instead of increasing skip.',
-          {
-            reason: 'pagination_limit_reached',
-            endpoint,
-          },
-        );
+      // The fact only: each tool's declared recovery names the ways past it.
+      if (OPENFDA_SKIP_CEILING.test(message)) {
+        throw validationError(`Pagination limit reached: skip cannot exceed ${OPENFDA_MAX_SKIP}.`, {
+          reason: 'pagination_limit_reached',
+          endpoint,
+        });
       }
       throw validationError(
         `openFDA query error: ${message}. Check field names and query syntax — use AND/OR for boolean operators, quotes for exact match.`,
@@ -458,6 +524,8 @@ export class OpenFdaService {
   /**
    * The empty result for a count or search that tallied nothing. `meta` overlays
    * what a resolver learned about it — a recovered total or a disclosure flag.
+   * Its `skip` is where the page started: the walk position on a `search_after`
+   * continuation.
    */
   private emptyResult<T>(
     endpoint: string,
@@ -467,7 +535,7 @@ export class OpenFdaService {
     return {
       meta: {
         total: 0,
-        skip: params.skip ?? 0,
+        skip: params.searchAfter?.position ?? params.skip ?? 0,
         limit: params.limit ?? 0,
         lastUpdated: this.lastUpdatedByEndpoint.get(endpoint) ?? 'unknown',
         ...meta,
@@ -507,12 +575,13 @@ export class OpenFdaService {
   }
 
   /**
-   * Resolve a `No matches found!` 404 on a page at `skip > 0`. openFDA answers a
-   * page past the end of a matched set exactly as it answers a search that
-   * matched nothing, so one `skip=0&limit=0` request for the same search — no
-   * sort, which cannot change a total — settles it: a match returns its total
-   * with no records, a genuine miss 404s again. The extra request runs only on
-   * this path.
+   * Resolve a `No matches found!` 404 on a page at `skip > 0` or on a
+   * `search_after` continuation — openFDA links an exactly full last page, and
+   * that link 404s. openFDA answers a page past the end of a matched set exactly
+   * as it answers a search that matched nothing, so one `skip=0&limit=0` request
+   * for the same search — no sort, which cannot change a total, and no
+   * `search_after` — settles it: a match returns its total with no records, a
+   * genuine miss 404s again. The extra request runs only on this path.
    *
    * Best-effort, on a single attempt: the empty page is a valid answer without
    * the total, so a failed recovery returns it at once, marked `totalUnverified`,
@@ -539,7 +608,7 @@ export class OpenFdaService {
       if (ctx.signal?.aborted) throw error;
       ctx.log.warning('openFDA total recovery for an empty page failed; total left unverified', {
         endpoint,
-        skip: params.skip,
+        skip: params.searchAfter?.position ?? params.skip,
         error: error instanceof Error ? error.message : String(error),
       });
       return this.emptyResult<T>(endpoint, params, { totalUnverified: true });
@@ -632,16 +701,23 @@ export class OpenFdaService {
    * field" hint) then `error.message`, falling back to the raw (possibly
    * truncated) body or the bare HTTP status. An HTML page — a proxy's error page,
    * not openFDA's — contributes only its title: its markup states no reason.
+   *
+   * openFDA HTML-escapes `error.message` — the query a 400 echoes comes back
+   * with `&quot;` for `"` and `&amp;amp;` for the caller's own `&amp;` — so it is
+   * decoded once, restoring the text as sent. `error.details` arrives unescaped
+   * and stays as it is.
    */
   private upstreamMessage(body: string, status: number): string {
     if (!body) return `HTTP ${status}`;
+    let json: unknown;
     try {
-      const parsed = JSON.parse(body) as { error?: { message?: string; details?: string } };
-      const detail = parsed.error?.details ?? parsed.error?.message;
-      if (detail) return detail;
+      json = JSON.parse(body);
     } catch {
-      // Truncated or non-JSON body — fall through to the raw text.
+      // Truncated or non-JSON body — falls through to the raw text.
     }
+    const error = OPENFDA_ERROR_BODY.safeParse(json).data?.error;
+    const detail = error?.details ?? (error?.message && decodeEntities(error.message));
+    if (detail) return detail;
     if (/^\s*</.test(body)) return HTML_TITLE.exec(body)?.[1]?.trim() || `HTTP ${status}`;
     return body;
   }

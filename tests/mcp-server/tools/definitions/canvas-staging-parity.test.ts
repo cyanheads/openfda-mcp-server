@@ -51,13 +51,18 @@ import { AGGREGATE_ROUTE } from '@/services/openfda/canvas-spill.js';
  */
 const STAGING_TOOLS = [
   [searchAdverseEventsTool, { category: 'drug' }, 'No results found.'],
+  [searchAdverseEventsTool, { category: 'cosmetic' }, 'No results found.'],
   [searchAnimalEventsTool, {}, 'No animal adverse event reports found.'],
-  [searchDeviceClearancesTool, { pathway: '510k' }, 'No device clearances found.'],
-  [searchDrugApprovalsTool, {}, 'No drug approvals found.'],
+  [searchDeviceClearancesTool, { pathway: '510k' }, 'No device records found.'],
+  [searchDeviceClearancesTool, { pathway: 'classification' }, 'No device records found.'],
+  [searchDrugApprovalsTool, {}, 'No drug application records found.'],
+  [searchDrugApprovalsTool, { dataset: 'orangebook' }, 'No drug application records found.'],
+  [searchDrugApprovalsTool, { dataset: 'crl' }, 'No drug application records found.'],
   [searchDrugShortagesTool, {}, 'No drug shortage records found.'],
   [searchRecallsTool, { category: 'drug' }, 'No results found.'],
   [searchTobaccoReportsTool, {}, 'No tobacco problem reports found.'],
   [lookupNdcTool, { search: 'aspirin' }, 'No NDC records found.'],
+  [lookupNdcTool, { search: 'aspirin', dataset: 'nsde' }, 'No NDC records found.'],
 ] as const;
 
 const formatText = (
@@ -68,9 +73,9 @@ const formatText = (
   return blocks.map((b) => b.text).join('\n');
 };
 
-describe.each(STAGING_TOOLS.map(([tool, input, miss]) => [tool.name, tool, input, miss] as const))(
-  '%s — canvas staging contract',
-  (_name, tool, baseInput, miss) => {
+describe.each(STAGING_TOOLS.map(([tool, input, miss]) => [tool.name, input, tool, miss] as const))(
+  '%s %j — canvas staging contract',
+  (_name, baseInput, tool, miss) => {
     it('defaults staging off so a plain search costs one upstream request (#30)', () => {
       const parsed = tool.input.parse(baseInput) as { stage: boolean };
       expect(parsed.stage).toBe(false);
@@ -335,9 +340,9 @@ const WIRING_CASES = META_CASES.filter(([name]) => name === 'a miss' || name ===
 describe.each(
   STAGING_TOOLS.map(
     ([tool, input]) =>
-      [tool.name, tool, input, tool === searchRecallsTool ? META_CASES : WIRING_CASES] as const,
+      [tool.name, input, tool, tool === searchRecallsTool ? META_CASES : WIRING_CASES] as const,
   ),
-)('%s — staged meta matches the plain call (#73)', (_name, tool, baseInput, cases) => {
+)('%s %j — staged meta matches the plain call (#73)', (_name, baseInput, tool, cases) => {
   beforeEach(async () => {
     await setMock('@/services/canvas/canvas-accessor.js', undefined);
   });
@@ -382,6 +387,10 @@ describe.each(
       [searchAnimalEventsTool, {}, 'original_receive_date:desc'],
       [searchTobaccoReportsTool, {}, 'date_submitted:desc'],
       [searchDrugApprovalsTool, {}, 'submissions.submission_status_date:desc'],
+      [searchDrugShortagesTool, {}, 'update_date:desc'],
+      [searchAdverseEventsTool, { category: 'cosmetic' }, 'initial_received_date:desc'],
+      [searchDrugApprovalsTool, { dataset: 'orangebook' }, 'approval_date:desc'],
+      [searchDrugApprovalsTool, { dataset: 'crl' }, 'letter_date:desc'],
     ] as const
   ).map(([tool, input, sort]) => [tool.name, input, tool, sort] as const),
 )('%s %j — staged default sort (#88)', (_name, baseInput, tool, sort) => {
@@ -402,6 +411,36 @@ describe.each(
     expect(svc.query.mock.calls.map(([, params]) => params.skip)).toEqual([0, 150, 100]);
     for (const [, params] of svc.query.mock.calls) {
       expect(params).toMatchObject({ sort });
+    }
+  });
+});
+
+/* --- a staged drug-shortage search sends its rewritten dates on every request --- */
+
+/**
+ * `drug/shortages` reads an eight-digit date as epoch milliseconds, so the
+ * schema rewrites one on a date field to YYYY-MM-DD (`shortage-dates.ts`). The
+ * staged path takes the parsed `search` as the plain path does: the probe, the
+ * inline window, and the drain each send the rewritten form.
+ */
+describe('openfda_search_drug_shortages — staged date rewrite', () => {
+  it('stages initial_posting_date:[20260101 TO *] as 2026-01-01 on every request', async () => {
+    const svc = makeSvc(250);
+    await setMock('@/services/openfda/openfda-service.js', svc);
+    await setMock('@/services/canvas/canvas-accessor.js', makeCanvas());
+
+    const staged = await runToolContract(searchDrugShortagesTool, {
+      search: 'initial_posting_date:[20260101 TO *]',
+      limit: 10,
+      skip: 150,
+      stage: true,
+    });
+
+    expect(staged.isError).toBeFalsy();
+    expect(svc.query.mock.calls.map(([, params]) => params.skip)).toEqual([0, 150, 100]);
+    for (const [, params] of svc.query.mock.calls) {
+      expect(params).toMatchObject({ search: 'initial_posting_date:[2026-01-01 TO *]' });
+      expect(JSON.stringify(params)).not.toContain('20260101');
     }
   });
 });

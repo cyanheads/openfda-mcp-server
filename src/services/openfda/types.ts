@@ -26,6 +26,12 @@ export interface OpenFdaMeta {
 /** Normalized openFDA API response. */
 export interface OpenFdaResponse<T = Record<string, unknown>> {
   meta: OpenFdaMeta;
+  /**
+   * The `search_after` parameter of the response's `rel="next"` link, present
+   * only when openFDA linked a next page that carries one. Pass it back as
+   * {@link OpenFdaQueryParams.searchAfter} to read that page.
+   */
+  nextSearchAfter?: string;
   results: T[];
 }
 
@@ -34,6 +40,13 @@ export interface OpenFdaQueryParams {
   count?: string | undefined;
   limit?: number | undefined;
   search?: string | undefined;
+  /**
+   * Continue a `search_after` walk instead of paging by `skip`: `value` is
+   * openFDA's `search_after` parameter from the previous page's link, and
+   * `position` is the number of records the walk has already returned, which
+   * the page reports as `meta.skip`.
+   */
+  searchAfter?: { position: number; value: string } | undefined;
   skip?: number | undefined;
   sort?: string | undefined;
 }

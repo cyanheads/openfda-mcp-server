@@ -19,6 +19,7 @@ import { searchDrugApprovalsTool } from '@/mcp-server/tools/definitions/search-d
 import { searchDrugShortagesTool } from '@/mcp-server/tools/definitions/search-drug-shortages.tool.js';
 import { searchRecallsTool } from '@/mcp-server/tools/definitions/search-recalls.tool.js';
 import { searchTobaccoReportsTool } from '@/mcp-server/tools/definitions/search-tobacco-reports.tool.js';
+import { LIVE_CLASSIFICATION, SPARSE_CLASSIFICATION } from '../../../fixtures/device-records.js';
 import { FOOTNOTE_REF, LIST_IN_CELL, WARFARIN_DOSING } from '../../../fixtures/spl-tables.js';
 
 /** Every scalar leaf under `value`, keyed by its dotted path. */
@@ -174,6 +175,56 @@ const CASES: Array<{ name: string; format: (r: never) => { text: string }[]; res
     },
   },
   {
+    name: 'openfda_search_adverse_events (cosmetic)',
+    format: searchAdverseEventsTool.format as never,
+    /**
+     * Live cosmetic/event reports 24479493 (all 12 top-level fields) and
+     * 24468792 (no patient, outcomes, or event_date).
+     */
+    result: {
+      meta: META,
+      results: [
+        {
+          meddra_version: '28',
+          report_number: '24479493',
+          outcomes: ['Other Serious or Important Medical Event'],
+          patient: { age: '41', age_unit: 'Year(s)', gender: 'Female' },
+          event_date: '01-Apr-21',
+          legacy_report_id: '2021-CFS-004204',
+          latest_received_date: '20210510',
+          reactions: [
+            'Burning Sensation',
+            'Chapped Lips',
+            'Skin Discolouration',
+            'Skin Exfoliation',
+            'Swelling',
+          ],
+          report_type: 'Direct',
+          initial_received_date: '20210510',
+          report_version: '1',
+          products: [
+            { role: 'Suspect', product_name: 'Eos Sweet Mint Lip Balm' },
+            { role: 'Concomitant', product_name: 'Advil' },
+            { role: 'Concomitant', product_name: 'Trazadone' },
+            { role: 'Concomitant', product_name: 'Effexorer' },
+            { role: 'Concomitant', product_name: 'One A Day Womens' },
+          ],
+        },
+        {
+          meddra_version: '28',
+          report_number: '24468792',
+          legacy_report_id: '69912',
+          latest_received_date: '20040624',
+          reactions: ['Hypersensitivity'],
+          report_type: 'Direct',
+          initial_received_date: '20040624',
+          report_version: '1',
+          products: [{ role: 'Suspect', product_name: 'Premier Pigments Tattoo' }],
+        },
+      ],
+    },
+  },
+  {
     name: 'openfda_search_animal_events',
     format: searchAnimalEventsTool.format as never,
     result: {
@@ -263,6 +314,116 @@ const CASES: Array<{ name: string; format: (r: never) => { text: string }[]; res
     },
   },
   {
+    name: 'openfda_search_drug_approvals (orangebook)',
+    format: searchDrugApprovalsTool.format as never,
+    /**
+     * Live drug/orangebook products: ELIQUIS NDA 202155/001 with patents, their
+     * pediatric extensions, and exclusivities; TRANXENE 017105/007, approved
+     * before 1982, with no approval_date, patents, or exclusivity.
+     */
+    result: {
+      meta: META,
+      results: [
+        {
+          approval_date: '20121228',
+          exclusivity: [
+            { exclusivity_code: 'NPP', exclusivity_expiration_date: '20280417' },
+            { exclusivity_code: 'PED', exclusivity_expiration_date: '20281017' },
+          ],
+          patents: [
+            {
+              patent_number: '6967208',
+              expiration_date: '20261121',
+              drug_substance_flag: true,
+              drug_product_flag: true,
+              patent_use_code: 'U-1729',
+              patent_submission_date: '20130125',
+            },
+            { patent_number: '6967208*PED', expiration_date: '20270521' },
+            {
+              patent_number: '9326945',
+              expiration_date: '20310224',
+              drug_product_flag: true,
+              patent_submission_date: '20160526',
+            },
+            { patent_number: '9326945*PED', expiration_date: '20310824' },
+          ],
+          product_number: '001',
+          products: [
+            {
+              active_ingredients: [{ name: 'APIXABAN', strength: '2.5MG' }],
+              brand_name: 'ELIQUIS',
+              application_name: 'BRISTOL MYERS SQUIBB',
+              application_type: 'N',
+              application_number: '202155',
+              therapeutic_equivalence_codes: ['AB'],
+              reference_listed_drug: true,
+              reference_standard: false,
+              marketing_status: 'HUMAN PRESCRIPTION DRUG',
+              application_full_name: 'BRISTOL MYERS SQUIBB CO PHARMACEUTICAL RESEARCH INSTITUTE',
+              dosage_form: 'TABLET',
+              route: 'ORAL',
+            },
+          ],
+        },
+        {
+          approved_prior_to_1982: true,
+          product_number: '007',
+          products: [
+            {
+              active_ingredients: [{ name: 'CLORAZEPATE DIPOTASSIUM', strength: '7.5MG' }],
+              brand_name: 'TRANXENE',
+              application_name: 'AJENAT PHARMS',
+              application_type: 'N',
+              application_number: '017105',
+              reference_listed_drug: true,
+              reference_standard: false,
+              marketing_status: 'HUMAN PRESCRIPTION DRUG',
+              application_full_name: 'AJENAT PHARMACEUTICALS LLC',
+              dosage_form: 'TABLET',
+              route: 'ORAL',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    name: 'openfda_search_drug_approvals (crl)',
+    format: searchDrugApprovalsTool.format as never,
+    /**
+     * Live transparency/crl letters: BLA 761458, filed under two application
+     * numbers, with an empty office list, a null approver title, and its text cut
+     * to its first lines; and the letter that carries only four fields.
+     */
+    result: {
+      meta: META,
+      results: [
+        {
+          letter_date: '12/16/2025',
+          approver_title: null,
+          file_name: 'CRL_BLA761458_20251216.pdf',
+          letter_year: '2025',
+          approval_status: 'Unapproved',
+          approver_name: 'Center for Drug Evaluation and Research',
+          approver_center: [],
+          company_rep: 'David Colton',
+          company_address: '200 Cambridge Park Drive\nCambridge, Massachusetts 02140',
+          company_name: 'GlaxoSmithKline LLC',
+          text: 'f ¢ PN U.S. FOOD & DRUG\n“en\n\nADMINISTRATION\n\nBLA 761458/Original 2\nCOMPLETE RESPONSE',
+          application_number: ['BLA 761458/Original 2', 'BLA 761458'],
+          letter_type: 'COMPLETE RESPONSE',
+        },
+        {
+          letter_date: '02/27/2026',
+          approval_status: 'Unapproved',
+          file_name: 'Under Review for Release',
+          company_name: 'Chiesi Farmaceutici S.p.A',
+        },
+      ],
+    },
+  },
+  {
     name: 'openfda_search_drug_shortages',
     format: searchDrugShortagesTool.format as never,
     result: {
@@ -277,8 +438,8 @@ const CASES: Array<{ name: string; format: (r: never) => { text: string }[]; res
           presentation: 'PRESENTATION-MARKER',
           company_name: 'COMPANY-MARKER',
           contact_info: 'CONTACT-MARKER',
-          initial_posting_date: '20260101',
-          update_date: '20260201',
+          initial_posting_date: '01/01/2026',
+          update_date: '02/01/2026',
           update_type: 'Revised',
           shortage_reason: 'REASON-MARKER',
           openfda: {
@@ -335,6 +496,18 @@ const CASES: Array<{ name: string; format: (r: never) => { text: string }[]; res
           supplement_number: 'S001',
         },
       ],
+    },
+  },
+  {
+    name: 'openfda_search_device_clearances (classification)',
+    format: searchDeviceClearancesTool.format as never,
+    /**
+     * Live device/classification records, each class code and an empty openfda
+     * block among them, plus a sparse one.
+     */
+    result: {
+      meta: META,
+      results: [...LIVE_CLASSIFICATION, SPARSE_CLASSIFICATION],
     },
   },
   {
@@ -445,6 +618,51 @@ const CASES: Array<{ name: string; format: (r: never) => { text: string }[]; res
           brand_name: 'NOFORM-MARKER',
           labeler_name: 'LABELER-MARKER',
           route: ['ROUTEONLY-MARKER'],
+        },
+      ],
+    },
+  },
+  {
+    name: 'openfda_lookup_ndc (nsde)',
+    format: lookupNdcTool.format as never,
+    /** Live other/nsde package rows: the warfarin package, an ended package, and a sparse row. */
+    result: {
+      meta: META,
+      results: [
+        {
+          proprietary_name: 'Warfarin Sodium',
+          application_number_or_citation: 'ANDA040616',
+          product_type: 'HUMAN PRESCRIPTION DRUG',
+          marketing_start_date: '20151019',
+          package_ndc: '0093-1712-01',
+          marketing_category: 'ANDA',
+          billing_unit: 'EA',
+          package_ndc11: '00093171201',
+          dosage_form: 'TABLET',
+        },
+        {
+          proprietary_name: 'Pioglitazone Hydrochloride',
+          marketing_end_date: '20250930',
+          application_number_or_citation: 'ANDA200044',
+          product_type: 'HUMAN PRESCRIPTION DRUG',
+          marketing_start_date: '20170123',
+          package_ndc: '63629-3292-1',
+          reactivation_date: '20211229',
+          inactivation_date: '20200131',
+          marketing_category: 'ANDA',
+          package_ndc11: '63629329201',
+          dosage_form: 'TABLET',
+        },
+        {
+          proprietary_name: 'Aesculus Hippocastanum',
+          product_type: 'HUMAN OTC DRUG',
+          marketing_start_date: '19830303',
+          package_ndc: '0220-0085-41',
+          reactivation_date: '20230712',
+          inactivation_date: '20230130',
+          marketing_category: 'unapproved homeopathic',
+          package_ndc11: '00220008541',
+          dosage_form: 'PELLET',
         },
       ],
     },
@@ -605,7 +823,18 @@ function mapStrings(
  */
 const LABEL_HEADER_LEAF = /^\[\d+\]\.(?:openfda|set_id|effective_time)\b/;
 
-/** Render a case with each rewritable string leaf of its records rewritten. */
+/**
+ * A Complete Response Letter's address and text render as code literals, fenced
+ * when they hold a line break, so their breaks are kept by design; the fence is
+ * pinned in `search-drug-approvals.tool.test.ts`.
+ */
+const LETTER_BLOCK_LEAF = /^\[\d+\]\.(?:company_address|text)$/;
+
+/**
+ * Render a case with each rewritable string leaf of its records rewritten. An
+ * empty string stays as it is: like {@link leaves}, the renderers read it as no
+ * value, and rewriting it would add the line a present value gets.
+ */
 function renderRewritten(
   testCase: (typeof CASES)[number],
   rewrite: (s: string) => string,
@@ -613,8 +842,13 @@ function renderRewritten(
   const result = testCase.result as Record<string, unknown>;
   const key = 'rows' in result ? 'rows' : 'results';
   const label = testCase.name === 'openfda_get_drug_label';
+  const letters = testCase.name === 'openfda_search_drug_approvals (crl)';
   const rewritten = mapStrings(result[key], (s, path) =>
-    !label || LABEL_HEADER_LEAF.test(path) ? rewrite(s) : s,
+    s === '' ||
+    (label && !LABEL_HEADER_LEAF.test(path)) ||
+    (letters && LETTER_BLOCK_LEAF.test(path))
+      ? s
+      : rewrite(s),
   );
   return testCase
     .format({ ...result, [key]: rewritten } as never)

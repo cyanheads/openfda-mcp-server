@@ -7,12 +7,6 @@
  * @module tests/mcp-server/tools/definitions/search-recalls-staging-columns.test
  */
 
-import {
-  CanvasRegistry,
-  DataCanvas,
-  DEFAULT_CANVAS_REGISTRY_OPTIONS,
-  DuckdbProvider,
-} from '@cyanheads/mcp-ts-core/canvas';
 import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -35,10 +29,14 @@ vi.mock('@/services/openfda/openfda-service.js', () => ({
 }));
 
 import { dataframeDescribeTool } from '@/mcp-server/tools/definitions/dataframe-describe.tool.js';
-import { dataframeQueryTool } from '@/mcp-server/tools/definitions/dataframe-query.tool.js';
 import { searchRecallsTool } from '@/mcp-server/tools/definitions/search-recalls.tool.js';
-import { setCanvas } from '@/services/canvas/canvas-accessor.js';
 import { textOf } from '../../../helpers/content.js';
+import {
+  DUCKDB_SUITE,
+  installStagingCanvas,
+  queryStaged,
+  shutdownStagingCanvas,
+} from '../../../helpers/staging-canvas.js';
 
 const TENANT = 'recalls-staging-columns';
 
@@ -247,31 +245,15 @@ const ADDED_COLUMNS = [
   'postal_code',
 ];
 
-let canvas: DataCanvas | undefined;
-
 beforeEach(() => {
-  const provider = new DuckdbProvider({
-    defaultRowLimit: 1000,
-    exportRootPath: '/tmp/openfda-recalls-staging-columns-test',
-    memoryLimitMb: 64,
-    schemaSniffRows: 100,
-  });
-  canvas = new DataCanvas(
-    provider,
-    new CanvasRegistry(provider, { ...DEFAULT_CANVAS_REGISTRY_OPTIONS, sweeperIntervalMs: 0 }),
-  );
-  setCanvas(canvas);
+  installStagingCanvas(TENANT);
   DATASETS['device/recall'] = DEVICE_RECALLS;
   DATASETS['device/enforcement'] = DRUG_ENFORCEMENT.map((r) => ({ ...r, product_type: 'Devices' }));
   DATASETS['food/enforcement'] = DRUG_ENFORCEMENT.map((r) => ({ ...r, product_type: 'Food' }));
   DATASETS['drug/enforcement'] = DRUG_ENFORCEMENT;
 });
 
-afterEach(async () => {
-  if (canvas) await canvas.shutdown(createMockContext({ tenantId: TENANT }));
-  canvas = undefined;
-  setCanvas(undefined);
-});
+afterEach(() => shutdownStagingCanvas(TENANT));
 
 async function stage(input: Record<string, unknown>) {
   const ctx = createMockContext({ errors: searchRecallsTool.errors, tenantId: TENANT });
@@ -292,19 +274,7 @@ async function describeTable(canvasId: string) {
   return { result, text: textOf(dataframeDescribeTool.format!(result)) };
 }
 
-async function query(canvasId: string, sql: string) {
-  const ctx = createMockContext({ errors: dataframeQueryTool.errors, tenantId: TENANT });
-  return dataframeQueryTool.handler(
-    dataframeQueryTool.input.parse({ canvas_id: canvasId, query: sql }),
-    ctx,
-  );
-}
-
-/*
- * The first staging call starts DuckDB: up to ~750 ms alone, past the 5 s default
- * when the full suite saturates the machine.
- */
-const DUCKDB_SUITE = { timeout: 30_000 };
+const query = (canvasId: string, sql: string) => queryStaged(TENANT, canvasId, sql);
 
 describe('openfda_search_recalls staging — enforcement columns (#59, #69)', DUCKDB_SUITE, () => {
   it.each(['drug', 'device', 'food'])(
@@ -516,5 +486,54 @@ describe('openfda_search_recalls staging — device/recall columns (#59)', DUCKD
     const byName = new Map(result.tables.map((t) => [t.name, t.columns.map((c) => c.name)]));
     expect(byName.get(first.canvas_table ?? '')).toContain('product_res_number');
     expect(byName.get(second.canvas_table ?? '')).toEqual(ENFORCEMENT_COLUMNS);
+  });
+});
+
+/*
+ * #104 — a default device page leaves its lot and registrant lists out of the
+ * inline records, and the staged table still holds them: the drain stages whole
+ * records, so SQL reads what the page left out.
+ */
+describe('openfda_search_recalls staging — left-out paths (#104)', DUCKDB_SUITE, () => {
+  it('reads code_info and more_code_info from the table a device enforcement page left them out of', async () => {
+    const staged = await stage({ category: 'device' });
+    expect(staged.results.some((r) => 'code_info' in r || 'more_code_info' in r)).toBe(false);
+    expect(staged.omitted_fields?.map((f) => f.path)).toEqual(['code_info', 'more_code_info']);
+
+    const rows = await query(
+      staged.canvas_id ?? '',
+      `SELECT code_info || coalesce(more_code_info, '') AS lots FROM ${staged.canvas_table} WHERE recall_number = 'D-1396-2016'`,
+    );
+    expect(rows.rows[0]?.lots).toBe(`${CUT_CODE_INFO}${MORE_CODE_INFO}`);
+  });
+
+  it('reads the registrant lists from the table a device recall page left them out of', async () => {
+    DATASETS['device/recall'] = [
+      {
+        ...DEVICE_RECALLS[0],
+        openfda: {
+          device_class: '2',
+          k_number: ['K092454', 'K133817'],
+          fei_number: ['3008237827'],
+          registration_number: ['9615754'],
+        },
+      },
+    ];
+    const staged = await stage({ category: 'device', endpoint: 'recall' });
+    expect(staged.results[0]).not.toHaveProperty('code_info');
+    expect(staged.results[0]?.openfda).toEqual({ device_class: '2' });
+
+    const rows = await query(
+      staged.canvas_id ?? '',
+      `SELECT code_info, json_extract_string(openfda, '$.k_number[1]') AS k, json_extract_string(openfda, '$.fei_number[0]') AS fei, json_extract_string(openfda, '$.registration_number[0]') AS reg FROM ${staged.canvas_table}`,
+    );
+    expect(rows.rows).toEqual([
+      {
+        code_info: 'GTIN 00888277629656, Lot Numbers: L230380005',
+        k: 'K133817',
+        fei: '3008237827',
+        reg: '9615754',
+      },
+    ]);
   });
 });
