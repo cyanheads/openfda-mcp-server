@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.11.0](changelog/0.11.x/0.11.0.md) — 2026-11-22 · ⚠️ Breaking
+
+Five more openFDA datasets: the Orange Book, Complete Response Letters, NSDE, cosmetic adverse events, and device classification. `cursor` pages past the 25,000-record skip ceiling, and staged tables carry every upstream field. Breaking: default drug adverse-event and device recall pages leave their heaviest fields out, returned by `include`.
+
 ## [0.10.0](changelog/0.10.x/0.10.0.md) — 2026-11-10 · ⚠️ Breaking
 
 `limit` is now the page size, with per-endpoint defaults and caps in place of a 24,000-byte page cut; six search tools browse newest first; `openfda_drug_profile` picks the drug's own application, label, and shortage. Breaking: `page_omitted` is removed, and `openfda_dataframe_query` refuses an alias or CTE named after a DuckDB system view.

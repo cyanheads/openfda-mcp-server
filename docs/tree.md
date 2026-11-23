@@ -1,6 +1,6 @@
 # openfda-mcp-server - Directory Structure
 
-Generated on: 2026-11-11 07:36:43
+Generated on: 2026-11-23 02:16:52
 
 ```text
 openfda-mcp-server/
@@ -26,6 +26,7 @@ openfda-mcp-server/
 ├── changelog/
 │   ├── 0.1.x/
 │   ├── 0.10.x/
+│   ├── 0.11.x/
 │   ├── 0.2.x/
 │   ├── 0.3.x/
 │   ├── 0.4.x/
@@ -174,12 +175,18 @@ openfda-mcp-server/
 │   │       │   ├── search-drug-shortages.tool.ts
 │   │       │   ├── search-recalls.tool.ts
 │   │       │   └── search-tobacco-reports.tool.ts
+│   │       ├── adverse-event-canvas-schemas.ts
 │   │       ├── default-sort.ts
+│   │       ├── device-codes.ts
 │   │       ├── drug-event-codes.ts
 │   │       ├── drug-profile-sections.ts
 │   │       ├── field-catalog.ts
 │   │       ├── format-utils.ts
+│   │       ├── pagination-cursor.ts
 │   │       ├── schema-utils.ts
+│   │       ├── search-clauses.ts
+│   │       ├── search-expression.ts
+│   │       ├── shortage-dates.ts
 │   │       └── spl-table.ts
 │   ├── services/
 │   │   ├── canvas/
@@ -194,6 +201,7 @@ openfda-mcp-server/
 │   │       │   ├── query.ts
 │   │       │   └── refresh-schedule.ts
 │   │       ├── canvas-spill.ts
+│   │       ├── html-entities.ts
 │   │       ├── openfda-service.ts
 │   │       ├── page-budget.ts
 │   │       ├── record-projection.ts
@@ -203,11 +211,15 @@ openfda-mcp-server/
 │   ├── config/
 │   │   └── server-config.test.ts
 │   ├── fixtures/
+│   │   ├── device-records.ts
 │   │   └── spl-tables.ts
 │   ├── helpers/
 │   │   ├── commonmark.ts
 │   │   ├── content.ts
-│   │   └── cpu-timing.ts
+│   │   ├── cpu-timing.ts
+│   │   ├── mock-setters.ts
+│   │   ├── staging-canvas.ts
+│   │   └── upstream-responses.ts
 │   ├── mcp-server/
 │   │   └── tools/
 │   │       ├── definitions/
@@ -225,16 +237,22 @@ openfda-mcp-server/
 │   │       │   ├── drug-profile.tool.test.ts
 │   │       │   ├── get-drug-label.tool.test.ts
 │   │       │   ├── input-validation.test.ts
+│   │       │   ├── lookup-ndc-staging-columns.test.ts
 │   │       │   ├── lookup-ndc.tool.test.ts
 │   │       │   ├── page-budget-contract.test.ts
 │   │       │   ├── pagination-contract.test.ts
 │   │       │   ├── pagination-past-end.test.ts
 │   │       │   ├── record-parity.test.ts
 │   │       │   ├── search-adverse-events-edge.test.ts
+│   │       │   ├── search-adverse-events-staging-columns.test.ts
 │   │       │   ├── search-adverse-events.tool.test.ts
+│   │       │   ├── search-animal-events-staging-columns.test.ts
 │   │       │   ├── search-animal-events.tool.test.ts
+│   │       │   ├── search-device-clearances-staging-columns.test.ts
 │   │       │   ├── search-device-clearances.tool.test.ts
+│   │       │   ├── search-drug-approvals-staging-columns.test.ts
 │   │       │   ├── search-drug-approvals.tool.test.ts
+│   │       │   ├── search-drug-shortages-staging-columns.test.ts
 │   │       │   ├── search-drug-shortages.tool.test.ts
 │   │       │   ├── search-recalls-canvas.test.ts
 │   │       │   ├── search-recalls-staging-columns.test.ts
@@ -246,7 +264,11 @@ openfda-mcp-server/
 │   │       ├── drug-event-codes.test.ts
 │   │       ├── field-catalog.test.ts
 │   │       ├── format-utils.test.ts
+│   │       ├── pagination-cursor.test.ts
 │   │       ├── schema-utils.test.ts
+│   │       ├── search-clauses.test.ts
+│   │       ├── search-expression.test.ts
+│   │       ├── shortage-dates.test.ts
 │   │       └── spl-table.test.ts
 │   ├── services/
 │   │   └── openfda/
@@ -259,6 +281,7 @@ openfda-mcp-server/
 │   │       │   ├── refresh-schedule.test.ts
 │   │       │   └── routing.test.ts
 │   │       ├── canvas-spill.test.ts
+│   │       ├── html-entities.test.ts
 │   │       ├── openfda-service-security.test.ts
 │   │       ├── openfda-service.side-requests.test.ts
 │   │       ├── openfda-service.test.ts
