@@ -11,7 +11,8 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    pool: 'forks',
+    // Vitest's forks pool calls `child.channel.unref()`, which Bun lacks, so the Bun lane runs worker threads.
+    pool: process.versions.bun ? 'threads' : 'forks',
     isolate: true,
     include: ['src/**/*.test.ts', 'tests/**/*.test.ts'],
     coverage: {

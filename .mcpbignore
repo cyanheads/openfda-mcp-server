@@ -14,6 +14,7 @@
 /docs/
 /changelog/
 /coverage/
+/node_modules/.vitest-cache/
 /logs/
 /.cache/
 /data/
