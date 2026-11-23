@@ -146,7 +146,7 @@ async handler(input, ctx) {
 }
 ```
 
-**Service-layer throws carry `data: { reason }`, and their contract entries carry `thrownBy: 'service'`.** The conformance lint scans handler source only — failures thrown from `openfda-service.ts` aren't visible to it. To make service throws carry the same wire-shape `error.data.reason` clients see from `ctx.fail`, the service passes `data: { reason: 'X' }` to the factory (used in `openfda-service.ts` for `rate_limited`, `upstream_error`, `pagination_limit_reached`, `query_error`, `not_aggregatable`). Every reason produced below the handler — by the service, by the shared guards in `schema-utils.ts` (`malformed_search`, `pagination_limit_reached`, `limit_above_cap`), or by the canvas layer (`canvas_not_found` on `openfda_dataframe_describe`; `canvas_not_found` and `canvas_capacity_exhausted` on every staging search tool, via the shared entries in `canvas-spill.ts`) — is marked `thrownBy: 'service'` on every tool that declares it, so `error-contract-unthrown` keeps checking only the handler's own reasons. The marker is lint-only metadata; nothing at runtime reads it. `openfda_dataframe_query` and `openfda_dataframe_drop` catch the canvas layer's `canvas_not_found` and re-raise it through their own `ctx.fail`, so their entries stay unmarked.
+**Service-layer throws carry `data: { reason }`, and their contract entries carry `thrownBy: 'service'`.** The conformance lint scans handler source only — failures thrown from `openfda-service.ts` aren't visible to it. To make service throws carry the same wire-shape `error.data.reason` clients see from `ctx.fail`, the service passes `data: { reason: 'X' }` to the factory (used in `openfda-service.ts` for `rate_limited`, `upstream_error`, `pagination_limit_reached`, `query_error`, `not_aggregatable`). Every reason produced below the handler — by the service, by the shared guards (`malformed_search` in `search-expression.ts`; `invalid_cursor` in `pagination-cursor.ts`; `pagination_limit_reached` as `paginationLimitReachedError` and `limit_above_cap` in `schema-utils.ts`), or by the canvas layer (`canvas_not_found` on `openfda_dataframe_describe`; `canvas_not_found` and `canvas_capacity_exhausted` on every staging search tool, via the shared entries in `canvas-spill.ts`) — is marked `thrownBy: 'service'` on every tool that declares it, so `error-contract-unthrown` keeps checking only the handler's own reasons. The marker is lint-only metadata; nothing at runtime reads it. `openfda_dataframe_query` and `openfda_dataframe_drop` catch the canvas layer's `canvas_not_found` and re-raise it through their own `ctx.fail`, so their entries stay unmarked.
 
 **Fallback (no contract entry fits, ad-hoc throws):**
 
@@ -183,7 +183,8 @@ src/
       openfda-service.ts                # openFDA API client (retry, rate-limit, error normalization) + mirror routing
       canvas-spill.ts                   # stage=true / canvas_id staging onto DataCanvas
       page-budget.ts                    # Oversized-record disclosure for inline search pages
-      record-projection.ts              # `fields` projection of inline search records to dotted paths
+      record-projection.ts              # `fields` projection of inline search records to dotted paths, default left-out paths (`include`, `omitted_fields`)
+      html-entities.ts                  # Character-reference decoder, shared by SPL table rendering and the service's upstream error text
       types.ts                          # Query params and response types
       mirror/                           # Opt-in local bulk mirror (OPENFDA_MIRROR_ENABLED, off by default)
         datasets.ts                     # Closed dataset registry + GMDN carve-out
@@ -196,11 +197,17 @@ src/
   mcp-server/
     tools/
       drug-event-codes.ts               # Code tables for coded drug/event fields (route, outcome, age group, onset-age unit, per-drug action, dechallenge, rechallenge, duration, interval, and dose units, report type, reporter, sender, receiver, and expedited codes) and `withCodeLabels`, shared by format() and the field catalog
+      device-codes.ts                   # Code tables for device/classification `device_class` and `submission_type_id`, shared by format() and the field catalog
       field-catalog.ts                  # Searchable field paths per endpoint + live-verified count form per field
       default-sort.ts                   # Newest-first default sort for a bare search-tool browse
-      drug-profile-sections.ts          # openfda_drug_profile selection logic: Drugs@FDA application ranking, approval and shortage sections
+      drug-profile-sections.ts          # openfda_drug_profile selection logic: Drugs@FDA application ranking, approval and shortage sections, plus `originalPackager` (shared with the label tool)
       format-utils.ts                   # Shared format() helpers + codeLiteral (caller text in notices and format() prose)
-      schema-utils.ts                   # Shared input schemas + handler guards (per-endpoint page sizes and the limit clamp, skip ceiling, search delimiters, `+` separator normalization)
+      schema-utils.ts                   # Shared input schemas + handler guards (per-endpoint page sizes and the limit clamp, skip ceiling, `sort` and `fields` grammars)
+      search-expression.ts              # Shared `search` input: whitespace, `+` separator, and hyphenated-term normalization; the guard that rejects refused characters and unbalanced delimiters (`malformed_search`)
+      search-clauses.ts                 # Reads a `search` string's field clauses; the cross-entry notice and per-entry SQL for AND-ed clauses under one array of objects
+      shortage-dates.ts                 # Rewrites `drug/shortages` dates in a `search` to `YYYY-MM-DD`
+      pagination-cursor.ts              # `cursor` input, `next_cursor` output, and the token that continues a walk past the skip ceiling (`invalid_cursor`)
+      adverse-event-canvas-schemas.ts   # Staged table columns per openfda_search_adverse_events category
       spl-table.ts                      # SPL *_table markup → GFM table, for openfda_get_drug_label content[]
     tools/definitions/
       count-values.tool.ts              # openfda_count_values
