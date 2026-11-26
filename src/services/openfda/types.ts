@@ -39,8 +39,9 @@ export interface OpenFdaResponse<T = Record<string, unknown>> {
    * carries a sort key's missing-value marker (a sorted walk reached the records
    * lacking that field, which sort last, and this page's records are new), or
    * `repeated_link` when it repeats the value this page was read with (this page
-   * is the one that value was read from). The records past this page are
-   * reachable by `skip`, within its 25,000-row ceiling.
+   * is the one that value was read from, so its `meta.skip` is where those
+   * already-returned records start). The records past this page are reachable
+   * by `skip`, within its 25,000-row ceiling.
    */
   searchAfterBlocked?: 'missing_sort_value' | 'repeated_link';
 }
@@ -54,7 +55,8 @@ export interface OpenFdaQueryParams {
    * Continue a `search_after` walk instead of paging by `skip`: `value` is
    * openFDA's `search_after` parameter from the previous page's link, and
    * `position` is the number of records the walk has already returned, which
-   * the page reports as `meta.skip`.
+   * the page reports as `meta.skip` (a `repeated_link` page excepted, see
+   * {@link OpenFdaResponse.searchAfterBlocked}).
    */
   searchAfter?: { position: number; value: string } | undefined;
   skip?: number | undefined;

@@ -568,8 +568,11 @@ export class OpenFdaService {
 
   /**
    * The normalized page. openFDA reports `skip: 0` on every `search_after`
-   * page, so a continuation reports its walk position instead. A count tally
-   * carries no pagination, so its total, skip, and limit read 0.
+   * page, so a continuation reports its walk position instead — except a page
+   * linked with the value it was read with (`repeated_link`): the link names the
+   * page's last record, so that page ends where the walk stood, and it reports
+   * where its records start. A count tally carries no pagination, so its total,
+   * skip, and limit read 0.
    */
   private normalizeResponse<T>(
     envelope: OpenFdaEnvelope,
@@ -581,20 +584,28 @@ export class OpenFdaService {
     if (lastUpdated !== 'unknown') {
       this.lastUpdatedByEndpoint.set(endpoint, lastUpdated);
     }
+    const continuation = continuationOf(
+      nextSearchAfter,
+      params.searchAfter?.value,
+      params.sort,
+      envelope.results.at(-1),
+    );
+    const position = params.searchAfter?.position;
+    const skip =
+      position === undefined
+        ? (pagination?.skip ?? 0)
+        : continuation.searchAfterBlocked === 'repeated_link'
+          ? position - envelope.results.length
+          : position;
     return {
       meta: {
         total: pagination?.total ?? 0,
-        skip: params.searchAfter?.position ?? pagination?.skip ?? 0,
+        skip,
         limit: pagination?.limit ?? 0,
         lastUpdated,
       },
       results: envelope.results as T[],
-      ...continuationOf(
-        nextSearchAfter,
-        params.searchAfter?.value,
-        params.sort,
-        envelope.results.at(-1),
-      ),
+      ...continuation,
     };
   }
 

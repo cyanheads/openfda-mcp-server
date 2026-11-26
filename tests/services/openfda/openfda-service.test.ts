@@ -990,6 +990,23 @@ describe('OpenFdaService', () => {
       });
 
       /*
+       * The link names the page's last record, so a page linked with the value it
+       * was read with ends where the walk stood: its records are the ones before
+       * that position, already returned, and the next unread record is at it.
+       */
+      it('reports a repeated page at the walk position its records start', async () => {
+        const sent = '0=Acme%20Corp;1=27325286';
+        mockFetch.mockResolvedValue(
+          page([{ id: '1' }, { id: '2' }], { skip: 0, limit: 2, total: 9 }, linkFor(sent)),
+        );
+
+        const result = await query({ value: sent, position: 6 });
+
+        expect(result.searchAfterBlocked).toBe('repeated_link');
+        expect(result.meta.skip).toBe(4);
+      });
+
+      /*
        * A descending keyword walk settles on one page it repeats under the
        * marker link it was read with, so both checks fire. The repeat wins: its
        * records were already returned, and a staging drain must not take them
