@@ -195,7 +195,7 @@ openFDA-specific:
 
 Agent-friendly output:
 
-- Disclosed bounds: the clamp notice, `projected_fields`, `omitted_fields`, the label `outline`, and `staged_rows` report every clamp, projection, left-out path, outline, and staging cut, and `truncated_by` names what stopped a staging drain short of the match (`size_budget` at about 16 MB, `row_ceiling` at 25,000 rows when a `skip` walk is all openFDA offers, `time_budget`, or `upstream_end`); `page_bytes` and `page_largest_fields` flag a record over 24,000 bytes
+- Disclosed bounds: the clamp notice, `projected_fields`, `omitted_fields`, the label `outline`, and `staged_rows` report every clamp, projection, left-out path, outline, and staging cut, and `truncated_by` names what stopped a staging drain short of the match (`size_budget` at about 16 MB, `row_ceiling` when only a `skip` walk can go on and it has reached openFDA's 25,000-row ceiling, `time_budget`, or `upstream_end`); `page_bytes` and `page_largest_fields` flag a record over 24,000 bytes
 - Typed failures: callers branch on `error.data.reason` (`rate_limited`, `query_error`, `not_aggregatable`, ...) instead of parsing messages
 - Unknown vs. absent: `openfda_drug_profile` returns `null` for a section with no FDA record and lists failed sections in `degraded[]`
 - Empty-result guidance: a no-match search points at `openfda_describe_fields`, broader terms, and the endpoint's own product-name field
