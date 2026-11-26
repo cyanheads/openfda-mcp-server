@@ -2,6 +2,10 @@
 
 All notable changes to this project. Each entry links to its full per-version file in [changelog/](changelog/).
 
+## [0.11.1](changelog/0.11.x/0.11.1.md) — 2026-11-25
+
+Staged searches drain past openFDA's 25,000-row skip ceiling by search_after and report why a drain stopped in truncated_by. A refused sort fails as not_sortable, a 200 that is not openFDA JSON fails as upstream_error, and next_cursor is withheld on a page whose next link cannot be followed.
+
 ## [0.11.0](changelog/0.11.x/0.11.0.md) — 2026-11-22 · ⚠️ Breaking
 
 Five more openFDA datasets: the Orange Book, Complete Response Letters, NSDE, cosmetic adverse events, and device classification. `cursor` pages past the 25,000-record skip ceiling, and staged tables carry every upstream field. Breaking: default drug adverse-event and device recall pages leave their heaviest fields out, returned by `include`.
