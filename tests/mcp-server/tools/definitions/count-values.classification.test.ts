@@ -30,7 +30,7 @@ const ANALYZED_TEXT = () =>
   );
 const TALLY = () =>
   Response.json({
-    meta: { results: {}, last_updated: '2026-09-18' },
+    meta: { last_updated: '2026-09-18' },
     results: [{ term: 'LEVOTHYROXINE SODIUM', count: 431 }],
   });
 
@@ -175,7 +175,7 @@ describe('openfda_count_values — upstream classification', () => {
         match: () => true,
         respond: () =>
           Response.json({
-            meta: { results: {}, last_updated: '2026-11-20' },
+            meta: { last_updated: '2026-11-20' },
             results: [{ term, count: 38068 }],
           }),
       });

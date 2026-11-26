@@ -30,6 +30,7 @@ import {
 } from '@/mcp-server/tools/format-utils.js';
 import {
   type CursorQuery,
+  cursorBlockedNotice,
   cursorEndNotice,
   cursorInput,
   cursorOutputShape,
@@ -41,6 +42,7 @@ import {
   assertSkipWithinCeiling,
   CURSOR_END_NOTICE_TOPIC,
   nonBlankString,
+  notSortableError,
   OPENFDA_MAX_SKIP,
   PAGE_SIZES,
   PAST_CEILING_ROUTE,
@@ -69,6 +71,7 @@ import {
 } from '@/mcp-server/tools/spl-table.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import { jsonBytes } from '@/services/openfda/page-budget.js';
+import type { OpenFdaResponse } from '@/services/openfda/types.js';
 
 const ENDPOINT = 'drug/label';
 
@@ -285,7 +288,9 @@ function originalPackagerRoutes(search: string): string {
  * The lead for a page that leaves matched labels unreturned: how to page on,
  * then {@link originalPackagerRoutes}. A page carrying `next_cursor` names it;
  * the next `skip` is named only while it is within openFDA's ceiling, and past
- * it the walk from `skip: 0` that reaches those labels. `meta.skip` is the walk
+ * it the walk from `skip: 0` that reaches those labels — unless openFDA cannot
+ * follow the page's next link (`searchAfterBlocked`), when that walk reaches the
+ * same link and the blocked notice names the way on. `meta.skip` is the walk
  * position on a page read by cursor.
  */
 function moreLabelsLead(
@@ -293,17 +298,21 @@ function moreLabelsLead(
     meta: { skip: number; total: number };
     next_cursor?: string | undefined;
     results: readonly unknown[];
+    searchAfterBlocked?: OpenFdaResponse['searchAfterBlocked'];
   },
   search: string,
 ): string {
   const returned = page.results.length;
   const next = page.meta.skip + returned;
   const skipWithin = next <= OPENFDA_MAX_SKIP;
+  const pastCeiling = `The next page would start at skip=${next}, past openFDA's ${OPENFDA_MAX_SKIP}-record pagination ceiling`;
   const paging = page.next_cursor
     ? `Page with next_cursor${skipWithin ? ` or skip (e.g. skip=${next})` : ''}, or narrow the search.`
     : skipWithin
       ? `Page with skip (e.g. skip=${next}) or narrow the search.`
-      : `The next page would start at skip=${next}, past openFDA's ${OPENFDA_MAX_SKIP}-record pagination ceiling — to read past it, ${PAST_CEILING_ROUTE}.`;
+      : page.searchAfterBlocked
+        ? `${pastCeiling}.`
+        : `${pastCeiling} — to read past it, ${PAST_CEILING_ROUTE}.`;
   return `${page.meta.total} labels matched; this page returned ${returned}. ${paging} ${originalPackagerRoutes(search)}`;
 }
 
@@ -405,6 +414,7 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
     },
     paginationLimitReachedError,
     invalidCursorError,
+    notSortableError,
   ],
 
   async handler(input, ctx) {
@@ -437,7 +447,8 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       returned: response.results.length,
     });
 
-    ctx.enrich({ totalResults: response.meta.total, effectiveQuery: input.search });
+    ctx.enrich({ totalResults: response.meta.total });
+    ctx.enrich.echo(input.search);
 
     const morePages =
       response.results.length > 0 &&
@@ -457,7 +468,11 @@ export const getDrugLabelTool = tool('openfda_get_drug_label', {
       pageLead = moreLabelsLead(page, input.search);
     }
     /** Page guidance, joined with the section or outline guidance below (`notice` is last-wins). */
-    const pageNotice = [pageLead, pageSizeNotice(size, page) ?? cursorEndNotice(page, searchAfter)]
+    const pageNotice = [
+      pageLead,
+      pageSizeNotice(size, page) ?? cursorEndNotice(page, searchAfter),
+      cursorBlockedNotice(response, query),
+    ]
       .filter(Boolean)
       .join(' ');
     if (morePages) {

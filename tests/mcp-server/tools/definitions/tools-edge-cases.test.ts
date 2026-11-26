@@ -30,6 +30,7 @@ import {
 } from '@/mcp-server/tools/search-expression.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import { textOf } from '../../../helpers/content.js';
+import { toolsWithInput } from '../../../helpers/tool-registry.js';
 
 const mockQuery = vi.fn();
 
@@ -984,6 +985,10 @@ describe('search delimiter precheck (#38)', () => {
     ['openfda_search_tobacco_reports', searchTobaccoReportsTool, {}],
   ] as const;
 
+  it('SEARCH_TOOLS has a row for exactly the tools that take search (#116)', () => {
+    expect(SEARCH_TOOLS.map(([, tool]) => tool.name).sort()).toEqual(toolsWithInput('search'));
+  });
+
   /** [search, expected message fragment] — each refused upstream. */
   const MALFORMED = [
     ['recalling_firm:"pfizer AND product_type:drugs', /unterminated double quote/i],
@@ -1146,7 +1151,8 @@ describe('search delimiter precheck (#38)', () => {
       '"0003-0894"',
     );
     const text = result.content.flatMap((block) => (block.type === 'text' ? [block.text] : []));
-    expect(text.join('\n')).toContain('**effectiveQuery:** `"0003-0894"`');
+    expect(text.join('\n')).toContain('Query: `"0003-0894"`');
+    expect(text.join('\n')).not.toContain('**effectiveQuery:**');
   });
 
   /**

@@ -241,6 +241,17 @@ describe('pageSizeNotice', () => {
     );
   });
 
+  // A walk openFDA cannot continue: re-running from skip 0 reaches the same link, so the blocked notice names the way on.
+  it.each(['missing_sort_value', 'repeated_link'] as const)(
+    'names no route past the ceiling on a page whose next link is blocked (%s)',
+    (searchAfterBlocked) => {
+      const blocked = { ...page(25_980, 25, 100_000), searchAfterBlocked };
+      expect(pageSizeNotice(clamped, blocked)).toBe(
+        "limit=26 is above the 25-record cap for drug/event, so 25 was applied. The next page would start at skip=26005, past openFDA's 25000-record pagination ceiling.",
+      );
+    },
+  );
+
   it('counts the end of the match from a cursor page position', () => {
     expect(pageSizeNotice(clamped, page(30_206, 25, 30_231))).toContain(
       'this page holds the last 25 of the 30231 matched records.',

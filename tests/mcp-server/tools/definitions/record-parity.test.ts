@@ -21,6 +21,7 @@ import { searchRecallsTool } from '@/mcp-server/tools/definitions/search-recalls
 import { searchTobaccoReportsTool } from '@/mcp-server/tools/definitions/search-tobacco-reports.tool.js';
 import { LIVE_CLASSIFICATION, SPARSE_CLASSIFICATION } from '../../../fixtures/device-records.js';
 import { FOOTNOTE_REF, LIST_IN_CELL, WARFARIN_DOSING } from '../../../fixtures/spl-tables.js';
+import { toolsWithInput } from '../../../helpers/tool-registry.js';
 
 /** Every scalar leaf under `value`, keyed by its dotted path. */
 function leaves(value: unknown, path: string, out: Array<{ path: string; value: string }>): void {
@@ -752,6 +753,12 @@ const PROJECTED_CASES: typeof CASES = (
     ],
   },
 }));
+
+it('PROJECTED_CASES has a case for exactly the tools that take fields (#116)', () => {
+  expect(PROJECTED_CASES.map((c) => c.name.replace(/ \(fields-projected\)$/, '')).sort()).toEqual(
+    toolsWithInput('fields'),
+  );
+});
 
 describe.each([...CASES, ...PROJECTED_CASES].map((c) => [c.name, c] as const))(
   '%s — every structured leaf reaches content[]',

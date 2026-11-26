@@ -31,6 +31,7 @@ import { invalidCursorError } from '@/mcp-server/tools/pagination-cursor.js';
 import { OPENFDA_MAX_SKIP, paginationLimitReachedError } from '@/mcp-server/tools/schema-utils.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import type { OpenFdaQueryParams } from '@/services/openfda/types.js';
+import { toolsWithInput } from '../../../helpers/tool-registry.js';
 
 const mockQuery = vi.fn();
 
@@ -46,6 +47,10 @@ const PAGINATED_TOOLS = [
   [lookupNdcTool, { search: 'aspirin' }],
   [getDrugLabelTool, { search: 'openfda.brand_name:"aspirin"' }],
 ] as const;
+
+it('PAGINATED_TOOLS has a row for exactly the tools that take skip (#116)', () => {
+  expect(PAGINATED_TOOLS.map(([tool]) => tool.name).sort()).toEqual(toolsWithInput('skip'));
+});
 
 describe.each(PAGINATED_TOOLS.map(([tool, input]) => [tool.name, tool, input] as const))(
   '%s — pagination_limit_reached contract',
@@ -266,6 +271,13 @@ const CURSOR_TOOLS: readonly CursorRow[] = [
     ],
   },
 ];
+
+it('CURSOR_TOOLS has a row for exactly the tools that take cursor, staging where the tool takes stage (#116)', () => {
+  const staging = toolsWithInput('stage');
+  expect(Object.fromEntries(CURSOR_TOOLS.map((row) => [row.tool.name, row.stages]))).toEqual(
+    Object.fromEntries(toolsWithInput('cursor').map((name) => [name, staging.includes(name)])),
+  );
+});
 
 interface CursorStructured {
   meta: { skip: number; total: number };

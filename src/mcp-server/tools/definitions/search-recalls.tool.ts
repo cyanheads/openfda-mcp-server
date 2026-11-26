@@ -15,7 +15,6 @@ import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
   codeLiteral,
   emptyPageBody,
-  emptyResultMessage,
   formatRemainingFields,
   projectedRecordLines,
   searchLead,
@@ -23,7 +22,6 @@ import {
 } from '@/mcp-server/tools/format-utils.js';
 import {
   type CursorQuery,
-  cursorEndNotice,
   cursorInput,
   cursorOutputShape,
   invalidCursorError,
@@ -35,9 +33,9 @@ import {
   fieldSelection,
   fieldsDescription,
   limitAboveCapError,
+  notSortableError,
   pageLimitBy,
   pageMetaOutput,
-  pageSizeNotice,
   paginationLimitReachedError,
   rateLimitedError,
   resolvePageSize,
@@ -48,10 +46,10 @@ import {
   upstreamError,
 } from '@/mcp-server/tools/schema-utils.js';
 import { fieldPathsNamed } from '@/mcp-server/tools/search-clauses.js';
+import { enrichSearchPage } from '@/mcp-server/tools/search-enrichment.js';
 import {
   assertSearchDelimitersBalanced,
   malformedSearchError,
-  phrasePlusHint,
   SEARCH_SYNTAX_NOTE,
   searchExpression,
 } from '@/mcp-server/tools/search-expression.js';
@@ -67,22 +65,15 @@ import {
   STAGING_WORKFLOW,
   spillSearch,
   stageInput,
-  stagingNotice,
   varcharColumns,
 } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
-import {
-  inlinePage,
-  oversizedRecordNotice,
-  oversizedRecordOutputShape,
-} from '@/services/openfda/page-budget.js';
+import { inlinePage, oversizedRecordOutputShape } from '@/services/openfda/page-budget.js';
 import {
   includeDescription,
   LEFT_OUT_NOTICE_TOPIC,
-  omissionNotice,
   omissionOutputShape,
   pageProjection,
-  projectionNotice,
   projectionOutputShape,
 } from '@/services/openfda/record-projection.js';
 
@@ -282,6 +273,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
     },
     paginationLimitReachedError,
     invalidCursorError,
+    notSortableError,
   ],
 
   async handler(input, ctx) {
@@ -312,14 +304,8 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
     const searchAfter = resolveCursor(input, query, ctx);
     // A device/recall record carries no `classification`; its class is `openfda.device_class`.
     const classField = endpointValue === 'recall' ? 'openfda.device_class' : 'classification';
-    const emptyNotice = (skip: number, total: number, totalUnverified?: boolean) =>
-      emptyResultMessage(
-        skip,
-        total,
-        `No recall/enforcement records matched${input.search ? ` search: ${codeLiteral(input.search)}` : ''} in ${resolvedEndpoint}. Try broadening filters or check field names (e.g. ${classField}, recalling_firm, reason_for_recall). ${formatFieldHint(resolvedEndpoint)}`,
-        totalUnverified,
-        searchAfter !== undefined,
-      );
+    const noMatch = () =>
+      `No recall/enforcement records matched${input.search ? ` search: ${codeLiteral(input.search)}` : ''} in ${resolvedEndpoint}. Try broadening filters or check field names (e.g. ${classField}, recalling_firm, reason_for_recall). ${formatFieldHint(resolvedEndpoint)}`;
 
     const projection = pageProjection(resolvedEndpoint, IDENTITY_KEYS, {
       fields: input.fields,
@@ -346,21 +332,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
         ctx,
       });
       const staged = canvasResult(spill);
-      ctx.enrich({ totalResults: spill.total });
-      if (input.search) ctx.enrich.echo(input.search);
-      ctx.enrich.notice(
-        [
-          spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
-          phrasePlusHint(input.search, spill.total),
-          pageSizeNotice(size, staged),
-          projectionNotice(staged),
-          omissionNotice(staged),
-          oversizedRecordNotice(staged),
-          stagingNotice(spill),
-        ]
-          .filter(Boolean)
-          .join(' '),
-      );
+      enrichSearchPage(ctx, { query, page: staged, size, noMatch, spill });
       return staged;
     }
 
@@ -389,20 +361,7 @@ export const searchRecallsTool = tool('openfda_search_recalls', {
       returned: page.results.length,
     });
 
-    ctx.enrich({ totalResults: response.meta.total });
-    if (input.search) ctx.enrich.echo(input.search);
-    const notices = [
-      page.results.length === 0
-        ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
-        : undefined,
-      phrasePlusHint(input.search, response.meta.total),
-      pageSizeNotice(size, page) ?? cursorEndNotice(page, searchAfter),
-      projectionNotice(page),
-      omissionNotice(page),
-      oversizedRecordNotice(page),
-    ].filter(Boolean);
-    if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
-
+    enrichSearchPage(ctx, { query, page, size, noMatch, response, searchAfter });
     return page;
   },
 

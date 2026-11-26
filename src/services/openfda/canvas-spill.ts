@@ -10,16 +10,18 @@
  * registers a bounded drain of the matched set as a canvas table the agent
  * inspects with openfda_dataframe_describe and queries with
  * openfda_dataframe_query. The drain stages whole records, left-out paths
- * included, and is capped by a serialized-byte budget as well as openFDA's
- * 25,000-row `skip` ceiling, so a staged call on a large-record endpoint cannot
- * run for minutes; `stagedRows` vs `total` discloses how much of the match
- * actually reached the canvas.
+ * included, and is bounded by a serialized-byte budget, openFDA's 25,000-row
+ * `skip` ceiling, and a time budget, so a staged call on a large-record
+ * endpoint cannot run for minutes. A match whose small records let the byte
+ * budget reach past that ceiling is walked by `search_after` instead of `skip`.
+ * `stagedRows` vs `total` discloses how much of the match reached the canvas,
+ * and `truncatedBy` names what stopped the drain short of it.
  * @module services/openfda/canvas-spill
  */
 
 import { type Context, z } from '@cyanheads/mcp-ts-core';
 import { CanvasIdSchema, type ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, McpError } from '@cyanheads/mcp-ts-core/errors';
 import { getCanvas } from '@/services/canvas/canvas-accessor.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
 import {
@@ -32,6 +34,7 @@ import {
   type ProjectionFields,
   type RecordProjection,
 } from '@/services/openfda/record-projection.js';
+import type { OpenFdaResponse } from '@/services/openfda/types.js';
 
 /** openFDA hard pagination ceiling — `skip` may not exceed this. */
 export const OPENFDA_MAX_ROWS = 25_000;
@@ -49,15 +52,37 @@ const PROBE_ROWS = 100;
 const STAGE_MAX_BYTES = 16_000_000;
 /** Serialized-JSON budget for a single upstream page, bounding per-request latency. */
 const PAGE_MAX_BYTES = 4_000_000;
+/**
+ * Wall-clock budget for a staged call's drain, counted from the call's start:
+ * every drain page, retries and backoff included, settles by one instant this
+ * far out, below the 60 s request timeout MCP SDK clients default to. The probe
+ * and the inline page keep the service's own per-call deadline, as on an
+ * unstaged search, so this budget only ends a drain early, with the rows already
+ * staged, and never fails a call that stages. Equal to the service's per-call
+ * default (`OPENFDA_CALL_DEADLINE_MS`), but a budget of its own, as
+ * openfda_drug_profile's is.
+ */
+const STAGE_DEADLINE_MS = 50_000;
 
 /**
- * What stopped a truncated drain: the row ceiling once the table holds that
- * many rows, otherwise the byte budget's derived row cap.
+ * What can stop a staged drain short of the matched set — `truncated_by` on a
+ * staged response. `upstream_end` is openFDA serving an empty or short page
+ * before the `meta.total` it counted, which none of the drain's own bounds
+ * explains.
  */
-export function stagingStopCause(stagedRows: number): string {
-  return stagedRows >= OPENFDA_MAX_ROWS
-    ? `openFDA's ${OPENFDA_MAX_ROWS}-row pagination ceiling`
-    : 'its size budget';
+const STAGING_STOP_CAUSES = ['size_budget', 'row_ceiling', 'time_budget', 'upstream_end'] as const;
+export type StagingStopCause = (typeof STAGING_STOP_CAUSES)[number];
+
+const STOP_CAUSE_TEXT = {
+  size_budget: 'its size budget',
+  row_ceiling: `openFDA's ${OPENFDA_MAX_ROWS}-row pagination ceiling`,
+  time_budget: 'its time budget',
+  upstream_end: 'the last record openFDA served',
+} as const satisfies Record<StagingStopCause, string>;
+
+/** A stop cause as the staging notice and the `content[]` staging line name it, after "stopped at". */
+export function stagingStopCause(cause: StagingStopCause): string {
+  return STOP_CAUSE_TEXT[cause];
 }
 
 /**
@@ -185,7 +210,13 @@ export const canvasOutputShape = {
     .boolean()
     .optional()
     .describe(
-      `True when staging stopped short of meta.total (size budget or the ${OPENFDA_MAX_ROWS}-row ceiling); narrow the search for the whole set.`,
+      'True when staging stopped short of meta.total; narrow the search for the whole set.',
+    ),
+  truncated_by: z
+    .enum(STAGING_STOP_CAUSES)
+    .optional()
+    .describe(
+      'Why staging stopped short of meta.total (upstream_end: openFDA served no more records). Only when truncated is.',
     ),
 };
 
@@ -216,8 +247,8 @@ export interface OpenFdaSpillResult {
   tableName: string;
   /** Total matching records upstream. */
   total: number;
-  /** True when fewer rows were staged than matched upstream. */
-  truncated: boolean;
+  /** What stopped the drain short of `total`; absent when every matched record was staged. */
+  truncatedBy?: StagingStopCause | undefined;
 }
 
 /** Canvas table handle — `spilled_<8 hex>`, matching the framework's spillover naming. */
@@ -236,8 +267,17 @@ function newTableName(): string {
  * The inline page is the same `limit`/`skip` window the plain search path
  * returns, under the same cut and oversized-record disclosure; the drain always
  * starts at offset 0, stages whole records into the table's column projection —
- * left-out paths included — and runs until its byte budget, the row ceiling, or
- * the matched set is exhausted.
+ * left-out paths included — and runs until its byte budget, the row ceiling, its
+ * time budget, or the end of the matched set.
+ *
+ * The walk is chosen at the probe, since openFDA links a page read at `skip > 0`
+ * only by `skip`: when the byte budget and the match both reach past the row
+ * ceiling, the drain follows the probe's `search_after` link; otherwise it pages
+ * by `skip`, as it always has. A walk openFDA cannot continue — a link carrying a
+ * sort key's missing-value marker (`searchAfterBlocked`), a continuation that
+ * fails through the service's retries or answers the page it was linked from, or
+ * a page with no link — goes on by `skip` from where it stands, up to the row
+ * ceiling. A `skip` page that fails still fails the call, as it always has.
  */
 export async function spillSearch(opts: {
   endpoint: string;
@@ -262,6 +302,7 @@ export async function spillSearch(opts: {
     throw new Error('DataCanvas is not enabled. Set CANVAS_PROVIDER_TYPE=duckdb.');
   }
   const svc = getOpenFdaService();
+  const deadlineAtMs = Date.now() + STAGE_DEADLINE_MS;
 
   // Acquire before any upstream work so an unknown canvas_id fails fast.
   const instance = await canvas.acquire(canvasId, ctx);
@@ -307,31 +348,81 @@ export async function spillSearch(opts: {
       stagedRows: 0,
       tableName: '',
       total,
-      truncated: false,
     };
   }
 
   const avgBytes = Math.max(1, JSON.stringify(probe.results).length / probe.results.length);
-  const rowBudget = Math.min(
-    OPENFDA_MAX_ROWS,
-    Math.max(probe.results.length, Math.floor(STAGE_MAX_BYTES / avgBytes)),
-  );
+  const sizeRows = Math.max(probe.results.length, Math.floor(STAGE_MAX_BYTES / avgBytes));
   const pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Math.floor(PAGE_MAX_BYTES / avgBytes)));
+  // The `search_after` value of the next page while the drain walks by it; undefined pages by `skip`.
+  let after =
+    sizeRows > OPENFDA_MAX_ROWS && total > OPENFDA_MAX_ROWS ? probe.nextSearchAfter : undefined;
+  let rowCap = after === undefined ? Math.min(sizeRows, OPENFDA_MAX_ROWS) : sizeRows;
+  let stoppedBy: StagingStopCause | undefined;
 
   async function* drain(): AsyncGenerator<Record<string, unknown>> {
     yield* probe.results;
     let fetched = probe.results.length;
-    while (fetched < rowBudget && fetched < total) {
-      const pageLimit = Math.min(pageSize, rowBudget - fetched);
-      const page = await svc.query<Record<string, unknown>>(
-        endpoint,
-        { search, sort, limit: pageLimit, skip: fetched },
-        ctx,
-      );
+    const pageBySkip = (why: string) => {
+      ctx.log.debug('Staging walk goes on by skip', { endpoint, position: fetched, why });
+      after = undefined;
+      rowCap = Math.min(rowCap, OPENFDA_MAX_ROWS);
+    };
+
+    while (fetched < total) {
+      if (fetched >= rowCap) {
+        stoppedBy = rowCap < sizeRows ? 'row_ceiling' : 'size_budget';
+        return;
+      }
+      const pageLimit = Math.min(pageSize, rowCap - fetched);
+      const value = after;
+      let page: OpenFdaResponse<Record<string, unknown>>;
+      try {
+        page = await svc.query<Record<string, unknown>>(
+          endpoint,
+          value === undefined
+            ? { search, sort, limit: pageLimit, skip: fetched }
+            : { search, sort, limit: pageLimit, searchAfter: { position: fetched, value } },
+          ctx,
+          { deadlineAtMs },
+        );
+      } catch (error) {
+        // The service raises every upstream failure typed; anything else is a bug and crashes.
+        if (ctx.signal?.aborted || !(error instanceof McpError)) throw error;
+        const reason = error.data?.reason;
+        if (reason === 'retry_deadline_exceeded') {
+          stoppedBy = 'time_budget';
+          return;
+        }
+        /*
+         * A continuation that failed through the service's retries — a marker
+         * shape the service does not recognize (`query_error`), a 5xx, a rate
+         * limit, a body that is not openFDA JSON — goes on by `skip`: under the
+         * ceiling with the very page a skip walk sends, which fails the call only
+         * where that page fails too; past it, ending the drain with every row
+         * walked, more than a skip walk reaches.
+         */
+        if (value !== undefined) {
+          pageBySkip(`continuation failed (${String(reason)})`);
+          continue;
+        }
+        throw error;
+      }
+      // openFDA answered the continuation with the page it was linked from: nothing new to stage.
+      if (page.searchAfterBlocked === 'repeated_link') {
+        pageBySkip('continuation repeated its page');
+        continue;
+      }
       if (page.results.length === 0) break;
       yield* page.results;
       fetched += page.results.length;
       if (page.results.length < pageLimit) break;
+      if (value !== undefined) {
+        after = page.nextSearchAfter;
+        if (after === undefined) {
+          pageBySkip(page.searchAfterBlocked ? 'missing sort value' : 'no next link');
+        }
+      }
     }
   }
 
@@ -339,6 +430,8 @@ export async function spillSearch(opts: {
     schema,
     signal: ctx.signal,
   });
+  // A drain that ended on an empty or short page before `total` was served fewer records than openFDA counted.
+  const truncatedBy = total > handle.rowCount ? (stoppedBy ?? 'upstream_end') : undefined;
 
   ctx.log.info('Staged openFDA search on canvas', {
     endpoint,
@@ -346,6 +439,7 @@ export async function spillSearch(opts: {
     tableName: handle.tableName,
     stagedRows: handle.rowCount,
     total,
+    truncatedBy,
   });
 
   return {
@@ -360,20 +454,20 @@ export async function spillSearch(opts: {
     stagedRows: handle.rowCount,
     tableName: handle.tableName,
     total,
-    truncated: total > handle.rowCount,
+    truncatedBy,
   };
 }
 
 /**
- * Enrichment notice for a staged search — the canvas pointer plus how much of
- * the matched set actually reached the table.
+ * Enrichment notice for a staged search — the canvas pointer, how much of the
+ * matched set reached the table, and on a cut, what stopped the drain.
  */
 export function stagingNotice(spill: OpenFdaSpillResult): string {
   if (!spill.spilled) {
     return `Nothing was staged on canvas "${spill.canvasId}" — ${spill.total} records matched.`;
   }
-  const cut = spill.truncated
-    ? ` Staging stopped at ${stagingStopCause(spill.stagedRows)}, so the table holds the first ${spill.stagedRows} records — narrow the query (filters, date range) for a complete set.${AGGREGATE_ROUTE}`
+  const cut = spill.truncatedBy
+    ? ` Staging stopped at ${stagingStopCause(spill.truncatedBy)}, so the table holds the first ${spill.stagedRows} records — narrow the query (filters, date range) for a complete set.${AGGREGATE_ROUTE}`
     : '';
   return `Staged ${spill.stagedRows} of ${spill.total} matched records on canvas table "${spill.tableName}" (canvas_id "${spill.canvasId}"). Call openfda_dataframe_describe for the column names, then openfda_dataframe_query to run SQL over the staged set.${cut}`;
 }
@@ -398,6 +492,6 @@ export function canvasResult(spill: OpenFdaSpillResult) {
     spilled: spill.spilled,
     staged_rows: spill.stagedRows,
     ...(spill.tableName ? { canvas_table: spill.tableName } : {}),
-    ...(spill.truncated ? { truncated: true } : {}),
+    ...(spill.truncatedBy ? { truncated: true, truncated_by: spill.truncatedBy } : {}),
   };
 }

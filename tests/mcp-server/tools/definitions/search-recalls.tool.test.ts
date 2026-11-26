@@ -1188,4 +1188,32 @@ describe('openfda_search_recalls — cursor (#97)', () => {
     expect(text).toContain(`\n> ${end} ${left}`);
     expect(text).not.toContain('next_cursor:');
   });
+
+  /*
+   * A sorted walk that reaches the records lacking the sort field gets a next
+   * link openFDA cannot follow; the service reports it as searchAfterBlocked.
+   * The cursor is withheld (pagination-cursor.test.ts) and the notice names the
+   * routes that do read on.
+   */
+  it('issues no next_cursor on a page openFDA cannot continue, and says how to read on, on both surfaces', async () => {
+    mockQuery.mockResolvedValueOnce({
+      meta: { total: 9, skip: 0, limit: 2, lastUpdated: '2026-11-25' },
+      results: [{ recall_number: 'F-0001-2027' }, { recall_number: 'F-0002-2027' }],
+      searchAfterBlocked: 'missing_sort_value',
+    });
+
+    const { structured, text } = await run({
+      category: 'food',
+      search: 'recalling_firm:"Acme"',
+      sort: 'termination_date:desc',
+      limit: 2,
+    });
+
+    const notice =
+      'openFDA cannot continue a walk sorted by `termination_date:desc` past records that lack the sort field, which sort last, so this page carries no next_cursor though 7 of the 9 matched records follow it. To read on, re-run with skip=2 and the same search and sort, add `_exists_:termination_date` to the search to keep only records that carry it, or sort by another field.';
+    expect(structured.next_cursor).toBeUndefined();
+    expect(structured.notice).toBe(notice);
+    expect(text).not.toContain('next_cursor:');
+    expect(text.endsWith(`\n> ${notice}`)).toBe(true);
+  });
 });

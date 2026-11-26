@@ -59,6 +59,58 @@ describe('OpenFdaService side requests', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  /*
+   * #112 — a side request answered by a 200 that is not openFDA JSON fails as an
+   * upstream_error like any other: the past-end recovery reports its total
+   * unverified rather than reading the body as a verified zero, and a failed
+   * confirm goes back to the primary loop rather than proving the expression
+   * countable.
+   */
+  it('leaves the total unverified when the past-end recovery answers a 200 that is no envelope', async () => {
+    fetchMock.mockImplementation(async (input) =>
+      params(String(input)).get('limit') === '0' ? Response.json({}) : NO_MATCHES(),
+    );
+
+    const pending = service.query(
+      'drug/enforcement',
+      { search: 'openfda.generic_name:"metformin"', limit: 1, skip: 39 },
+      createMockContext(),
+    );
+    await vi.runAllTimersAsync();
+    const result = await pending;
+
+    expect(result.meta).toMatchObject({ total: 0, skip: 39, totalUnverified: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails a confirm answered by a 200 that is no envelope through the primary loop', async () => {
+    fetchMock.mockImplementation(async (input) =>
+      params(String(input)).has('search')
+        ? NOTHING_TO_COUNT()
+        : new Response('<html><title>Gateway maintenance</title></html>', { status: 200 }),
+    );
+
+    const pending = service
+      .query(
+        'drug/enforcement',
+        {
+          search: '_missing_:openfda.generic_name',
+          count: 'openfda.generic_name.exact',
+          limit: 5,
+        },
+        createMockContext(),
+      )
+      .catch((error: unknown) => error);
+    await vi.runAllTimersAsync();
+    const error = await pending;
+
+    expect(error).toMatchObject({
+      data: { reason: 'upstream_error', endpoint: 'drug/enforcement', status: 200 },
+    });
+    const kinds = urls().map((url) => (params(url).has('search') ? 'scoped' : 'confirm'));
+    expect(kinds).toEqual(Array.from({ length: 4 }, () => ['scoped', 'confirm']).flat());
+  });
+
   it('leaves a failed confirm to the primary retry loop instead of retrying it in place', async () => {
     fetchMock.mockImplementation(async (input) =>
       params(String(input)).has('search') ? NOTHING_TO_COUNT() : UNAVAILABLE(),

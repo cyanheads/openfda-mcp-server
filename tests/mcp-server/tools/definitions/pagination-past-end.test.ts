@@ -33,6 +33,7 @@ import { searchRecallsTool } from '@/mcp-server/tools/definitions/search-recalls
 import { searchTobaccoReportsTool } from '@/mcp-server/tools/definitions/search-tobacco-reports.tool.js';
 import { initOpenFdaService } from '@/services/openfda/openfda-service.js';
 import { textOfResult } from '../../../helpers/content.js';
+import { missingSelectorRows, toolsWithInput } from '../../../helpers/tool-registry.js';
 import { NO_MATCHES, UNAVAILABLE } from '../../../helpers/upstream-responses.js';
 
 const http = createFetchMock();
@@ -49,6 +50,10 @@ const PAGINATED_TOOLS: ReadonlyArray<readonly [AnyToolDefinition, Record<string,
   [lookupNdcTool, { search: 'aspirin' }],
   [getDrugLabelTool, { search: 'openfda.brand_name:"aspirin"' }],
 ];
+
+it('PAGINATED_TOOLS has a row for exactly the tools that take skip (#116)', () => {
+  expect(PAGINATED_TOOLS.map(([tool]) => tool.name).sort()).toEqual(toolsWithInput('skip'));
+});
 
 const TOTAL = (total: number) => () =>
   Response.json({
@@ -245,22 +250,41 @@ describe.each(PAGINATED_TOOLS.map(([tool, input]) => [tool.name, tool, input] as
 /* --- a search_after cursor walk through the real service (#97) --- */
 
 /**
- * Every paginated tool that takes `cursor`; cosmetic events and device
- * classification walk as rows of their own.
+ * Every paginated tool that takes `cursor`, walking each endpoint its selector
+ * inputs (`category`, `endpoint`, `dataset`, `pathway`) reach as a row of its own.
  */
 const CURSOR_TOOLS: ReadonlyArray<readonly [AnyToolDefinition, Record<string, unknown>]> = [
   [searchTobaccoReportsTool, {}],
   [searchDrugShortagesTool, {}],
   [searchRecallsTool, { category: 'drug' }],
+  [searchRecallsTool, { category: 'food' }],
+  [searchRecallsTool, { category: 'device', endpoint: 'enforcement' }],
+  [searchRecallsTool, { category: 'device', endpoint: 'recall' }],
   [getDrugLabelTool, { search: 'openfda.brand_name:"aspirin"' }],
   [searchAdverseEventsTool, { category: 'drug' }],
+  [searchAdverseEventsTool, { category: 'food' }],
+  [searchAdverseEventsTool, { category: 'device' }],
   [searchAdverseEventsTool, { category: 'cosmetic' }],
   [searchDeviceClearancesTool, { pathway: '510k' }],
+  [searchDeviceClearancesTool, { pathway: 'pma' }],
   [searchDeviceClearancesTool, { pathway: 'classification' }],
   [lookupNdcTool, { search: 'aspirin' }],
+  [lookupNdcTool, { search: 'aspirin', dataset: 'nsde' }],
   [searchDrugApprovalsTool, {}],
+  [searchDrugApprovalsTool, { dataset: 'orangebook' }],
+  [searchDrugApprovalsTool, { dataset: 'crl' }],
   [searchAnimalEventsTool, {}],
 ];
+
+it('CURSOR_TOOLS has a row for exactly the tools that take cursor (#116)', () => {
+  expect([...new Set(CURSOR_TOOLS.map(([tool]) => tool.name))].sort()).toEqual(
+    toolsWithInput('cursor'),
+  );
+});
+
+it('CURSOR_TOOLS has a row for every value of each selector a cursor tool takes (#116)', () => {
+  expect(missingSelectorRows('cursor', CURSOR_TOOLS)).toEqual([]);
+});
 
 interface CursorPage extends SearchStructured {
   next_cursor?: string;

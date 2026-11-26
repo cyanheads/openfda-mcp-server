@@ -37,7 +37,32 @@ import {
   OpenFdaService,
   searchAfterOfNextLink,
 } from '@/services/openfda/openfda-service.js';
+import type { OpenFdaQueryParams } from '@/services/openfda/types.js';
 import { linearTiming } from '../../helpers/cpu-timing.js';
+
+/**
+ * Runs the enclosing suite under the real `withRetry` on fake timers, with
+ * jitter at its midpoint so backoff is exactly 1 s, 2 s, then 4 s. The rest of
+ * the file keeps the single-attempt stand-in.
+ */
+function useRealRetryLadder(): void {
+  let random: { mockRestore: () => void };
+
+  beforeEach(async () => {
+    const actual = await vi.importActual<typeof import('@cyanheads/mcp-ts-core/utils')>(
+      '@cyanheads/mcp-ts-core/utils',
+    );
+    vi.mocked(withRetry).mockImplementation(actual.withRetry);
+    vi.useFakeTimers();
+    random = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+  });
+
+  afterEach(() => {
+    vi.mocked(withRetry).mockImplementation(singleAttempt);
+    vi.useRealTimers();
+    random.mockRestore();
+  });
+}
 
 describe('OpenFdaService', () => {
   let service: OpenFdaService;
@@ -56,8 +81,8 @@ describe('OpenFdaService', () => {
     vi.unstubAllGlobals();
   });
 
-  // `fetchWithTimeout` reads `.text()` + `.headers` on the error path while the
-  // service's success path reads `.json()` and the `Link` header. Return a
+  // `fetchWithTimeout` reads `.text()` + `.headers` on the error path, and the
+  // service's success path reads `.text()` and the `Link` header. Return a
   // re-readable fake (not a real single-use Response) so one stub value can back
   // tests that call query twice.
   function mockResponse(status: number, body: unknown, headers?: Record<string, string>): Response {
@@ -176,7 +201,10 @@ describe('OpenFdaService', () => {
         apiKey: 'my-key',
       });
       mockFetch.mockResolvedValue(
-        mockResponse(200, { meta: { results: {}, last_updated: '' }, results: [] }),
+        mockResponse(200, {
+          meta: { results: { skip: 0, limit: 0, total: 0 }, last_updated: '' },
+          results: [],
+        }),
       );
 
       await serviceWithKey.query('drug/event', {}, ctx);
@@ -187,7 +215,10 @@ describe('OpenFdaService', () => {
 
     it('omits api_key when not configured', async () => {
       mockFetch.mockResolvedValue(
-        mockResponse(200, { meta: { results: {}, last_updated: '' }, results: [] }),
+        mockResponse(200, {
+          meta: { results: { skip: 0, limit: 0, total: 0 }, last_updated: '' },
+          results: [],
+        }),
       );
 
       await service.query('drug/event', {}, ctx);
@@ -895,6 +926,201 @@ describe('OpenFdaService', () => {
       expect(result.meta.skip).toBe(3);
     });
 
+    /*
+     * A sorted walk that reaches records lacking the sort field (openFDA sorts
+     * them last) gets a link whose value for that key is a missing-value marker:
+     * Long.MIN or Long.MAX printed through a double on a date sort, empty on a
+     * keyword sort. Following it answers HTTP 500 `parse_exception` (date) or
+     * loops (keyword: ascending restarts the walk, descending repeats a page), so
+     * the service reports the link as blocked instead of offering it. Marker
+     * values captured 2026-11-25.
+     */
+    describe('a next link the walk cannot follow', () => {
+      const linkFor = (value: string) =>
+        `<https://api.fda.gov/food/enforcement.json?search=%28x%29&sort=termination_date%3Adesc&limit=1&skip=0&search_after=${encodeURIComponent(value)}>; rel="next"`;
+      const query = (searchAfter?: { value: string; position: number }) =>
+        service.query(
+          'food/enforcement',
+          {
+            search: 'x',
+            sort: 'termination_date:desc',
+            limit: 1,
+            ...(searchAfter && { searchAfter }),
+          },
+          ctx,
+        );
+
+      it.each([
+        [
+          'a descending date sort',
+          '0=-9223372036854776000;1=00344b6d2928e2b155d7e31e23d8f88bdf4e8653e7acaa0fde49cc85c5ba6ff3',
+        ],
+        [
+          'an ascending date sort',
+          '0=9223372036854776000;1=1bf6d1ba3d3385305ff4d941b9d5da1cb32fb1f347284204551f3e3d4926a551',
+        ],
+        ['a keyword sort', '0=;1=02022732827474e38b14dbc9f210e1612b79a4f9c471f4b88df337e215bfcfcb'],
+        ['the second key of a two-key sort', '0=1790726400000;1=;2=27325286'],
+        ['the exact Long.MIN', '0=-9223372036854775808;1=27325286'],
+        ['the exact Long.MAX', '0=9223372036854775807;1=27325286'],
+      ])(
+        'reports the marker link of %s as blocked, never as nextSearchAfter',
+        async (_label, value) => {
+          mockFetch.mockResolvedValue(
+            page([{ id: '1' }], { skip: 0, limit: 1, total: 9 }, linkFor(value)),
+          );
+
+          const result = await query();
+
+          expect(result).not.toHaveProperty('nextSearchAfter');
+          expect(result.searchAfterBlocked).toBe('missing_sort_value');
+        },
+      );
+
+      it('reports a link that repeats the value the page was read with as a repeated link', async () => {
+        const sent = '0=Acme%20Corp;1=27325286';
+        mockFetch.mockResolvedValue(
+          page([{ id: '1' }], { skip: 0, limit: 1, total: 9 }, linkFor(sent)),
+        );
+
+        const result = await query({ value: sent, position: 4 });
+
+        expect(result).not.toHaveProperty('nextSearchAfter');
+        expect(result.searchAfterBlocked).toBe('repeated_link');
+      });
+
+      /*
+       * A descending keyword walk settles on one page it repeats under the
+       * marker link it was read with, so both checks fire. The repeat wins: its
+       * records were already returned, and a staging drain must not take them
+       * twice, where a marker page's records are new.
+       */
+      it('reports a marker link that repeats the value the page was read with as a repeated link', async () => {
+        const marker = '0=;1=x';
+        const read = (sent: string) => {
+          // The page's last record lacks the keyword sort's field.
+          mockFetch.mockResolvedValue(
+            page([{ id: '1' }], { skip: 0, limit: 1, total: 9 }, linkFor(marker)),
+          );
+          return service.query(
+            'device/classification',
+            {
+              search: 'device_class:"3"',
+              sort: 'regulation_number.exact:asc',
+              limit: 1,
+              searchAfter: { value: sent, position: 4 },
+            },
+            ctx,
+          );
+        };
+
+        // The premise: read with any other value, the same link is the missing-value marker.
+        expect((await read('0=Acme;1=w')).searchAfterBlocked).toBe('missing_sort_value');
+        const result = await read(marker);
+
+        expect(result).not.toHaveProperty('nextSearchAfter');
+        expect(result.searchAfterBlocked).toBe('repeated_link');
+      });
+
+      it.each([
+        ['an unsorted walk', '0=7bbc2fc0e663af3c01d8cf7358a0a12d561b01aefac1826d19a4d398c8d6ee05'],
+        ['a date value', '0=1672358400000;1=21Av9aEBE00QUgYiPfaI'],
+        ['a keyword value', KEYWORD_VALUE],
+        ['a tiebreaker id alone that reads like the marker', '0=-9223372036854776000'],
+        ['a longer number that starts like the marker', '0=-92233720368547760001;1=27325286'],
+      ])('keeps %s as nextSearchAfter', async (_label, value) => {
+        mockFetch.mockResolvedValue(
+          page([{ id: '1' }], { skip: 0, limit: 1, total: 9 }, linkFor(value)),
+        );
+
+        const result = await query({ value: '0=0;1=earlier', position: 4 });
+
+        expect(result.nextSearchAfter).toBe(value);
+        expect(result).not.toHaveProperty('searchAfterBlocked');
+      });
+
+      /*
+       * A keyword sort writes the same empty value for a record lacking the field
+       * and for one holding "", and openFDA continues only the second, so the
+       * page's last record tells them apart. Captured 2026-11-25:
+       * device/classification class-3 records hold regulation_number "" and walk
+       * on by `regulation_number.exact:asc`.
+       */
+      const keywordWalk = (sort: string, records: Record<string, unknown>[], value: string) => {
+        mockFetch.mockResolvedValue(
+          page(records, { skip: 0, limit: records.length, total: 530 }, linkFor(value)),
+        );
+        return service.query(
+          'device/classification',
+          {
+            search: 'device_class:"3"',
+            sort,
+            limit: records.length,
+            searchAfter: { value: '0=;1=earlier', position: 2 },
+          },
+          ctx,
+        );
+      };
+
+      it.each<[string, string, Record<string, unknown>[], string]>([
+        [
+          'a keyword field the last record holds as ""',
+          'regulation_number.exact:asc',
+          [{ id: '1', regulation_number: '' }],
+          '0=;1=abc',
+        ],
+        [
+          'an array field holding ""',
+          'openfda.brand_name.exact:asc',
+          [{ id: '1', openfda: { brand_name: [''] } }],
+          '0=;1=abc',
+        ],
+        [
+          'the second key of a two-key sort, held as ""',
+          'decision_date:desc,regulation_number.exact:asc',
+          [{ id: '1', decision_date: '20200101', regulation_number: '' }],
+          '0=1577836800000;1=;2=abc',
+        ],
+      ])(
+        'keeps the empty value of %s as nextSearchAfter, which openFDA continues',
+        async (_label, sort, records, value) => {
+          const result = await keywordWalk(sort, records, value);
+
+          expect(result.nextSearchAfter).toBe(value);
+          expect(result).not.toHaveProperty('searchAfterBlocked');
+        },
+      );
+
+      it.each<[string, string, Record<string, unknown>[], string]>([
+        [
+          'the last record lacks the field, though an earlier one holds ""',
+          'regulation_number.exact:asc',
+          [{ id: '1', regulation_number: '' }, { id: '2' }],
+          '0=;1=abc',
+        ],
+        [
+          'the last record holds an empty array',
+          'openfda.brand_name.exact:asc',
+          [{ id: '1', openfda: { brand_name: [] } }],
+          '0=;1=abc',
+        ],
+        [
+          'the last record lacks the second key of a two-key sort',
+          'decision_date:desc,regulation_number.exact:asc',
+          [{ id: '1', decision_date: '20200101' }],
+          '0=1577836800000;1=;2=abc',
+        ],
+      ])(
+        'blocks the empty value as a missing sort value when %s',
+        async (_label, sort, records, value) => {
+          const result = await keywordWalk(sort, records, value);
+
+          expect(result).not.toHaveProperty('nextSearchAfter');
+          expect(result.searchAfterBlocked).toBe('missing_sort_value');
+        },
+      );
+    });
+
     it('reports the walk position as meta.skip, where openFDA reports 0', async () => {
       mockFetch.mockResolvedValue(
         page([{ id: '4' }], { skip: 0, limit: 1, total: 9 }, UNSORTED_LINK),
@@ -1025,22 +1251,7 @@ describe('OpenFdaService', () => {
     });
 
     describe('under the retry ladder', () => {
-      let random: { mockRestore: () => void };
-
-      beforeEach(async () => {
-        const actual = await vi.importActual<typeof import('@cyanheads/mcp-ts-core/utils')>(
-          '@cyanheads/mcp-ts-core/utils',
-        );
-        vi.mocked(withRetry).mockImplementation(actual.withRetry);
-        vi.useFakeTimers();
-        random = vi.spyOn(Math, 'random').mockReturnValue(0.5);
-      });
-
-      afterEach(() => {
-        vi.mocked(withRetry).mockImplementation(singleAttempt);
-        vi.useRealTimers();
-        random.mockRestore();
-      });
+      useRealRetryLadder();
 
       it('resends the same search_after and keeps the link of the attempt whose body it read', async () => {
         const staleLink =
@@ -1051,6 +1262,7 @@ describe('OpenFdaService', () => {
           .mockResolvedValueOnce({
             ...page([], { skip: 0, limit: 2, total: 9 }, staleLink),
             json: () => Promise.reject(serviceUnavailable('body read failed')),
+            text: () => Promise.reject(serviceUnavailable('body read failed')),
           })
           .mockResolvedValueOnce(
             page(
@@ -1102,23 +1314,7 @@ describe('OpenFdaService', () => {
       return state;
     };
 
-    let random: { mockRestore: () => void };
-
-    beforeEach(async () => {
-      const actual = await vi.importActual<typeof import('@cyanheads/mcp-ts-core/utils')>(
-        '@cyanheads/mcp-ts-core/utils',
-      );
-      vi.mocked(withRetry).mockImplementation(actual.withRetry);
-      vi.useFakeTimers();
-      // Jitter at its midpoint, so backoff is exactly 1 s, 2 s, 4 s.
-      random = vi.spyOn(Math, 'random').mockReturnValue(0.5);
-    });
-
-    afterEach(() => {
-      vi.mocked(withRetry).mockImplementation(singleAttempt);
-      vi.useRealTimers();
-      random.mockRestore();
-    });
+    useRealRetryLadder();
 
     it('defaults to 50 s for one call', () => {
       expect(OPENFDA_CALL_DEADLINE_MS).toBe(50_000);
@@ -1246,6 +1442,241 @@ describe('OpenFdaService', () => {
     });
   });
 
+  /*
+   * #112 — a 200 whose body is not openFDA's JSON: a proxy's HTML page served
+   * as 200, a body cut short, JSON off the envelope. Each is the outage a 5xx
+   * page is, answered with the wrong status, so it fails as a retryable
+   * upstream_error naming the endpoint and the status — never as a caller error,
+   * and never as an empty page. Under the real `withRetry`: four attempts, 1 s,
+   * 2 s, and 4 s apart, well inside the 50 s call deadline.
+   */
+  describe('a 200 whose body is not openFDA JSON (#112)', () => {
+    useRealRetryLadder();
+
+    const META = '{"results":{"skip":0,"limit":1,"total":7},"last_updated":"2026-11-20"}';
+    const failure = async (body: string) => {
+      mockFetch.mockImplementation(async () => mockResponse(200, body));
+      const pending = service
+        .query('drug/drugsfda', { search: 'sponsor_name:"PFIZER"', limit: 1 }, ctx)
+        .catch((e: unknown) => e);
+      await vi.runAllTimersAsync();
+      return (await pending) as McpError;
+    };
+
+    const BODIES: Array<[string, string, string]> = [
+      [
+        'an HTML page',
+        '<!DOCTYPE html>\n<html><head><meta charset="utf-8"><title> Gateway maintenance </title></head><body><h1>Back soon</h1></body></html>',
+        'an HTML page titled "Gateway maintenance" instead of JSON',
+      ],
+      [
+        'an HTML page with no title',
+        '<html><body>503</body></html>',
+        'an HTML page instead of JSON',
+      ],
+      [
+        'an HTML page after a line break',
+        '\r\n  <html><head><title>Bad Gateway</title></head></html>',
+        'an HTML page titled "Bad Gateway" instead of JSON',
+      ],
+      ['an empty body', '', 'an empty body instead of JSON'],
+      ['a whitespace-only body', ' \r\n', 'an empty body instead of JSON'],
+      ['plain text', 'Service Unavailable', 'a body that is not valid JSON'],
+      [
+        'JSON cut mid-object',
+        `{"meta":${META},"results":[{"application_number":"NDA0`,
+        'a body that is not valid JSON',
+      ],
+      ['an empty object', '{}', 'JSON that is not an openFDA response'],
+      ['an empty array', '[]', 'JSON that is not an openFDA response'],
+      ['null', 'null', 'JSON that is not an openFDA response'],
+      ['results as a string', '{"meta":{},"results":"x"}', 'JSON that is not an openFDA response'],
+      ['meta with no results', `{"meta":${META}}`, 'JSON that is not an openFDA response'],
+      ['results with no meta', '{"results":[]}', 'JSON that is not an openFDA response'],
+      [
+        'results as an object',
+        `{"meta":${META},"results":{"a":1}}`,
+        'JSON that is not an openFDA response',
+      ],
+      [
+        'a record that is no object',
+        `{"meta":${META},"results":[{"id":"1"},2]}`,
+        'JSON that is not an openFDA response',
+      ],
+      [
+        'a null record',
+        `{"meta":${META},"results":[null]}`,
+        'JSON that is not an openFDA response',
+      ],
+      [
+        'an array record',
+        `{"meta":${META},"results":[["x"]]}`,
+        'JSON that is not an openFDA response',
+      ],
+      [
+        'pagination with no total',
+        '{"meta":{"results":{"skip":0,"limit":1}},"results":[]}',
+        'JSON that is not an openFDA response',
+      ],
+      [
+        'a numeric last_updated',
+        '{"meta":{"last_updated":20261120},"results":[]}',
+        'JSON that is not an openFDA response',
+      ],
+    ];
+
+    it.each(BODIES)(
+      'fails %s as an upstream_error after four attempts, naming the endpoint and status',
+      async (_label, body, what) => {
+        const err = await failure(body);
+
+        expect(err).toBeInstanceOf(McpError);
+        expect(err.code).toBe(JsonRpcErrorCode.ServiceUnavailable);
+        expect(err.data).toMatchObject({
+          reason: 'upstream_error',
+          endpoint: 'drug/drugsfda',
+          status: 200,
+          retryAttempts: 4,
+        });
+        expect(err.message).toBe(
+          `openFDA upstream error: drug/drugsfda answered HTTP 200 with ${what}. (failed after 4 attempts)`,
+        );
+        expect(mockFetch).toHaveBeenCalledTimes(4);
+      },
+    );
+
+    it.each(BODIES.filter(([, body]) => body.trim().length > 1))(
+      'keeps the body of %s out of the error',
+      async (_label, body) => {
+        const err = await failure(body);
+
+        expect(err.message).not.toContain(body);
+        expect(err.message).not.toMatch(/[<>{}]/);
+        expect(JSON.stringify(err.data)).not.toContain(body);
+      },
+    );
+
+    it('reads an HTML title only from the head of the page', async () => {
+      const err = await failure(
+        `<html><head>${' '.repeat(4_096)}<title>Far down</title></head></html>`,
+      );
+
+      expect(err.message).toBe(
+        'openFDA upstream error: drug/drugsfda answered HTTP 200 with an HTML page instead of JSON. (failed after 4 attempts)',
+      );
+    });
+
+    it('recovers on a later attempt that answers openFDA JSON', async () => {
+      mockFetch
+        .mockResolvedValueOnce(mockResponse(200, '<html><title>Gateway maintenance</title></html>'))
+        .mockResolvedValueOnce(mockResponse(200, '{}'))
+        .mockResolvedValueOnce(
+          mockResponse(200, `{"meta":${META},"results":[{"application_number":"NDA012345"}]}`),
+        );
+
+      const pending = service.query('drug/drugsfda', { limit: 1 }, ctx);
+      await vi.runAllTimersAsync();
+      const result = await pending;
+
+      expect(mockFetch).toHaveBeenCalledTimes(3);
+      expect(result).toEqual({
+        meta: { total: 7, skip: 0, limit: 1, lastUpdated: '2026-11-20' },
+        results: [{ application_number: 'NDA012345' }],
+      });
+    });
+
+    /*
+     * openFDA's served envelopes, as sampled across the paged endpoints: a count
+     * answer has no `meta.results`, and a `limit=0` page (the past-end total
+     * recovery) has no records. Both parse; the extra `meta` keys stay out.
+     */
+    it.each<[string, string, { total: number; limit: number }, unknown[]]>([
+      [
+        'a term count',
+        '{"meta":{"disclaimer":"d","terms":"t","license":"l","last_updated":"2026-11-20"},"results":[{"term":"Class II","count":4},{"term":"Class I","count":2}]}',
+        { total: 0, limit: 0 },
+        [
+          { term: 'Class II', count: 4 },
+          { term: 'Class I', count: 2 },
+        ],
+      ],
+      [
+        'a date count',
+        '{"meta":{"disclaimer":"d","terms":"t","license":"l","last_updated":"2026-11-20"},"results":[{"time":"20200101","count":3}]}',
+        { total: 0, limit: 0 },
+        [{ time: '20200101', count: 3 }],
+      ],
+      [
+        'a limit=0 page',
+        '{"meta":{"disclaimer":"d","terms":"t","license":"l","last_updated":"2026-11-20","results":{"skip":0,"limit":0,"total":39}},"results":[]}',
+        { total: 39, limit: 0 },
+        [],
+      ],
+    ])('parses %s', async (_label, body, page, results) => {
+      mockFetch.mockResolvedValue(mockResponse(200, body));
+
+      const result = await service.query('drug/enforcement', { limit: 0 }, ctx);
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({
+        meta: { ...page, skip: 0, lastUpdated: '2026-11-20' },
+        results,
+      });
+    });
+
+    /*
+     * The body is read whole before it is parsed, so a read the call's deadline
+     * or the caller's cancel cuts keeps its own class: only a body that arrived
+     * and failed to parse is reclassified.
+     */
+    describe('a body read cut short', () => {
+      /** A 200 whose body streams one chunk, then stalls until the request is aborted. */
+      const stalledBody = async (_url: string, init?: RequestInit) =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode(`{"meta":${META},"results":[`));
+              init?.signal?.addEventListener('abort', () => controller.error(init.signal?.reason), {
+                once: true,
+              });
+            },
+          }),
+          { status: 200 },
+        );
+
+      it('keeps a body read the deadline cuts a deadline timeout', async () => {
+        mockFetch.mockImplementation(stalledBody);
+
+        const pending = service
+          .query('drug/drugsfda', { limit: 1 }, ctx, { deadlineAtMs: Date.now() + 5_000 })
+          .catch((e: unknown) => e);
+        await vi.advanceTimersByTimeAsync(5_000);
+        const err = (await pending) as McpError;
+
+        expect(err).toBeInstanceOf(McpError);
+        expect(err.code).toBe(JsonRpcErrorCode.Timeout);
+        expect(err.data).toMatchObject({ reason: 'retry_deadline_exceeded', deadlineMs: 5_000 });
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+      });
+
+      it('keeps a body read the caller cancels a cancellation', async () => {
+        mockFetch.mockImplementation(stalledBody);
+        const controller = new AbortController();
+
+        const pending = service
+          .query('drug/drugsfda', { limit: 1 }, createMockContext({ signal: controller.signal }))
+          .catch((e: unknown) => e);
+        await vi.advanceTimersByTimeAsync(1_000);
+        controller.abort();
+        const err = (await pending) as McpError;
+
+        expect(err).toBeInstanceOf(McpError);
+        expect(err.code).toBe(JsonRpcErrorCode.RequestCancelled);
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
   describe('5xx query-error reclassification (#14, #23)', () => {
     // withRetry retries only ServiceUnavailable(-32000), RateLimited(-32003), and
     // Timeout(-32004). A reclassified query_error (ValidationError -32007) is
@@ -1356,10 +1787,11 @@ describe('OpenFdaService', () => {
       expect(err.message).not.toContain('.exact.exact');
     });
 
-    it('reclassifies an unmapped-sort 500 (query_shard_exception) as a non-retryable query_error', async () => {
+    it('routes an unmapped-sort 500 (query_shard_exception) to a non-retryable not_sortable', async () => {
       // A food/device query sorted by receivedate (a drug-only field) returns
-      // HTTP 500 query_shard_exception. Without this marker it fell through to the
-      // generic 5xx branch and advised a retry that can never succeed (#23).
+      // HTTP 500 query_shard_exception. Without a marker it fell through to the
+      // generic 5xx branch and advised a retry that can never succeed (#23); the
+      // field it names is a sort key the endpoint lacks (#113).
       mockFetch.mockResolvedValue(mockResponse(500, SHARD_500));
 
       const err = (await service
@@ -1367,9 +1799,19 @@ describe('OpenFdaService', () => {
         .catch((e: unknown) => e)) as McpError;
 
       expect(err).toBeInstanceOf(McpError);
-      expect(err.data).toMatchObject({ reason: 'query_error' });
+      expect(err.data).toMatchObject({ reason: 'not_sortable', field: 'receivedate' });
       expect(err.code).toBe(-32007); // ValidationError
       expect(TRANSIENT_CODES.has(err.code)).toBe(false);
+    });
+
+    it('keeps a query_shard_exception 500 a query_error when the query has no sort', async () => {
+      mockFetch.mockResolvedValue(mockResponse(500, SHARD_500));
+
+      const err = (await service
+        .query('food/event', { search: 'date_created:[20200101 TO 20201231]' }, ctx)
+        .catch((e: unknown) => e)) as McpError;
+
+      expect(err.data).toMatchObject({ reason: 'query_error' });
       expect(err.message).toMatch(/no mapping found for \[receivedate\]/i); // shard detail preserved
     });
 
@@ -1464,6 +1906,252 @@ describe('OpenFdaService', () => {
       expect(err.data).toMatchObject({ reason: 'upstream_error' });
       expect(err.code).toBe(-32000);
       expect(TRANSIENT_CODES.has(err.code)).toBe(true);
+    });
+  });
+
+  /*
+   * #113 — openFDA refuses a sort key in three shapes, each naming the field: a
+   * 400 for a first key it will not sort by as written, a 5xx
+   * `query_shard_exception` for a key with no mapping on the index, and a 5xx
+   * `illegal_argument_exception` for analyzed text past the first key. Each is
+   * not_sortable, naming the field, the endpoint, and the form to try — never the
+   * AND/OR advice, the `fielddata=true` advice, or the index name and uuid.
+   * Bodies as openFDA sends them, pretty-printed (captured 2026-11-25).
+   */
+  describe('sort refusals (#113)', () => {
+    const errorBody = (code: string, message: string, details?: string) =>
+      JSON.stringify(
+        { error: { code, message, ...(details !== undefined && { details }) } },
+        null,
+        2,
+      );
+    const NON_ANALYZED_400 = (field: string) =>
+      errorBody('BAD_REQUEST', `Sorting allowed by non-analyzed fields only: ${field}`);
+    const NO_MAPPING_500 = (field: string, index: string) =>
+      errorBody(
+        'SERVER_ERROR',
+        'Check your request and try again',
+        `[query_shard_exception] No mapping found for [${field}] in order to sort on, with { index="${index}" & index_uuid="dgBiOlh3Sre4eYKIAIsD2g" }`,
+      );
+    const ANALYZED_500 = (field: string) =>
+      errorBody(
+        'SERVER_ERROR',
+        'Check your request and try again',
+        `[illegal_argument_exception] Text fields are not optimised for operations that require per-document field data like aggregations and sorting, so these operations are disabled by default. Please use a keyword field instead. Alternatively, set fielddata=true on [${field}] in order to load field data by uninverting the inverted index. Note that this can use significant memory.`,
+      );
+    const BOTH_WAYS = 'a field that fails both ways cannot be sorted, so sort on another field.';
+
+    /** label, endpoint, sort, status, body, field, diagnosis, recovery hint */
+    const REFUSALS: Array<[string, string, string, number, string, string, string, string]> = [
+      [
+        'a bare first key openFDA will not sort by (400)',
+        'drug/ndc',
+        'brand_name:asc',
+        400,
+        NON_ANALYZED_400('brand_name'),
+        'brand_name',
+        'openFDA cannot sort drug/ndc by "brand_name" as written: it sorts by non-analyzed fields only.',
+        `Sort on "brand_name.exact" instead; ${BOTH_WAYS}`,
+      ],
+      [
+        'analyzed text past the first key (5xx illegal_argument_exception)',
+        'drug/enforcement',
+        'report_date:desc, classification:asc',
+        500,
+        ANALYZED_500('classification'),
+        'classification',
+        'openFDA cannot sort drug/enforcement by "classification": it is an analyzed text field.',
+        `Sort on "classification.exact" instead; ${BOTH_WAYS}`,
+      ],
+      [
+        'an .exact form the field lacks (5xx query_shard_exception)',
+        'drug/enforcement',
+        'product_description.exact:asc',
+        500,
+        NO_MAPPING_500('product_description.exact', 'recall'),
+        'product_description.exact',
+        'openFDA cannot sort drug/enforcement by "product_description.exact": the field has no sortable mapping on drug/enforcement.',
+        `Sort on "product_description" instead; ${BOTH_WAYS}`,
+      ],
+      [
+        'a field the endpoint lacks (5xx query_shard_exception)',
+        'food/event',
+        'receivedate:desc',
+        500,
+        NO_MAPPING_500('receivedate', 'foodevent'),
+        'receivedate',
+        'openFDA cannot sort food/event by "receivedate": the field has no sortable mapping on food/event.',
+        "Sort on another field; openfda_describe_fields for food/event lists the endpoint's field paths.",
+      ],
+    ];
+
+    const refusal = async (endpoint: string, params: OpenFdaQueryParams) =>
+      (await service
+        .query(endpoint, { limit: 1, ...params }, ctx)
+        .catch((e: unknown) => e)) as McpError;
+
+    it.each(REFUSALS)(
+      'raises not_sortable for %s, naming the field and the form to try',
+      async (_label, endpoint, sort, status, body, field, diagnosis, hint) => {
+        mockFetch.mockResolvedValue(mockResponse(status, body));
+
+        const err = await refusal(endpoint, { search: 'x:"y"', sort });
+
+        expect(err).toBeInstanceOf(McpError);
+        expect(err.code).toBe(JsonRpcErrorCode.ValidationError);
+        expect(err.data).toEqual({ reason: 'not_sortable', endpoint, field, recovery: { hint } });
+        // The hint closes the message verbatim, so content[] states it once.
+        expect(err.message).toBe(`${diagnosis} ${hint}`);
+        expect(err.message).not.toMatch(/AND\/OR|quote|fielddata|index=|index_uuid/);
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it('reads the field from the tail of a body past the 500-byte capture', async () => {
+      const field = 'patient.drug.openfda.pharm_class_epc';
+      const body = ANALYZED_500(field);
+      // The premise: openFDA's 521-byte answer, kept as head and tail around an elision.
+      expect(new TextEncoder().encode(body).byteLength).toBe(521);
+      mockFetch.mockResolvedValue(new Response(body, { status: 500 }));
+
+      const err = await refusal('drug/event', { sort: `receivedate:desc,${field}:asc` });
+
+      expect(err.data).toMatchObject({ reason: 'not_sortable', endpoint: 'drug/event', field });
+      expect(err.message).toBe(
+        `openFDA cannot sort drug/event by "${field}": it is an analyzed text field. Sort on "${field}.exact" instead; ${BOTH_WAYS}`,
+      );
+    });
+
+    // The sort grammar takes a key with no direction, and openFDA's refusal names it as sent.
+    it.each([
+      ['a first key', 'drug/ndc', 'brand_name', 400, NON_ANALYZED_400('brand_name'), 'brand_name'],
+      [
+        'a later key',
+        'drug/enforcement',
+        'report_date:desc,classification',
+        500,
+        ANALYZED_500('classification'),
+        'classification',
+      ],
+    ])(
+      'raises not_sortable naming %s sent with no direction',
+      async (_label, endpoint, sort, status, body, field) => {
+        mockFetch.mockResolvedValue(mockResponse(status, body));
+
+        const err = await refusal(endpoint, { sort });
+
+        expect(err.data).toMatchObject({ reason: 'not_sortable', endpoint, field });
+      },
+    );
+
+    // A key past 200 characters, inside the 500-byte capture: the refusal names it whole.
+    const LONG_KEY = `sort_key.${'k'.repeat(221)}`;
+    it.each([
+      [
+        'a first key openFDA will not sort by (400)',
+        'drug/ndc',
+        `${LONG_KEY}:asc`,
+        400,
+        NON_ANALYZED_400(LONG_KEY),
+      ],
+      [
+        'a later key with no mapping (5xx)',
+        'drug/enforcement',
+        `report_date:desc,${LONG_KEY}:asc`,
+        500,
+        NO_MAPPING_500(LONG_KEY, 'recall'),
+      ],
+    ])(
+      'raises not_sortable naming a 230-character key in %s',
+      async (_label, endpoint, sort, status, body) => {
+        expect(LONG_KEY).toHaveLength(230);
+        expect(new TextEncoder().encode(body).byteLength).toBeLessThan(500);
+        mockFetch.mockResolvedValue(new Response(body, { status }));
+
+        const err = await refusal(endpoint, { sort });
+
+        expect(err.data).toMatchObject({ reason: 'not_sortable', endpoint, field: LONG_KEY });
+        expect(err.message).not.toMatch(/AND\/OR|quote|index=|index_uuid/);
+      },
+    );
+
+    /** label, endpoint, params, status, body, reason */
+    const UNCHANGED: Array<[string, string, OpenFdaQueryParams, number, string, string]> = [
+      [
+        'a 400 that is no sort refusal, on a sorted request',
+        'drug/ndc',
+        { search: 'brand_name:x;', sort: 'brand_name.exact:asc' },
+        400,
+        errorBody('BAD_REQUEST', 'Search not supported: (brand_name:x;)'),
+        'query_error',
+      ],
+      [
+        'a refusal naming a field the sort does not hold',
+        'drug/ndc',
+        { sort: 'generic_name.exact:asc' },
+        400,
+        NON_ANALYZED_400('brand_name'),
+        'query_error',
+      ],
+      [
+        'analyzed text on a request with no sort',
+        'drug/enforcement',
+        { search: 'classification:"Class I"' },
+        500,
+        ANALYZED_500('classification'),
+        'query_error',
+      ],
+      [
+        'analyzed text on a count',
+        'device/classification',
+        { count: 'review_code', sort: 'review_code:asc' },
+        500,
+        ANALYZED_500('review_code'),
+        'not_aggregatable',
+      ],
+      [
+        'a search_after that does not fit the sort',
+        'drug/event',
+        { sort: 'receivedate:desc', searchAfter: { value: '0=1;1=a;2=b', position: 3 } },
+        500,
+        errorBody(
+          'SERVER_ERROR',
+          'Check your request and try again',
+          '[illegal_argument_exception] search_after has 3 value(s) but sort has 2.',
+        ),
+        'query_error',
+      ],
+    ];
+
+    it.each(UNCHANGED)(
+      'keeps %s as before',
+      async (_label, endpoint, params, status, body, reason) => {
+        mockFetch.mockResolvedValue(mockResponse(status, body));
+
+        const err = await refusal(endpoint, params);
+
+        expect(err).toBeInstanceOf(McpError);
+        expect(err.data).toMatchObject({ reason });
+      },
+    );
+
+    describe('under the retry ladder', () => {
+      useRealRetryLadder();
+
+      it.each(REFUSALS)(
+        'fails %s on its one request',
+        async (_label, endpoint, sort, status, body) => {
+          mockFetch.mockImplementation(async () => mockResponse(status, body));
+
+          const pending = refusal(endpoint, { sort });
+          await vi.runAllTimersAsync();
+          const err = await pending;
+
+          expect(err.data).toMatchObject({ reason: 'not_sortable' });
+          expect(err.data).not.toHaveProperty('retryAttempts');
+          expect(mockFetch).toHaveBeenCalledTimes(1);
+        },
+      );
     });
   });
 
@@ -1612,8 +2300,9 @@ describe('OpenFdaService', () => {
     const NOTHING_TO_COUNT_404 = JSON.stringify({
       error: { code: 'NOT_FOUND', message: 'Nothing to count' },
     });
+    // A count answer carries no `meta.results`.
     const TALLY_200 = {
-      meta: { results: {}, last_updated: '2026-09-18' },
+      meta: { last_updated: '2026-09-18' },
       results: [{ term: 'LEVOTHYROXINE SODIUM', count: 431 }],
     };
 

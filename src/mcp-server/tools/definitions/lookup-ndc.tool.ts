@@ -10,11 +10,10 @@
 import { tool, z } from '@cyanheads/mcp-ts-core';
 import type { ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
-import { formatFieldHint, OBJECT_ARRAY_PATHS } from '@/mcp-server/tools/field-catalog.js';
+import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
   codeLiteral,
   emptyPageBody,
-  emptyResultMessage,
   formatRemainingFields,
   lineContent,
   projectedRecordLines,
@@ -23,7 +22,6 @@ import {
 } from '@/mcp-server/tools/format-utils.js';
 import {
   type CursorQuery,
-  cursorEndNotice,
   cursorInput,
   cursorOutputShape,
   invalidCursorError,
@@ -35,9 +33,9 @@ import {
   CONJOINED_ARRAY_NOTICE_TOPIC,
   fieldSelection,
   fieldsDescription,
+  notSortableError,
   pageLimit,
   pageMetaOutput,
-  pageSizeNotice,
   paginationLimitReachedError,
   rateLimitedError,
   resolvePageSize,
@@ -47,11 +45,10 @@ import {
   sortExpression,
   upstreamError,
 } from '@/mcp-server/tools/schema-utils.js';
-import { arrayTieNotice } from '@/mcp-server/tools/search-clauses.js';
+import { enrichSearchPage } from '@/mcp-server/tools/search-enrichment.js';
 import {
   assertSearchDelimitersBalanced,
   malformedSearchError,
-  phrasePlusHint,
   SEARCH_SYNTAX_NOTE,
   searchExpression,
 } from '@/mcp-server/tools/search-expression.js';
@@ -67,20 +64,11 @@ import {
   STAGING_WORKFLOW,
   spillSearch,
   stageInput,
-  stagingNotice,
   varcharColumns,
 } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
-import {
-  inlinePage,
-  oversizedRecordNotice,
-  oversizedRecordOutputShape,
-} from '@/services/openfda/page-budget.js';
-import {
-  projectionNotice,
-  projectionOutputShape,
-  recordProjection,
-} from '@/services/openfda/record-projection.js';
+import { inlinePage, oversizedRecordOutputShape } from '@/services/openfda/page-budget.js';
+import { projectionOutputShape, recordProjection } from '@/services/openfda/record-projection.js';
 
 /**
  * Keys that tell one record apart, kept on every `fields`-projected record:
@@ -232,7 +220,7 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
       ),
     sort: sortExpression()
       .optional()
-      .describe(sortDescription({ example: 'listing_expiration_date:desc' })),
+      .describe(sortDescription({ example: 'marketing_start_date:desc' })),
     limit: pageLimit('drug/ndc', 'Records per page; a record grows with its packaging list.'),
     skip: z.number().min(0).describe(SKIP_DESCRIPTION).default(0),
     cursor: cursorInput,
@@ -284,6 +272,7 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
     },
     paginationLimitReachedError,
     invalidCursorError,
+    notSortableError,
   ],
 
   async handler(input, ctx) {
@@ -293,19 +282,10 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
     const size = resolvePageSize(input.limit, endpoint, ctx);
     const query: CursorQuery = { endpoint, search: input.search, sort: input.sort };
     const searchAfter = resolveCursor(input, query, ctx);
-    // other/nsde rows are flat, so the catalog lists no arrays of objects for it.
-    const arrayPaths = OBJECT_ARRAY_PATHS[endpoint] ?? [];
-
-    const emptyNotice = (skip: number, total: number, totalUnverified?: boolean) =>
-      emptyResultMessage(
-        skip,
-        total,
-        input.dataset === 'nsde'
-          ? NSDE_MISS
-          : `No NDC records matched the query. ${nsdeRoute(input.search) ?? 'Try broadening the search — use brand_name, generic_name, or active_ingredients.name fields.'} ${formatFieldHint('drug/ndc')}`,
-        totalUnverified,
-        searchAfter !== undefined,
-      );
+    const noMatch = () =>
+      input.dataset === 'nsde'
+        ? NSDE_MISS
+        : `No NDC records matched the query. ${nsdeRoute(input.search) ?? 'Try broadening the search — use brand_name, generic_name, or active_ingredients.name fields.'} ${formatFieldHint('drug/ndc')}`;
 
     const projection = recordProjection(input.fields, IDENTITY_KEYS);
     const canvas = getCanvas();
@@ -327,25 +307,7 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
         ctx,
       });
       const staged = canvasResult(spill);
-      ctx.enrich({ totalResults: spill.total, effectiveQuery: input.search });
-      ctx.enrich.notice(
-        [
-          spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
-          phrasePlusHint(input.search, spill.total),
-          pageSizeNotice(size, staged),
-          projectionNotice(staged),
-          oversizedRecordNotice(staged),
-          stagingNotice(spill),
-          arrayTieNotice(
-            input.search,
-            spill.total,
-            arrayPaths,
-            spill.tableName ? { kind: 'staged', table: spill.tableName } : { kind: 'restage' },
-          ),
-        ]
-          .filter(Boolean)
-          .join(' '),
-      );
+      enrichSearchPage(ctx, { query, page: staged, size, noMatch, spill });
       return staged;
     }
 
@@ -374,22 +336,7 @@ export const lookupNdcTool = tool('openfda_lookup_ndc', {
       returned: page.results.length,
     });
 
-    ctx.enrich({ totalResults: response.meta.total, effectiveQuery: input.search });
-    const notices = [
-      page.results.length === 0
-        ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
-        : undefined,
-      phrasePlusHint(input.search, response.meta.total),
-      pageSizeNotice(size, page) ?? cursorEndNotice(page, searchAfter),
-      projectionNotice(page),
-      oversizedRecordNotice(page),
-      arrayTieNotice(input.search, response.meta.total, arrayPaths, {
-        kind: 'restage',
-        byCursor: searchAfter !== undefined,
-      }),
-    ].filter(Boolean);
-    if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
-
+    enrichSearchPage(ctx, { query, page, size, noMatch, response, searchAfter });
     return page;
   },
 

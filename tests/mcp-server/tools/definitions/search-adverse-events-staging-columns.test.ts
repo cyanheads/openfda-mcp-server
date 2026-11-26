@@ -1073,6 +1073,8 @@ describe('openfda_search_adverse_events staging — upstream fields (#105)', DUC
       const staged = await stage({ category });
       expect(staged.staged_rows).toBe(3);
       expect(staged.truncated).toBe(true);
+      // openFDA served fewer records than it counted; none of the drain's own bounds stopped it.
+      expect(staged.truncated_by).toBe('upstream_end');
       expect(staged.meta.total).toBe(10);
     },
   );

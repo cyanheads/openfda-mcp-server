@@ -5,7 +5,11 @@
 
 import { markdown } from '@cyanheads/mcp-ts-core/utils';
 import { OPENFDA_MAX_SKIP } from '@/mcp-server/tools/schema-utils.js';
-import { AGGREGATE_ROUTE, stagingStopCause } from '@/services/openfda/canvas-spill.js';
+import {
+  AGGREGATE_ROUTE,
+  type StagingStopCause,
+  stagingStopCause,
+} from '@/services/openfda/canvas-spill.js';
 import { type OversizedRecordFields, oversizedRecordLine } from '@/services/openfda/page-budget.js';
 import {
   type OmissionFields,
@@ -374,12 +378,14 @@ export interface CanvasResultFields {
   spilled?: boolean | undefined;
   staged_rows?: number | undefined;
   truncated?: boolean | undefined;
+  truncated_by?: StagingStopCause | undefined;
 }
 
 /**
  * Canvas staging disclosure for `content[]`. Renders whenever the call staged —
  * independent of how many inline rows came back — so the canvas pointer and the
- * staged-vs-matched count never hinge on the size of the inline page. Returns
+ * staged-vs-matched count never hinge on the size of the inline page. A cut
+ * carries `truncated_by` beside `spilled` and names its cause from it. Returns
  * null when the call did not stage.
  */
 function canvasStagingLine(total: number, result: CanvasResultFields): string | null {
@@ -388,10 +394,12 @@ function canvasStagingLine(total: number, result: CanvasResultFields): string | 
     return `> Canvas \`${result.canvas_id}\` acquired; no rows staged (spilled=${result.spilled}, ${total} matched).`;
   }
   const staged = result.staged_rows ?? 0;
-  const cut = result.truncated
-    ? ` Truncated: staging stopped at ${stagingStopCause(staged)}, so the table holds the first ${staged} records — narrow the query for a complete set.${AGGREGATE_ROUTE}`
+  const { truncated_by: cause } = result;
+  const fields = `canvas_id \`${result.canvas_id}\`, spilled=${result.spilled}${cause ? `, truncated_by=${cause}` : ''}`;
+  const cut = cause
+    ? ` Truncated: staging stopped at ${stagingStopCause(cause)}, so the table holds the first ${staged} records — narrow the query for a complete set.${AGGREGATE_ROUTE}`
     : '';
-  return `> Staged ${staged} of ${total} matched rows on canvas table \`${result.canvas_table}\` (canvas_id \`${result.canvas_id}\`, spilled=${result.spilled}) — openfda_dataframe_describe for its columns, then openfda_dataframe_query for SQL.${cut}`;
+  return `> Staged ${staged} of ${total} matched rows on canvas table \`${result.canvas_table}\` (${fields}) — openfda_dataframe_describe for its columns, then openfda_dataframe_query for SQL.${cut}`;
 }
 
 /**

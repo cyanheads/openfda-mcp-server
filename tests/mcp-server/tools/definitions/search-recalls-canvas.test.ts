@@ -333,21 +333,24 @@ describe('openfda_search_recalls — format', () => {
       spilled: true,
       staged_rows: 235,
       truncated: true,
+      truncated_by: 'size_budget',
     });
     const text = textOf(blocks);
     expect(text).toContain('Staged 235 of 609468');
+    expect(text).toContain('truncated_by=size_budget');
     expect(text).toMatch(/size budget/i);
   });
 
-  it('names the row ceiling when staging stopped at 25000 rows', () => {
+  it('names the row ceiling from truncated_by, not from the staged row count (#110)', () => {
     const blocks = searchRecallsTool.format!({
       meta: { total: 609_468, skip: 0, limit: 1, lastUpdated: '2026-06-01' },
       results: [{ recall_number: 'R-0', classification: 'Class I' }],
       canvas_id: 'cv_recalls',
       canvas_table: 'spilled_x',
       spilled: true,
-      staged_rows: 25_000,
+      staged_rows: 30_100,
       truncated: true,
+      truncated_by: 'row_ceiling',
     });
     const text = textOf(blocks);
     expect(text).toContain("staging stopped at openFDA's 25000-row pagination ceiling");
@@ -363,6 +366,7 @@ describe('openfda_search_recalls — format', () => {
       spilled: true,
       staged_rows: 235,
       truncated: true,
+      truncated_by: 'size_budget',
     });
     const text = textOf(blocks);
     expect(text).not.toContain('No results found.');

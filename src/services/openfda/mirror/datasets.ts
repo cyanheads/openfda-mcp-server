@@ -41,8 +41,9 @@ export interface DumpStamp {
  * exception: GMDN® Term Code, Name and Definition are licensed from The GMDN
  * Agency, and extracting them for redistribution, alternative categorisation, or
  * AI training requires a separate licence from the Agency. Those terms are
- * carried in the `gmdn_terms[]` block of the device UDI (GUDID) dataset and in
- * `device/classification`.
+ * carried in the `gmdn_terms[]` block of the device UDI (GUDID) dataset,
+ * `device/udi`; `device/classification` records carry none (its `definition` is
+ * the regulation's identification text).
  *
  * {@link MIRRORED_ENDPOINTS} is the primary defence — it admits four drug
  * datasets and nothing else, so no device dump is reachable.

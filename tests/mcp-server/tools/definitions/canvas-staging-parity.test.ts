@@ -10,7 +10,7 @@
  * @module tests/mcp-server/tools/definitions/canvas-staging-parity.test
  */
 
-import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { JsonRpcErrorCode, timeout } from '@cyanheads/mcp-ts-core/errors';
 import { runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -43,6 +43,7 @@ import { searchDrugShortagesTool } from '@/mcp-server/tools/definitions/search-d
 import { searchRecallsTool } from '@/mcp-server/tools/definitions/search-recalls.tool.js';
 import { searchTobaccoReportsTool } from '@/mcp-server/tools/definitions/search-tobacco-reports.tool.js';
 import { AGGREGATE_ROUTE } from '@/services/openfda/canvas-spill.js';
+import { missingSelectorRows, toolsWithInput } from '../../../helpers/tool-registry.js';
 
 /**
  * Minimal valid input per tool, before the `stage` default is applied, and the
@@ -51,19 +52,35 @@ import { AGGREGATE_ROUTE } from '@/services/openfda/canvas-spill.js';
  */
 const STAGING_TOOLS = [
   [searchAdverseEventsTool, { category: 'drug' }, 'No results found.'],
+  [searchAdverseEventsTool, { category: 'food' }, 'No results found.'],
+  [searchAdverseEventsTool, { category: 'device' }, 'No results found.'],
   [searchAdverseEventsTool, { category: 'cosmetic' }, 'No results found.'],
   [searchAnimalEventsTool, {}, 'No animal adverse event reports found.'],
   [searchDeviceClearancesTool, { pathway: '510k' }, 'No device records found.'],
+  [searchDeviceClearancesTool, { pathway: 'pma' }, 'No device records found.'],
   [searchDeviceClearancesTool, { pathway: 'classification' }, 'No device records found.'],
   [searchDrugApprovalsTool, {}, 'No drug application records found.'],
   [searchDrugApprovalsTool, { dataset: 'orangebook' }, 'No drug application records found.'],
   [searchDrugApprovalsTool, { dataset: 'crl' }, 'No drug application records found.'],
   [searchDrugShortagesTool, {}, 'No drug shortage records found.'],
   [searchRecallsTool, { category: 'drug' }, 'No results found.'],
+  [searchRecallsTool, { category: 'food' }, 'No results found.'],
+  [searchRecallsTool, { category: 'device', endpoint: 'enforcement' }, 'No results found.'],
+  [searchRecallsTool, { category: 'device', endpoint: 'recall' }, 'No results found.'],
   [searchTobaccoReportsTool, {}, 'No tobacco problem reports found.'],
   [lookupNdcTool, { search: 'aspirin' }, 'No NDC records found.'],
   [lookupNdcTool, { search: 'aspirin', dataset: 'nsde' }, 'No NDC records found.'],
 ] as const;
+
+it('STAGING_TOOLS has a row for exactly the tools that take stage (#116)', () => {
+  expect([...new Set(STAGING_TOOLS.map(([tool]) => tool.name))].sort()).toEqual(
+    toolsWithInput('stage'),
+  );
+});
+
+it('STAGING_TOOLS has a row for every value of each selector a staging tool takes (#116)', () => {
+  expect(missingSelectorRows('stage', STAGING_TOOLS)).toEqual([]);
+});
 
 const formatText = (
   tool: (typeof STAGING_TOOLS)[number][0],
@@ -112,6 +129,7 @@ describe.each(STAGING_TOOLS.map(([tool, input, miss]) => [tool.name, input, tool
         spilled: true,
         staged_rows: 235,
         truncated: true,
+        truncated_by: 'size_budget',
       });
       expect(text).not.toMatch(/^No .*(found|records)\.$/im);
       expect(text).toContain('609468');
@@ -126,6 +144,7 @@ describe.each(STAGING_TOOLS.map(([tool, input, miss]) => [tool.name, input, tool
         spilled: true,
         staged_rows: 235,
         truncated: true,
+        truncated_by: 'size_budget',
       });
       expect(text).toContain('Staged 235 of 609468');
       expect(text).toContain('spilled_ab12cd34');
@@ -141,9 +160,27 @@ describe.each(STAGING_TOOLS.map(([tool, input, miss]) => [tool.name, input, tool
         spilled: true,
         staged_rows: 235,
         truncated: true,
+        truncated_by: 'size_budget',
       });
       expect(text).toContain('narrow the query');
       expect(text).toContain('openfda_count_values');
+    });
+
+    // #110 — the stop cause reaches both surfaces; the cause table is tabled at searchLead.
+    it('declares truncated_by in its output and renders it with its cause in content[] (#110)', () => {
+      expect(tool.output.shape).toHaveProperty('truncated_by');
+      const text = formatText(tool, {
+        meta: { total: 51_779, skip: 0, limit: 1, lastUpdated: '2026-06-01' },
+        results: [{}],
+        canvas_id: 'cv_1',
+        canvas_table: 'spilled_ab12cd34',
+        spilled: true,
+        staged_rows: 25_000,
+        truncated: true,
+        truncated_by: 'row_ceiling',
+      });
+      expect(text).toContain('spilled=true, truncated_by=row_ceiling)');
+      expect(text).toContain("staging stopped at openFDA's 25000-row pagination ceiling");
     });
 
     it('omits the aggregate route when the whole match reached the table (#36)', () => {
@@ -172,7 +209,7 @@ describe.each(STAGING_TOOLS.map(([tool, input, miss]) => [tool.name, input, tool
           canvas_table: 'spilled_ab12cd34',
           spilled: true,
           staged_rows: truncated ? 235 : 609_468,
-          ...(truncated ? { truncated: true } : {}),
+          ...(truncated ? { truncated: true, truncated_by: 'size_budget' } : {}),
         });
         const line = text.split('\n').find((l) => l.startsWith('> Staged')) ?? '';
         const describeAt = line.indexOf('openfda_dataframe_describe');
@@ -225,6 +262,7 @@ describe.each(STAGING_TOOLS.map(([tool, input, miss]) => [tool.name, input, tool
         spilled: true,
         staged_rows: 235,
         truncated: true,
+        truncated_by: 'size_budget',
       });
       expect(text).toContain('The staged table holds the first 235 of them');
       expect(text).not.toContain('OFFSET 700000');
@@ -332,7 +370,7 @@ const META_CASES = [
 /**
  * Every tool hands its own resolved page size to the shared staging path, so each
  * runs the two windows the bug misreported (a miss, a short page); the full set of
- * windows runs once, on the tool the bug was reported against.
+ * windows runs once, on the drug recalls the bug was reported against.
  * `canvas-spill.test.ts` tables the same windows at the `canvasResult` seam.
  */
 const WIRING_CASES = META_CASES.filter(([name]) => name === 'a miss' || name === 'a short page');
@@ -340,7 +378,14 @@ const WIRING_CASES = META_CASES.filter(([name]) => name === 'a miss' || name ===
 describe.each(
   STAGING_TOOLS.map(
     ([tool, input]) =>
-      [tool.name, input, tool, tool === searchRecallsTool ? META_CASES : WIRING_CASES] as const,
+      [
+        tool.name,
+        input,
+        tool,
+        tool === searchRecallsTool && 'category' in input && input.category === 'drug'
+          ? META_CASES
+          : WIRING_CASES,
+      ] as const,
   ),
 )('%s %j — staged meta matches the plain call (#73)', (_name, baseInput, tool, cases) => {
   beforeEach(async () => {
@@ -368,6 +413,37 @@ describe.each(
     expect(header(staged)).toContain(`limit: ${limit})`);
   });
 });
+
+/* --- #110: a staged call's stop cause reaches both surfaces --- */
+
+describe.each(STAGING_TOOLS.map(([tool, input]) => [tool.name, input, tool] as const))(
+  '%s %j — truncated_by on both surfaces (#110)',
+  (_name, baseInput, tool) => {
+    it('returns the drain’s stop cause beside truncated, in structuredContent and content[]', async () => {
+      // Drain pages carry the call's deadline; failing them as expired cuts the drain after the probe.
+      const query = vi.fn(
+        async (_endpoint: string, params: { limit?: number }, _ctx: unknown, options?: object) => {
+          if (options) throw timeout('Deadline passed.', { reason: 'retry_deadline_exceeded' });
+          const results = Array.from({ length: params.limit ?? 0 }, (_, i) => ({ id: `r${i}` }));
+          return { meta: { total: 900, skip: 0, limit: 100, lastUpdated: '2026-06-01' }, results };
+        },
+      );
+      await setMock('@/services/openfda/openfda-service.js', { query });
+      await setMock('@/services/canvas/canvas-accessor.js', makeCanvas());
+
+      const staged = await runToolContract(tool, { ...baseInput, limit: 1, stage: true } as never);
+
+      expect(staged.isError).toBeFalsy();
+      expect(staged.structuredContent).toMatchObject({
+        staged_rows: 100,
+        truncated: true,
+        truncated_by: 'time_budget',
+      });
+      const text = staged.content.flatMap((block) => (block.type === 'text' ? [block.text] : []));
+      expect(text.join('\n')).toContain('truncated_by=time_budget');
+    });
+  },
+);
 
 /* --- #88: a bare staged browse sends the newest-first sort on every request --- */
 

@@ -14,6 +14,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { resetServerConfig } from '@/config/server-config.js';
 import { countValuesTool } from '@/mcp-server/tools/definitions/count-values.tool.js';
 import { dataframeDescribeTool } from '@/mcp-server/tools/definitions/dataframe-describe.tool.js';
+import { dataframeDropTool } from '@/mcp-server/tools/definitions/dataframe-drop.tool.js';
 import { dataframeQueryTool } from '@/mcp-server/tools/definitions/dataframe-query.tool.js';
 import { drugProfileTool } from '@/mcp-server/tools/definitions/drug-profile.tool.js';
 import { getDrugLabelTool } from '@/mcp-server/tools/definitions/get-drug-label.tool.js';
@@ -28,6 +29,7 @@ import { searchTobaccoReportsTool } from '@/mcp-server/tools/definitions/search-
 import { getFieldGroups } from '@/mcp-server/tools/field-catalog.js';
 import { setCanvas } from '@/services/canvas/canvas-accessor.js';
 import { initOpenFdaService } from '@/services/openfda/openfda-service.js';
+import { toolsWithInput } from '../../../helpers/tool-registry.js';
 
 // ── openfda_count_values ────────────────────────────────────────────────────────────
 
@@ -502,6 +504,10 @@ describe('search-tool limit schema (#92)', () => {
     ([tool, input, fallback, maximum]) => [tool.name, tool, input, fallback, maximum] as const,
   );
 
+  it('SEARCH_TOOLS has a row for exactly the tools that take stage (#116)', () => {
+    expect(rows.map(([name]) => name).sort()).toEqual(toolsWithInput('stage'));
+  });
+
   const advertisedLimit = (tool: AnyToolDefinition) =>
     (
       z.toJSONSchema(tool.input, { io: 'input' }) as {
@@ -628,6 +634,20 @@ describe('optional free-text inputs reject blank values', () => {
     ['openfda_search_tobacco_reports', searchTobaccoReportsTool.input, {}, ['search', 'sort']],
   ];
 
+  it('has a case for exactly the tools with an optional search or sort, naming those fields (#116)', () => {
+    const optional = {
+      search: toolsWithInput('search', { optional: true }),
+      sort: toolsWithInput('sort', { optional: true }),
+    };
+    const expected = [...new Set([...optional.search, ...optional.sort])].map((name) => [
+      name,
+      (['search', 'sort'] as const).filter((field) => optional[field].includes(name)),
+    ]);
+    expect(Object.fromEntries(cases.map(([label, , , fields]) => [label, fields]))).toEqual(
+      Object.fromEntries(expected),
+    );
+  });
+
   for (const [label, schema, base, fields] of cases) {
     for (const field of fields) {
       it.each(BLANKS)(`${label}.${field} rejects %j`, (blank) => {
@@ -679,6 +699,7 @@ describe('canvas_id inputs take the minted canvas-id shape', () => {
   const cases: Array<[string, { parse: (value: unknown) => unknown }, object, boolean]> = [
     ['openfda_dataframe_query', dataframeQueryTool.input, { query: 'SELECT 1' }, true],
     ['openfda_dataframe_describe', dataframeDescribeTool.input, {}, true],
+    ['openfda_dataframe_drop', dataframeDropTool.input, { table: 'spilled_recalls' }, true],
     ['openfda_lookup_ndc', lookupNdcTool.input, { search: 'aspirin' }, false],
     ['openfda_search_adverse_events', searchAdverseEventsTool.input, { category: 'drug' }, false],
     ['openfda_search_animal_events', searchAnimalEventsTool.input, {}, false],
@@ -693,6 +714,10 @@ describe('canvas_id inputs take the minted canvas-id shape', () => {
     ['openfda_search_recalls', searchRecallsTool.input, { category: 'drug' }, false],
     ['openfda_search_tobacco_reports', searchTobaccoReportsTool.input, {}, false],
   ];
+
+  it('has a case for exactly the tools that take canvas_id (#116)', () => {
+    expect(cases.map(([label]) => label).sort()).toEqual(toolsWithInput('canvas_id'));
+  });
 
   for (const [label, schema, base, required] of cases) {
     it.each(NOT_AN_ID)(`${label}.canvas_id rejects %j`, (value) => {
@@ -810,6 +835,10 @@ describe('sort accepts the directions openFDA honours and rejects the rest', () 
     ([definition, base]) =>
       [definition.name, definition.input as { parse: (value: unknown) => unknown }, base] as const,
   );
+
+  it('SORT_DEFINITIONS has a row for exactly the tools that take sort (#116)', () => {
+    expect(SORT_TOOLS.map(([label]) => label).sort()).toEqual(toolsWithInput('sort'));
+  });
 
   /** Accepted and forwarded byte-identical on every tool — each already in the form openFDA honours. */
   const ACCEPTED = [
@@ -1308,6 +1337,10 @@ describe('fields takes dotted record paths and rejects anything else (#66)', () 
     ['openfda_search_animal_events', searchAnimalEventsTool.input, {}],
     ['openfda_search_tobacco_reports', searchTobaccoReportsTool.input, {}],
   ];
+
+  it('FIELDS_TOOLS has a row for exactly the tools that take fields (#116)', () => {
+    expect(FIELDS_TOOLS.map(([label]) => label).sort()).toEqual(toolsWithInput('fields'));
+  });
 
   const ACCEPTED = [
     ['receivedate'],

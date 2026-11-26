@@ -23,6 +23,7 @@ import {
   singleLine,
   truncate,
 } from '@/mcp-server/tools/format-utils.js';
+import { AGGREGATE_ROUTE } from '@/services/openfda/canvas-spill.js';
 import { codeLiteralsIn, renderCommonMark } from '../../helpers/commonmark.js';
 import { linearTiming } from '../../helpers/cpu-timing.js';
 
@@ -428,6 +429,49 @@ describe('searchLead', () => {
       staged_rows: 0,
     });
     expect(lead[1]).toBe('> Canvas `cv_1` acquired; no rows staged (spilled=false, 0 matched).\n');
+  });
+
+  /*
+   * #110 — a cut staging line carries truncated_by and names its cause from it,
+   * never from staged_rows: a size budget can stop past 25,000 rows, and a time
+   * budget anywhere.
+   */
+  it.each([
+    ['size_budget', 38_012, 'its size budget'],
+    ['row_ceiling', 30_100, "openFDA's 25000-row pagination ceiling"],
+    ['time_budget', 15_100, 'its time budget'],
+    ['upstream_end', 3, 'the last record openFDA served'],
+  ] as const)(
+    'names a %s cut from truncated_by, whatever staged_rows says',
+    (cause, rows, text) => {
+      const [, line] = searchLead({
+        meta: { ...META, total: 51_779, limit: 1 },
+        results: [{}],
+        canvas_id: 'cv_1',
+        canvas_table: 'spilled_ab12cd34',
+        spilled: true,
+        staged_rows: rows,
+        truncated: true,
+        truncated_by: cause,
+      });
+      expect(line).toBe(
+        `> Staged ${rows} of 51779 matched rows on canvas table \`spilled_ab12cd34\` (canvas_id \`cv_1\`, spilled=true, truncated_by=${cause}) — openfda_dataframe_describe for its columns, then openfda_dataframe_query for SQL. Truncated: staging stopped at ${text}, so the table holds the first ${rows} records — narrow the query for a complete set.${AGGREGATE_ROUTE}\n`,
+      );
+    },
+  );
+
+  it('carries no truncation on a staging line without truncated_by', () => {
+    const [, line] = searchLead({
+      meta: { ...META, total: 25_000, limit: 1 },
+      results: [{}],
+      canvas_id: 'cv_1',
+      canvas_table: 'spilled_ab12cd34',
+      spilled: true,
+      staged_rows: 25_000,
+    });
+    expect(line).not.toContain('truncated_by');
+    expect(line).not.toContain('Truncated');
+    expect(line).not.toContain(AGGREGATE_ROUTE);
   });
 
   it('places the fields projection line after the header and before the oversized-record line (#66)', () => {

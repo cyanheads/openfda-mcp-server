@@ -3250,6 +3250,77 @@ describe('openfda_drug_profile adverse-event total at the HTTP boundary', () => 
       );
     });
   });
+
+  /**
+   * #112 — a sub-query answered by a 200 that is not openFDA JSON is the
+   * upstream's fault: after the retry ladder its section is degraded as
+   * upstream_error, never unexpected_error, and never filled from the body as
+   * an empty section. Real service and real `withRetry`, on fake timers.
+   */
+  describe('a sub-query answered by a 200 that is no openFDA JSON', () => {
+    const pathIs = (path: string) => (req: Request) => new URL(req.url).pathname === path;
+    let random: { mockRestore: () => void };
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      random = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      random.mockRestore();
+    });
+
+    it.each<[string, () => Response]>([
+      [
+        'an HTML page',
+        () =>
+          new Response('<html><head><title>Gateway maintenance</title></head></html>', {
+            status: 200,
+          }),
+      ],
+      ['an empty object', () => Response.json({})],
+    ])('degrades the section as upstream_error for %s', async (_label, respond) => {
+      http.route(
+        { match: pathIs('/drug/shortages.json'), respond },
+        {
+          match: pathIs('/drug/label.json'),
+          respond: () =>
+            page(
+              [
+                {
+                  set_id: 's-1',
+                  openfda: { generic_name: ['metformin'], brand_name: ['Glucophage'] },
+                },
+              ],
+              1,
+            ),
+        },
+        { match: () => true, respond: NO_MATCHES },
+      );
+
+      const pending = runToolContract(drugProfileTool, { drug: 'metformin' });
+      await vi.runAllTimersAsync();
+      const result = await pending;
+
+      expect(result.isError).toBeFalsy();
+      const structured = result.structuredContent as {
+        shortage: unknown;
+        degraded: Array<{ section: string; reason: string; message: string }>;
+      };
+      expect(structured.shortage).toBeNull();
+      expect(structured.degraded).toEqual([
+        {
+          section: 'shortage',
+          reason: 'upstream_error',
+          message: expect.stringContaining('drug/shortages answered HTTP 200'),
+        },
+      ]);
+      expect(
+        http.calls.filter((call) => pathIs('/drug/shortages.json')(call.request)),
+      ).toHaveLength(4);
+    });
+  });
 });
 
 /**

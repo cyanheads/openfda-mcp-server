@@ -218,9 +218,10 @@ describe('openfda_lookup_ndc', () => {
   });
 
   // The handler sends the caller's sort or none: no browse default to state.
-  it('gives a sort example and claims no newest-first default', () => {
+  // The example sorts on both datasets: nsde carries no listing_expiration_date.
+  it('gives a sort example both datasets accept and claims no newest-first default', () => {
     const description = lookupNdcTool.input.shape.sort.description ?? '';
-    expect(description).toContain('several comma-separated, e.g. listing_expiration_date:desc.');
+    expect(description).toContain('several comma-separated, e.g. marketing_start_date:desc.');
     expect(description).not.toContain('newest first');
   });
 
@@ -286,7 +287,7 @@ describe('openfda_lookup_ndc', () => {
           '',
           '',
           '**totalResults:** 15',
-          '**effectiveQuery:** `brand_name:"eliquis"`',
+          'Query: `brand_name:"eliquis"`',
         ].join('\n'),
       );
     });
@@ -316,7 +317,7 @@ describe('openfda_lookup_ndc', () => {
           '',
           '',
           '**totalResults:** 0',
-          '**effectiveQuery:** `brand_name:"noexist"`',
+          'Query: `brand_name:"noexist"`',
           `> ${NDC_MISS_0_10}`,
         ].join('\n'),
       );

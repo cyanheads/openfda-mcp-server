@@ -4,7 +4,7 @@ description: Query discipline for the openfda_* tools — gates that stop false 
 license: Apache-2.0
 metadata:
   author: cyanheads
-  version: "1.2"
+  version: "1.3"
 ---
 
 ## Scope
@@ -36,7 +36,7 @@ NDCs match only in their hyphenated form: `product_ndc:"69339364"` matches nothi
 - Quote every identifier value. openFDA splits an unquoted hyphenated value into its parts and ORs them, so `recall_number:D-321-2016` sent as written matches about 18,000 records (nearly all of drug enforcement) where the quoted form matches one. The tools send an unquoted term of letters and digits joined by hyphens quoted themselves, so a bare `D-321-2016` is safe there; a value holding any other character (`1.5-mg`, `D-0123*`) is sent as written, so quote it.
 - A character openFDA refuses (``! # $ ; ? ^ ` | ~``, and anything outside printable ASCII) fails as `malformed_search` before any request, naming the character and its position: it is refused even inside quotes, so remove it or put a space in its place, write an accented letter as its plain letter (`e` for `é`: openFDA stores names unaccented, and the message names the letter), and write `NOT`, `OR`, or `*` where `!`, `|`, or `?` was meant.
 - Before writing a date range, check the field's note in `openfda_describe_fields`. Most dates take `[20240101 TO 20241231]`. Shortage dates are stored `MM/DD/YYYY` and searched as `[2026-01-01 TO 2026-12-31]`; on `drug/shortages` the tools rewrite `YYYYMMDD`, `M/D/YYYY`, and `YYYY-M-D` to that form, in `openfda_count_values` too, but a raw unquoted date outside the tools misparses.
-- `skip` stops at 25,000 (`pagination_limit_reached`). To read a larger match, start at `skip` 0 and pass each page's `next_cursor` as `cursor`, with the same endpoint, `search`, and `sort` (`limit`, `fields`, `include`, and `sections` may change); a cursor cannot come with `skip` above 0, `stage`, or `canvas_id`. Or narrow the search, for example by splitting a date range.
+- `skip` stops at 25,000 (`pagination_limit_reached`). To read a larger match, start at `skip` 0 and pass each page's `next_cursor` as `cursor`, with the same endpoint, `search`, and `sort` (`limit`, `fields`, `include`, and `sections` may change); a cursor cannot come with `skip` above 0, `stage`, or `canvas_id`. A page with matched records left but no `next_cursor` has reached the records lacking the sort field (openFDA sorts them last) or a link that repeats the page, and its notice names the way on: `skip` from its position while within 25,000, an `_exists_:` clause per sort field, or another sort. Or narrow the search, for example by splitting a date range.
 
 **Before concluding absence**
 A zero or low count is not evidence until each of these has been ruled out:
@@ -65,7 +65,7 @@ A zero or low count is not evidence until each of these has been ruled out:
 
 **Bulk analysis.** A search stages nothing unless it passes `stage: true`, or a `canvas_id` from an earlier staged call to add its table to that canvas; the response then carries `canvas_id` and `canvas_table`. Call `openfda_dataframe_describe` with the `canvas_id` for the staged table and column names before writing SQL, then `openfda_dataframe_query` with a read-only query. Pass the same `canvas_id` back to stage further results beside the first; the tables expire with the canvas.
 
-A staged drain stops at about 16 MB. A drug adverse-event report runs tens of kilobytes, so the table holds a few hundred reports. Any `GROUP BY` over it describes only the staged slice, so compare `staged_rows` with `meta.total` before reading it as a population figure. For a distribution over everything that matched, use `openfda_count_values`. Stage when you need record-level logic that openFDA can't express, such as per-drug-entry suspect filtering.
+A staged drain stops at about 16 MB, at the end of the match, or at a 50 s time budget, and at 25,000 rows only when openFDA can't continue the walk past it (most often a sorted walk reaching the records that lack the sort field); `truncated_by` (`size_budget`, `row_ceiling`, `time_budget`, `upstream_end`) says which. A drug adverse-event report runs tens of kilobytes, so the table holds a few hundred reports. Any `GROUP BY` over it describes only the staged slice, so compare `staged_rows` with `meta.total` before reading it as a population figure. For a distribution over everything that matched, use `openfda_count_values`. Stage when you need record-level logic that openFDA can't express, such as per-drug-entry suspect filtering.
 
 A staged table holds every top-level field of the endpoint's records, with a fixed column set per endpoint (per category, dataset, or pathway), so two stagings of one endpoint share their columns. Scalars are text (`CAST` for math) and nested blocks are JSON columns. No staged adverse-event table has an `openfda` column: read the block as `json_extract(patient, '$.drug[N].openfda')` on drug events and `json_extract(device, '$[N].openfda')` on device events. A device report sends most fields on every record as `''` when unset, so test them with `= ''` or `NULLIF`, not `IS NULL`.
 

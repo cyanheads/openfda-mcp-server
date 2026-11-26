@@ -1755,6 +1755,64 @@ describe('openfda_get_drug_label', () => {
       },
     );
 
+    /*
+     * A sorted walk that reaches the labels lacking the sort field gets a next
+     * link openFDA cannot follow (searchAfterBlocked from the service): no
+     * next_cursor, and the paging lead joined by the routes that do read on.
+     */
+    it('issues no next_cursor on a page openFDA cannot continue, and says how to read on, on both surfaces', async () => {
+      mockQuery.mockResolvedValue({
+        meta: { total: 12, skip: 0, limit: 5, lastUpdated: '2026-11-25' },
+        results: [{ id: 'doc-00000' }, { id: 'doc-00001' }],
+        searchAfterBlocked: 'missing_sort_value',
+      });
+
+      const result = await runToolContract(getDrugLabelTool, {
+        search,
+        sort: 'effective_time:desc',
+        limit: 2,
+      });
+
+      const blocked =
+        'openFDA cannot continue a walk sorted by `effective_time:desc` past records that lack the sort field, which sort last, so this page carries no next_cursor though 10 of the 12 matched records follow it. To read on, re-run with skip=2 and the same search and sort, add `_exists_:effective_time` to the search to keep only records that carry it, or sort by another field.';
+      const { next_cursor, notice } = structuredOf(result);
+      expect(next_cursor).toBeUndefined();
+      expect(notice).toMatch(
+        /^12 labels matched; this page returned 2\. Page with skip \(e\.g\. skip=2\) or narrow the search\. /,
+      );
+      expect(notice?.endsWith(` ${blocked}`)).toBe(true);
+      expect(textOf(result.content)).not.toContain('next_cursor:');
+      expect(noticeQuote(result)).toContain('which sort last, so this page carries no next_cursor');
+    });
+
+    // Past the ceiling, re-running from skip 0 walks back to the same blocked link: the lead names no route of its own.
+    it('leaves the way past the ceiling to the blocked notice on a page openFDA cannot continue', async () => {
+      mockQuery.mockResolvedValue({
+        // A cursor page reports its walk position as meta.skip.
+        meta: { total: 26_010, skip: 25_998, limit: 2, lastUpdated: '2026-11-25' },
+        results: [{ id: 'doc-25998' }, { id: 'doc-25999' }],
+        searchAfterBlocked: 'missing_sort_value',
+      });
+
+      const result = await runToolContract(getDrugLabelTool, {
+        search,
+        sort: 'effective_time:desc',
+        limit: 2,
+      });
+
+      const { next_cursor, notice } = structuredOf(result);
+      expect(next_cursor).toBeUndefined();
+      expect(notice).toMatch(
+        /^26010 labels matched; this page returned 2\. The next page would start at skip=26000, past openFDA's 25000-record pagination ceiling\. /,
+      );
+      expect(notice).not.toContain('re-run the call from skip 0');
+      expect(
+        notice?.endsWith(
+          ' openFDA cannot continue a walk sorted by `effective_time:desc` past records that lack the sort field, which sort last, so this page carries no next_cursor though 10 of the 26010 matched records follow it. To read on, add `_exists_:effective_time` to the search to keep only records that carry it, or sort by another field.',
+        ),
+      ).toBe(true);
+    });
+
     it('refuses an empty cursor at argument validation', async () => {
       const result = await runToolContract(getDrugLabelTool, { search, cursor: '' });
 
@@ -1974,7 +2032,7 @@ describe('openfda_get_drug_label', () => {
         },
         {
           type: 'text',
-          text: '\n\n**totalResults:** 1\n**effectiveQuery:** `openfda.brand_name:"aspirin"`',
+          text: '\n\n**totalResults:** 1\nQuery: `openfda.brand_name:"aspirin"`',
         },
       ]);
     });

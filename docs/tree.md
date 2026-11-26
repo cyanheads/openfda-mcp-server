@@ -1,6 +1,6 @@
 # openfda-mcp-server - Directory Structure
 
-Generated on: 2026-11-23 02:16:52
+Generated on: 2026-11-26 03:55:38
 
 ```text
 openfda-mcp-server/
@@ -185,6 +185,7 @@ openfda-mcp-server/
 │   │       ├── pagination-cursor.ts
 │   │       ├── schema-utils.ts
 │   │       ├── search-clauses.ts
+│   │       ├── search-enrichment.ts
 │   │       ├── search-expression.ts
 │   │       ├── shortage-dates.ts
 │   │       └── spl-table.ts
@@ -219,6 +220,8 @@ openfda-mcp-server/
 │   │   ├── cpu-timing.ts
 │   │   ├── mock-setters.ts
 │   │   ├── staging-canvas.ts
+│   │   ├── tool-registry.test.ts
+│   │   ├── tool-registry.ts
 │   │   └── upstream-responses.ts
 │   ├── mcp-server/
 │   │   └── tools/
@@ -267,6 +270,7 @@ openfda-mcp-server/
 │   │       ├── pagination-cursor.test.ts
 │   │       ├── schema-utils.test.ts
 │   │       ├── search-clauses.test.ts
+│   │       ├── search-enrichment.test.ts
 │   │       ├── search-expression.test.ts
 │   │       ├── shortage-dates.test.ts
 │   │       └── spl-table.test.ts

@@ -63,6 +63,7 @@ import { searchDrugShortagesTool } from '@/mcp-server/tools/definitions/search-d
 import { searchRecallsTool } from '@/mcp-server/tools/definitions/search-recalls.tool.js';
 import { searchTobaccoReportsTool } from '@/mcp-server/tools/definitions/search-tobacco-reports.tool.js';
 import { setCanvasMock, setSvcMock } from '../../../helpers/mock-setters.js';
+import { missingSelectorRows, toolsWithInput } from '../../../helpers/tool-registry.js';
 
 /**
  * Paged service stub over `total` records, record `i` padded with `recordBytes`
@@ -103,24 +104,40 @@ function makeCanvas(canvasId = 'cv_pagesize') {
  * Minimal valid input per multi-row search tool and dataset, before defaults are
  * applied; the endpoint that input selects and that endpoint's cap; and the
  * tool's largest cap, which strict mode advertises as the schema `maximum`. A
- * tool with several datasets has a row per dataset, each titled with its
- * endpoint.
+ * tool with selector inputs (`category`, `endpoint`, `dataset`, `pathway`) has
+ * a row per endpoint they reach, each titled with its endpoint.
  */
 const SEARCH_TOOLS = [
   [searchAdverseEventsTool, { category: 'drug' }, 'drug/event', 25, 1000],
+  [searchAdverseEventsTool, { category: 'food' }, 'food/event', 1000, 1000],
+  [searchAdverseEventsTool, { category: 'device' }, 'device/event', 175, 1000],
   [searchAdverseEventsTool, { category: 'cosmetic' }, 'cosmetic/event', 1000, 1000],
   [searchAnimalEventsTool, {}, 'animalandveterinary/event', 450, 450],
   [searchDeviceClearancesTool, { pathway: '510k' }, 'device/510k', 175, 600],
+  [searchDeviceClearancesTool, { pathway: 'pma' }, 'device/pma', 575, 600],
   [searchDeviceClearancesTool, { pathway: 'classification' }, 'device/classification', 600, 600],
   [searchDrugApprovalsTool, {}, 'drug/drugsfda', 375, 1000],
   [searchDrugApprovalsTool, { dataset: 'orangebook' }, 'drug/orangebook', 1000, 1000],
   [searchDrugApprovalsTool, { dataset: 'crl' }, 'transparency/crl', 75, 1000],
   [searchDrugShortagesTool, {}, 'drug/shortages', 1000, 1000],
   [searchRecallsTool, { category: 'drug' }, 'drug/enforcement', 1000, 1000],
+  [searchRecallsTool, { category: 'food' }, 'food/enforcement', 1000, 1000],
+  [searchRecallsTool, { category: 'device' }, 'device/enforcement', 125, 1000],
+  [searchRecallsTool, { category: 'device', endpoint: 'recall' }, 'device/recall', 50, 1000],
   [searchTobaccoReportsTool, {}, 'tobacco/problem', 1000, 1000],
   [lookupNdcTool, { search: 'aspirin' }, 'drug/ndc', 1000, 1000],
   [lookupNdcTool, { search: 'aspirin', dataset: 'nsde' }, 'other/nsde', 1000, 1000],
 ] as const;
+
+it('SEARCH_TOOLS has a row for exactly the tools that take stage (#116)', () => {
+  expect([...new Set(SEARCH_TOOLS.map(([tool]) => tool.name))].sort()).toEqual(
+    toolsWithInput('stage'),
+  );
+});
+
+it('SEARCH_TOOLS has a row for every value of each selector a staging tool takes (#116)', () => {
+  expect(missingSelectorRows('stage', SEARCH_TOOLS)).toEqual([]);
+});
 
 type SearchTool = (typeof SEARCH_TOOLS)[number][0];
 
@@ -441,15 +458,21 @@ describe.each(
 /** A top-level identity key each endpoint's projected records keep, for the record shape it serves. */
 const IDENTITY_KEY: Record<string, string> = {
   'drug/event': 'safetyreportid',
+  'food/event': 'report_number',
+  'device/event': 'mdr_report_key',
   'cosmetic/event': 'report_number',
   'animalandveterinary/event': 'unique_aer_id_number',
   'device/510k': 'k_number',
+  'device/pma': 'pma_number',
   'device/classification': 'product_code',
   'drug/drugsfda': 'application_number',
   'drug/orangebook': 'product_number',
   'transparency/crl': 'file_name',
   'drug/shortages': 'package_ndc',
   'drug/enforcement': 'recall_number',
+  'food/enforcement': 'recall_number',
+  'device/enforcement': 'recall_number',
+  'device/recall': 'product_res_number',
   'tobacco/problem': 'report_id',
   'drug/ndc': 'product_ndc',
   'other/nsde': 'package_ndc11',

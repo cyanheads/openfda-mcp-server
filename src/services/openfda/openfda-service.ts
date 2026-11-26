@@ -66,11 +66,16 @@ const SIDE_REQUEST_RETRY = { maxRetries: 0 } as const satisfies RetryOptions;
  * - `parse_exception` — the tokens are legal but the grammar is not: an unbalanced
  *   bracket or paren, a dangling `AND`/`OR`, a half-open range (`[20200101 TO]`),
  *   or a bare `_exists_:`.
- * - `illegal_argument_exception` — a `count` on a non-keyword text field. On a
- *   count query this is answered by {@link OPENFDA_NOT_AGGREGATABLE_5XX} first;
- *   the marker stays here to cover the same exception raised without a `count`.
- * - `query_shard_exception` — a sort or filter on a field absent from that index's
- *   mapping (e.g. `receivedate:desc` on food/device, which lack the field).
+ * - `illegal_argument_exception` — a `count` on a non-keyword text field, or a
+ *   sort on one past the first key. A count query is answered by
+ *   {@link OPENFDA_NOT_AGGREGATABLE_5XX} first and a refused sort key by
+ *   `not_sortable` ({@link OPENFDA_FIELDDATA_FIELD}); the marker stays here to
+ *   cover the same exception raised otherwise, such as a `search_after` that does
+ *   not fit the sort.
+ * - `query_shard_exception` — a field absent from that index's mapping. A sort
+ *   key with no mapping (`receivedate:desc` on food/device, which lack the field)
+ *   is answered by `not_sortable` first ({@link OPENFDA_SORT_NO_MAPPING}); the
+ *   marker stays here for the rest.
  *
  * These never succeed on retry, so a 5xx carrying one is reclassified to a
  * non-retryable `query_error` — `ValidationError` sits outside `withRetry`'s
@@ -99,8 +104,133 @@ const OPENFDA_QUERY_ERROR_5XX =
  */
 const OPENFDA_NOTHING_TO_COUNT = /nothing to count/i;
 
-/** The title of an HTML error page; the captured body is a few hundred bytes at most. */
+/** The title of an HTML page, matched within {@link HTML_TITLE_SCAN_CHARS} of its start. */
 const HTML_TITLE = /<title[^>]*>([^<]*)<\/title>/i;
+
+/**
+ * Leading characters of an HTML page searched for its title. A proxy's error
+ * page names itself in its head; an error body is captured at a few hundred
+ * bytes anyway, while a page served as 200 arrives whole.
+ */
+const HTML_TITLE_SCAN_CHARS = 2_048;
+
+/** Whether a body is an HTML page — a proxy's, never openFDA's own answer. */
+function isHtml(body: string): boolean {
+  return /^\s*</.test(body.slice(0, HTML_TITLE_SCAN_CHARS));
+}
+
+/** An HTML page's title, or `undefined` when its head names none. */
+function htmlTitle(page: string): string | undefined {
+  return HTML_TITLE.exec(page.slice(0, HTML_TITLE_SCAN_CHARS))?.[1]?.trim() || undefined;
+}
+
+/** Whether a parsed JSON value is an object — not an array, not null. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The body of every 200 openFDA answers: a search page, whose `meta.results`
+ * holds its skip, limit, and total (its `results` empty at `limit=0`), or a
+ * count tally, which has no `meta.results`. Records are checked to be objects
+ * and passed on as parsed: a page holds up to 1,000, and copying each one
+ * would add a pass over every key.
+ */
+const OPENFDA_ENVELOPE = z.object({
+  meta: z.object({
+    last_updated: z.string().optional(),
+    results: z.object({ skip: z.number(), limit: z.number(), total: z.number() }).optional(),
+  }),
+  results: z.array(z.custom<Record<string, unknown>>(isRecord)),
+});
+
+type OpenFdaEnvelope = z.infer<typeof OPENFDA_ENVELOPE>;
+
+/**
+ * The envelope of a 200 body. A body that is not JSON, or JSON off the
+ * envelope, fails as `upstream_error`, retried as a marker-free 5xx is: a
+ * proxy's page served as 200 is the outage its 5xx page is, and a body cut
+ * short is a transport fault. The message names the endpoint, the status, and
+ * an HTML page's title — never the body.
+ */
+function parseEnvelope(text: string, endpoint: string): OpenFdaEnvelope {
+  let json: unknown;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    throw unusableSuccess(endpoint, unparsedBody(text));
+  }
+  const envelope = OPENFDA_ENVELOPE.safeParse(json);
+  if (!envelope.success) throw unusableSuccess(endpoint, 'JSON that is not an openFDA response');
+  return envelope.data;
+}
+
+/** What a 200 body that is not JSON holds, in words that quote none of it but a page title. */
+function unparsedBody(text: string): string {
+  if (isHtml(text)) {
+    const title = htmlTitle(text);
+    return title
+      ? `an HTML page titled "${title}" instead of JSON`
+      : 'an HTML page instead of JSON';
+  }
+  return /\S/.test(text) ? 'a body that is not valid JSON' : 'an empty body instead of JSON';
+}
+
+function unusableSuccess(endpoint: string, body: string): McpError {
+  return serviceUnavailable(`openFDA upstream error: ${endpoint} answered HTTP 200 with ${body}.`, {
+    reason: 'upstream_error',
+    endpoint,
+    status: 200,
+  });
+}
+
+/**
+ * openFDA's 400 for a first sort key it will not sort by as written: analyzed
+ * text, a number or boolean, an object path, a reserved name, or a field the
+ * index lacks. Anchored at the start of the decoded message, which names the
+ * key as sent.
+ */
+const OPENFDA_SORT_NON_ANALYZED = /^Sorting allowed by non-analyzed fields only: ([\w.]+)/;
+
+/**
+ * openFDA's 5xx `query_shard_exception` for a sort key with no mapping on the
+ * index: an `.exact` form the field lacks, another endpoint's field, or a later
+ * key that is absent or an object path.
+ */
+const OPENFDA_SORT_NO_MAPPING = /No mapping found for \[([\w.]+)\] in order to sort on/;
+
+/**
+ * The field Elasticsearch names in its `illegal_argument_exception` for sorting
+ * or aggregating analyzed text. openFDA raises it, as a 5xx, for a sort on
+ * analyzed text past the first key; a first key draws
+ * {@link OPENFDA_SORT_NON_ANALYZED} instead.
+ */
+const OPENFDA_FIELDDATA_FIELD = /fielddata=true on \[([\w.]+)\]/;
+
+/** How openFDA refused a sort key, which decides the correction `not_sortable` offers. */
+type SortRefusal = 'non_analyzed' | 'analyzed_text' | 'no_mapping';
+
+/**
+ * The field an openFDA sort refusal names, when it is one of the request's own
+ * sort keys — the only field the refusal can be about, so the error echoes the
+ * caller's key and no other upstream text.
+ */
+function refusedSortKey(
+  sort: string | undefined,
+  refusal: RegExpExecArray | null,
+): string | undefined {
+  const field = refusal?.[1];
+  if (sort === undefined || field === undefined) return undefined;
+  return sortKeys(sort).includes(field) ? field : undefined;
+}
+
+/** The keys of a `sort` expression in order, as sent: `.exact` kept, the direction dropped. */
+function sortKeys(sort: string): string[] {
+  return sort.split(',').map((key) => {
+    const colon = key.indexOf(':');
+    return (colon === -1 ? key : key.slice(0, colon)).trim();
+  });
+}
 
 /**
  * The fields of an openFDA error body the classifier reads. A body off this
@@ -149,6 +279,74 @@ export function searchAfterOfNextLink(header: string | null): string | undefined
     }
   }
   return undefined;
+}
+
+/**
+ * A sort key's value in openFDA's `search_after` for a record that lacks the
+ * field: Long.MIN or Long.MAX printed through a double (`±9223372036854776000`)
+ * on a date sort, the exact longs matched too. A keyword sort writes the empty
+ * value, which a record holding "" writes as well (see {@link continuationOf}).
+ */
+const MISSING_SORT_VALUE = /^-?92233720368547(?:75807|75808|76000)$/;
+
+/**
+ * Whether `value` holds something to sort by at `segments[i..]`, through any
+ * array: null and an empty array hold nothing, as the sort reads them, while ""
+ * is a value.
+ */
+function holdsSortValue(value: unknown, segments: readonly string[], i: number): boolean {
+  if (Array.isArray(value)) return value.some((item) => holdsSortValue(item, segments, i));
+  if (i === segments.length) return value !== undefined && value !== null;
+  if (value === null || typeof value !== 'object') return false;
+  const key = segments[i] as string;
+  return (
+    Object.hasOwn(value, key) &&
+    holdsSortValue((value as Record<string, unknown>)[key], segments, i + 1)
+  );
+}
+
+/**
+ * The continuation a page's next link offers. A sorted walk that reaches the
+ * records lacking a sort field (openFDA sorts them last) is linked with that
+ * key's missing-value marker, and following it fails (a date sort answers HTTP
+ * 500) or loops (a keyword sort: ascending restarts the walk at its first
+ * record, descending settles on one page it repeats under the same link). Such
+ * a link, or one repeating the value the page was read with, comes back as
+ * `searchAfterBlocked`, naming which, rather than `nextSearchAfter`.
+ *
+ * A keyword sort's empty value is that marker only when the page's last record,
+ * whose values the link carries, lacks the key's field: a record holding "" is
+ * linked the same way, and openFDA continues that walk. When the link's values
+ * do not line up one-to-one with the sort's keys, an empty value is the marker
+ * if the last record lacks any sort field.
+ */
+function continuationOf(
+  link: string | undefined,
+  sent: string | undefined,
+  sort: string | undefined,
+  last: unknown,
+): Pick<OpenFdaResponse, 'nextSearchAfter' | 'searchAfterBlocked'> {
+  if (link === undefined) return {};
+  if (link === sent) return { searchAfterBlocked: 'repeated_link' };
+  // One `<n>=<value>` per sort key, then openFDA's tiebreaker id. Values arrive
+  // percent-encoded, so `;` only ever separates components.
+  const sortValues = link
+    .split(';')
+    .slice(0, -1)
+    .map((component) => component.slice(component.indexOf('=') + 1));
+  const paths = (sort === undefined ? [] : sortKeys(sort)).map((key) =>
+    key.endsWith('.exact') ? key.slice(0, -'.exact'.length) : key,
+  );
+  const lacks = (path: string) => !holdsSortValue(last, path.split('.'), 0);
+  const emptyIsMissing = (i: number) =>
+    paths.length === sortValues.length
+      ? lacks(paths[i] as string)
+      : paths.length === 0 || paths.some(lacks);
+  return sortValues.some(
+    (value, i) => MISSING_SORT_VALUE.test(value) || (value === '' && emptyIsMissing(i)),
+  )
+    ? { searchAfterBlocked: 'missing_sort_value' }
+    : { nextSearchAfter: link };
 }
 
 /** Whether a link-value's parameters hold a `rel` whose relation types include `next`. */
@@ -266,7 +464,10 @@ export class OpenFdaService {
    * non-retryable error (`query_error`) stops the retry loop while a genuine
    * `upstream_error` / `rate_limited` is retried. Returns an empty result set for
    * 404 (valid query, zero matches) — except on a count expression that does not
-   * count, which is a fixable count expression, not an empty tally.
+   * count, which is a fixable count expression, not an empty tally. A 200 body is
+   * read whole, then parsed against openFDA's envelope: a read the deadline or
+   * the caller's cancel cuts keeps its own class, and only a body that arrived
+   * and is not openFDA JSON becomes `upstream_error` ({@link parseEnvelope}).
    *
    * `deadlineAtMs` bounds the whole ladder: `withRetry`'s `deadlineMs` fails a
    * backoff that would outlast it and gives every expiry one shape, and each
@@ -301,24 +502,27 @@ export class OpenFdaService {
         // alongside the correlation id. Only `operation` is overridden, to name
         // the upstream call rather than the tool execution that wraps it.
         const requestContext = { ...ctx, operation: `openFDA:${endpoint}` };
+        let response: Response;
+        let text: string;
         try {
           // openFDA answers a valid zero-match query with 404; `expectedStatuses`
           // drops that to a debug log so a handled empty result stops reading as
           // an operational failure. The thrown status-mapped McpError is unchanged,
           // so classification below is unaffected.
-          const response = await fetchWithTimeout(
+          response = await fetchWithTimeout(
             url,
             Math.min(REQUEST_TIMEOUT_MS, remainingMs),
             requestContext,
             { signal: ctx.signal, expectedStatuses: [404] },
           );
-          const data = (await response.json()) as Record<string, unknown>;
-          // Read with the body it came with, so a retried attempt keeps only its own link.
-          const nextSearchAfter = searchAfterOfNextLink(response.headers.get('link'));
-          return this.normalizeResponse<T>(data, endpoint, params, nextSearchAfter);
+          text = await response.text();
         } catch (error) {
           return await this.classifyError<T>(error, endpoint, params, ctx, deadlineAtMs);
         }
+        const envelope = parseEnvelope(text, endpoint);
+        // Read with the body it came with, so a retried attempt keeps only its own link.
+        const nextSearchAfter = searchAfterOfNextLink(response.headers.get('link'));
+        return this.normalizeResponse<T>(envelope, endpoint, params, nextSearchAfter);
       },
       {
         operation: `openFDA:${endpoint}`,
@@ -364,39 +568,44 @@ export class OpenFdaService {
 
   /**
    * The normalized page. openFDA reports `skip: 0` on every `search_after`
-   * page, so a continuation reports its walk position instead.
+   * page, so a continuation reports its walk position instead. A count tally
+   * carries no pagination, so its total, skip, and limit read 0.
    */
   private normalizeResponse<T>(
-    data: Record<string, unknown>,
+    envelope: OpenFdaEnvelope,
     endpoint: string,
     params: OpenFdaQueryParams,
     nextSearchAfter: string | undefined,
   ): OpenFdaResponse<T> {
-    const meta = data.meta as Record<string, unknown> | undefined;
-    const pagination = meta?.results as Record<string, unknown> | undefined;
-    const lastUpdated = (meta?.last_updated as string) ?? 'unknown';
+    const { last_updated: lastUpdated = 'unknown', results: pagination } = envelope.meta;
     if (lastUpdated !== 'unknown') {
       this.lastUpdatedByEndpoint.set(endpoint, lastUpdated);
     }
     return {
       meta: {
-        total: (pagination?.total as number) ?? 0,
-        skip: params.searchAfter?.position ?? (pagination?.skip as number) ?? 0,
-        limit: (pagination?.limit as number) ?? 0,
+        total: pagination?.total ?? 0,
+        skip: params.searchAfter?.position ?? pagination?.skip ?? 0,
+        limit: pagination?.limit ?? 0,
         lastUpdated,
       },
-      results: (data.results as T[]) ?? [],
-      ...(nextSearchAfter !== undefined && { nextSearchAfter }),
+      results: envelope.results as T[],
+      ...continuationOf(
+        nextSearchAfter,
+        params.searchAfter?.value,
+        params.sort,
+        envelope.results.at(-1),
+      ),
     };
   }
 
   /**
-   * Classify an error thrown from the fetch/parse pipeline into openFDA's typed
+   * Classify an error thrown from the fetch and body read into openFDA's typed
    * failure surface. Keyed on the HTTP status and body `fetchWithTimeout` attaches
-   * to `error.data`. Non-`McpError` throws (network errors, JSON parse failures)
-   * and status-less `McpError`s (timeout, abort) propagate unchanged — they are
-   * already correctly classified. The reclassified reasons match the calling
-   * tools' `errors[]` contracts, so the framework fills each declared recovery hint.
+   * to `error.data`. Non-`McpError` throws and status-less `McpError`s (network
+   * failure, timeout, abort — before the headers or during the body read)
+   * propagate unchanged — they are already correctly classified. The
+   * reclassified reasons match the calling tools' `errors[]` contracts, so the
+   * framework fills each declared recovery hint.
    */
   private async classifyError<T>(
     error: unknown,
@@ -480,6 +689,8 @@ export class OpenFdaService {
           endpoint,
         });
       }
+      const refused = refusedSortKey(params.sort, OPENFDA_SORT_NON_ANALYZED.exec(message));
+      if (refused) throw this.sortRefusalError(endpoint, refused, 'non_analyzed');
       throw validationError(
         `openFDA query error: ${message}. Check field names and query syntax — use AND/OR for boolean operators, quotes for exact match.`,
         { reason: 'query_error', endpoint },
@@ -493,6 +704,14 @@ export class OpenFdaService {
       if (params.count && OPENFDA_NOT_AGGREGATABLE_5XX.test(body)) {
         throw this.notAggregatableError(endpoint, params.count, 'analyzed_text');
       }
+      // A sort key openFDA refused, ahead of the generic marker set, which matches
+      // both exceptions too. Read off the raw capture rather than the parsed
+      // message: an over-budget body is kept as head and tail around an elision,
+      // and the field sits in the tail.
+      const unmapped = refusedSortKey(params.sort, OPENFDA_SORT_NO_MAPPING.exec(body));
+      if (unmapped) throw this.sortRefusalError(endpoint, unmapped, 'no_mapping');
+      const analyzed = refusedSortKey(params.sort, OPENFDA_FIELDDATA_FIELD.exec(body));
+      if (analyzed) throw this.sortRefusalError(endpoint, analyzed, 'analyzed_text');
       // openFDA reports deterministic, user-fixable query failures (malformed
       // syntax, aggregation on a non-keyword field) as HTTP 5xx. Reclassify those
       // as non-retryable query errors; genuine outages stay retryable.
@@ -696,6 +915,40 @@ export class OpenFdaService {
   }
 
   /**
+   * Build the `not_sortable` error for a sort key openFDA refused, naming the
+   * key, the endpoint, and the correction. The correction closes the message and
+   * is the recovery hint, so the wire states it once.
+   *
+   * The other form is hedged: `.exact` cures analyzed text only where the field
+   * has a keyword subfield, and dropping it cures an `.exact` the index lacks
+   * only where the bare field sorts, so the correction says a field that fails
+   * both ways cannot be sorted. A bare key with no mapping is one the endpoint
+   * lacks, which no form cures. `openfda_describe_fields` lists field paths, not
+   * sortable forms, so it is offered only as the endpoint's field list.
+   * Non-retryable: the same key fails identically every time.
+   */
+  private sortRefusalError(endpoint: string, field: string, refusal: SortRefusal): McpError {
+    const diagnosis = (
+      {
+        non_analyzed: `cannot sort ${endpoint} by "${field}" as written: it sorts by non-analyzed fields only`,
+        analyzed_text: `cannot sort ${endpoint} by "${field}": it is an analyzed text field`,
+        no_mapping: `cannot sort ${endpoint} by "${field}": the field has no sortable mapping on ${endpoint}`,
+      } satisfies Record<SortRefusal, string>
+    )[refusal];
+    const hasExact = field.endsWith('.exact');
+    const correction =
+      refusal === 'no_mapping' && !hasExact
+        ? `Sort on another field; openfda_describe_fields for ${endpoint} lists the endpoint's field paths.`
+        : `Sort on "${hasExact ? field.slice(0, -'.exact'.length) : `${field}.exact`}" instead; a field that fails both ways cannot be sorted, so sort on another field.`;
+    return validationError(`openFDA ${diagnosis}. ${correction}`, {
+      reason: 'not_sortable',
+      endpoint,
+      field,
+      recovery: { hint: correction },
+    });
+  }
+
+  /**
    * Best-effort human-readable message from an openFDA error body. Prefers the
    * specific `error.details` (e.g. the parser location or the "use a keyword
    * field" hint) then `error.message`, falling back to the raw (possibly
@@ -718,7 +971,7 @@ export class OpenFdaService {
     const error = OPENFDA_ERROR_BODY.safeParse(json).data?.error;
     const detail = error?.details ?? (error?.message && decodeEntities(error.message));
     if (detail) return detail;
-    if (/^\s*</.test(body)) return HTML_TITLE.exec(body)?.[1]?.trim() || `HTTP ${status}`;
+    if (isHtml(body)) return htmlTitle(body) ?? `HTTP ${status}`;
     return body;
   }
 }

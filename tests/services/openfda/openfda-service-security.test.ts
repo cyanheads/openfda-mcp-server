@@ -33,7 +33,7 @@ describe('OpenFdaService security', () => {
   });
 
   // Re-readable Response fake — `fetchWithTimeout` reads `.text()`/`.headers` on
-  // the error path; the success path reads `.json()` and the `Link` header.
+  // the error path; the success path reads `.text()` and the `Link` header.
   function mockResponse(status: number, body: unknown, headers?: Record<string, string>): Response {
     const text = typeof body === 'string' ? body : JSON.stringify(body);
     return {
@@ -148,15 +148,17 @@ describe('OpenFdaService security', () => {
       await expect(service.query('drug/event', {}, ctx)).rejects.toThrow();
     });
 
-    it('handles json() rejection on successful status gracefully', async () => {
+    // A parse failure is the upstream's fault: no SyntaxError reaches the caller,
+    // whose framework would read it as invalid input (-32007).
+    it('fails an unparseable body on a successful status as an upstream_error', async () => {
       const service = new OpenFdaService({ baseUrl: 'https://api.fda.gov' });
-      mockFetch.mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: () => Promise.reject(new SyntaxError('Unexpected token')),
-      } as unknown as Response);
+      mockFetch.mockResolvedValue(mockResponse(200, '{"meta":{"results":'));
 
-      await expect(service.query('drug/event', {}, ctx)).rejects.toThrow();
+      const err = await service.query('drug/event', {}, ctx).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(McpError);
+      expect(err).not.toBeInstanceOf(SyntaxError);
+      expect((err as McpError).data).toMatchObject({ reason: 'upstream_error', status: 200 });
     });
 
     it('returns empty results for a 404 with an unparseable body', async () => {
@@ -261,7 +263,9 @@ describe('OpenFdaService security', () => {
       expect(result.results).toEqual([{ id: 'rec-1' }]);
     });
 
-    it('handles missing results array gracefully', async () => {
+    // A page with a total and no records would read as past-the-end: an answer
+    // off openFDA's shape fails instead of standing in for one (#112).
+    it('fails a body with no results array as an upstream_error, never an empty page', async () => {
       const service = new OpenFdaService({ baseUrl: 'https://api.fda.gov' });
       mockFetch.mockResolvedValue(
         mockResponse(200, {
@@ -270,8 +274,14 @@ describe('OpenFdaService security', () => {
         }),
       );
 
-      const result = await service.query('drug/event', {}, ctx);
-      expect(result.results).toEqual([]);
+      const err = await service.query('drug/event', {}, ctx).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(McpError);
+      expect((err as McpError).data).toMatchObject({
+        reason: 'upstream_error',
+        endpoint: 'drug/event',
+        status: 200,
+      });
     });
   });
 

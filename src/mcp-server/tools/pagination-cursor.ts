@@ -3,7 +3,8 @@
  * `skip` ceiling: the `cursor` input and `next_cursor` output field, the opaque
  * token between them, its `invalid_cursor` contract entry, and the steps a
  * handler calls around its request — {@link resolveCursor} before it,
- * {@link nextCursorField} and {@link cursorEndNotice} after it.
+ * {@link nextCursorField}, {@link cursorEndNotice}, and
+ * {@link cursorBlockedNotice} after it.
  *
  * The token wraps openFDA's own `search_after` value. The server never returns
  * or fetches the `Link` URL it came from: the service rebuilds every request
@@ -16,6 +17,8 @@ import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { type TypedFail, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { codeLiteral } from '@/mcp-server/tools/format-utils.js';
+import { OPENFDA_MAX_SKIP } from '@/mcp-server/tools/schema-utils.js';
 import type { OpenFdaQueryParams, OpenFdaResponse } from '@/services/openfda/types.js';
 
 /**
@@ -55,7 +58,7 @@ export const cursorOutputShape = {
     .string()
     .optional()
     .describe(
-      'Pass as cursor for the next page; present on a page read at skip 0 or by cursor when more records follow.',
+      'Pass as cursor for the next page; present on a page read at skip 0 or by cursor when more records follow and openFDA can continue the walk.',
     ),
 };
 
@@ -172,12 +175,14 @@ export function resolveCursor(
 
 /**
  * The `next_cursor` field for an unstaged page, to spread into the tool's
- * result: present when openFDA linked a `search_after` page and records remain
- * past this one, empty otherwise. openFDA links only a page read at `skip: 0`
- * or by `search_after`, and links an exactly full last page to a 404, which the
- * remaining-records check suppresses. The position advances by the records
- * this page holds, never by the requested `limit`, so a clamped or short page
- * skips nothing. Never call it on a staged result.
+ * result: present when openFDA linked a `search_after` page the walk can follow
+ * and records remain past this one, empty otherwise — a link the walk cannot
+ * follow arrives as `searchAfterBlocked`, never as `nextSearchAfter`
+ * ({@link cursorBlockedNotice} says so). openFDA links only a page read at
+ * `skip: 0` or by `search_after`, and links an exactly full last page to a 404,
+ * which the remaining-records check suppresses. The position advances by the
+ * records this page holds, never by the requested `limit`, so a clamped or
+ * short page skips nothing. Never call it on a staged result.
  */
 export function nextCursorField(
   response: Pick<OpenFdaResponse, 'meta' | 'nextSearchAfter' | 'results'>,
@@ -202,4 +207,47 @@ export function cursorEndNotice(
   const returned = page.results.length;
   if (!searchAfter || returned === 0 || page.meta.skip + returned < page.meta.total) return;
   return `This page holds the last ${returned} of the ${page.meta.total} matched records, so the cursor walk is complete.`;
+}
+
+/**
+ * The fields a `sort` orders by, each once, with `.exact` read as its field —
+ * the form an `_exists_:` clause names. Splits on the grammar's own separators
+ * (`sortExpression` in `schema-utils.ts`), so a field path never holds one.
+ */
+function sortFields(sort: string): string[] {
+  const fields = sort.split(',').map((segment) => {
+    const [path = ''] = segment.trim().split(':');
+    return path.endsWith('.exact') ? path.slice(0, -'.exact'.length) : path;
+  });
+  return [...new Set(fields)];
+}
+
+/**
+ * The notice for an unstaged page whose openFDA next link the walk cannot follow
+ * (`searchAfterBlocked`) while matched records remain past it, or `undefined` for
+ * any other page. A sorted walk is linked that way once it reaches the records
+ * lacking a sort field, which openFDA sorts last; the notice names the routes
+ * that still read on: `skip` from this page's position while it is within the
+ * ceiling, an `_exists_:` clause per sort field, or another sort. A link that
+ * repeats the page blames no sort field, and an unsorted link, carrying no sort
+ * value, can only repeat it.
+ */
+export function cursorBlockedNotice(
+  response: Pick<OpenFdaResponse, 'meta' | 'results' | 'searchAfterBlocked'>,
+  query: CursorQuery,
+): string | undefined {
+  const { skip, total } = response.meta;
+  const position = skip + response.results.length;
+  if (!response.searchAfterBlocked || position >= total) return;
+  const withheld = `so this page carries no next_cursor though ${total - position} of the ${total} matched records follow it`;
+  const bySkip = position <= OPENFDA_MAX_SKIP ? `re-run with skip=${position}` : undefined;
+
+  if (response.searchAfterBlocked === 'repeated_link' || query.sort === undefined) {
+    const same = query.sort === undefined ? 'the same search' : 'the same search and sort';
+    return `openFDA linked a next page that repeats this one, ${withheld}. To read on, ${bySkip ? `${bySkip} and ${same}` : 'narrow the search'}.`;
+  }
+  const fields = sortFields(query.sort);
+  const several = fields.length > 1;
+  const exists = codeLiteral(fields.map((field) => `_exists_:${field}`).join(' AND '));
+  return `openFDA cannot continue a walk sorted by ${codeLiteral(query.sort.trim())} past records that lack ${several ? 'a sort field' : 'the sort field'}, which sort last, ${withheld}. To read on, ${bySkip ? `${bySkip} and the same search and sort, ` : ''}add ${exists} to the search to keep only records that carry ${several ? 'every sort field' : 'it'}, or sort by another field.`;
 }

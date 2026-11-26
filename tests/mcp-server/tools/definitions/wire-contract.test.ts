@@ -15,6 +15,8 @@
  *   carries `thrownBy: 'service'` on every tool that declares it. The lint that
  *   reads the marker scans only handlers holding a literal `ctx.fail(`, so it
  *   cannot catch a tool left unmarked.
+ * - **Sort refusals.** Every tool taking `sort` declares `not_sortable` from its
+ *   shared entry, and the reason, field, and correction reach both surfaces.
  * - **Description size.** A client loads every description before its first
  *   call, so a rule shared across tools is written once, in its shared builder:
  *   a description string repeated verbatim on two or more tools stays within
@@ -27,19 +29,28 @@
 
 import { Buffer } from 'node:buffer';
 import { tool, z } from '@cyanheads/mcp-ts-core';
+import type { DataCanvas } from '@cyanheads/mcp-ts-core/canvas';
+import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
+import { createFetchMock, runToolContract } from '@cyanheads/mcp-ts-core/testing';
 import type { AnyToolDefinition } from '@cyanheads/mcp-ts-core/tools';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { allToolDefinitions } from '@/mcp-server/tools/definitions/index.js';
+import { lookupNdcTool } from '@/mcp-server/tools/definitions/lookup-ndc.tool.js';
+import { searchRecallsTool } from '@/mcp-server/tools/definitions/search-recalls.tool.js';
 import {
   CONJOINED_ARRAY_NOTICE_TOPIC,
   CURSOR_END_NOTICE_TOPIC,
   fieldsDescription,
+  notSortableError,
   searchNoticeField,
   sortDescription,
 } from '@/mcp-server/tools/schema-utils.js';
 import { SEARCH_SYNTAX_NOTE } from '@/mcp-server/tools/search-expression.js';
+import { setCanvas } from '@/services/canvas/canvas-accessor.js';
 import { STAGING_WORKFLOW } from '@/services/openfda/canvas-spill.js';
+import { initOpenFdaService } from '@/services/openfda/openfda-service.js';
 import { includeDescription, LEFT_OUT_NOTICE_TOPIC } from '@/services/openfda/record-projection.js';
+import { textOfResult } from '../../../helpers/content.js';
 
 const UNKNOWN_KEY = '__not_a_declared_argument__';
 
@@ -84,6 +95,7 @@ describe('service-raised error reasons', () => {
     'upstream_error',
     'query_error',
     'not_aggregatable',
+    'not_sortable',
     'pagination_limit_reached',
     'malformed_search',
     'limit_above_cap',
@@ -127,6 +139,165 @@ describe('service-raised error reasons', () => {
   });
 });
 
+/**
+ * #113 — a sort key openFDA refuses is `not_sortable`, raised by the service
+ * from openFDA's own refusal: declared from the one shared entry by every tool
+ * taking `sort`, and carried to the wire with the field and the form to try.
+ * The refusal shapes themselves are tabled at the service seam.
+ */
+describe('sort refusals (#113)', () => {
+  const sortTools = allToolDefinitions.filter((definition) => 'sort' in definition.input.shape);
+
+  it('finds the nine tools that take sort', () => {
+    expect(sortTools.map((definition) => definition.name).sort()).toEqual([
+      'openfda_get_drug_label',
+      'openfda_lookup_ndc',
+      'openfda_search_adverse_events',
+      'openfda_search_animal_events',
+      'openfda_search_device_clearances',
+      'openfda_search_drug_approvals',
+      'openfda_search_drug_shortages',
+      'openfda_search_recalls',
+      'openfda_search_tobacco_reports',
+    ]);
+  });
+
+  it.each(sortTools.map((definition) => [definition.name, definition] as const))(
+    '%s declares not_sortable from the shared entry',
+    (_name, definition: AnyToolDefinition) => {
+      expect(definition.errors?.find((entry) => entry.reason === 'not_sortable')).toEqual(
+        notSortableError,
+      );
+    },
+  );
+
+  describe('at the tool boundary', () => {
+    const http = createFetchMock();
+    const CORRECTION =
+      'Sort on "classification.exact" instead; a field that fails both ways cannot be sorted, so sort on another field.';
+    /** openFDA's 5xx for analyzed text past the first sort key. */
+    const ANALYZED_TEXT = () =>
+      Response.json(
+        {
+          error: {
+            code: 'SERVER_ERROR',
+            message: 'Check your request and try again',
+            details:
+              '[illegal_argument_exception] Text fields are not optimised for operations that require per-document field data like aggregations and sorting, so these operations are disabled by default. Please use a keyword field instead. Alternatively, set fielddata=true on [classification] in order to load field data by uninverting the inverted index. Note that this can use significant memory.',
+          },
+        },
+        { status: 500 },
+      );
+    type ErrorEnvelope = {
+      error: { code: number; message: string; data?: Record<string, unknown> };
+    };
+
+    beforeAll(() => {
+      initOpenFdaService();
+    });
+
+    beforeEach(() => {
+      http.reset();
+      http.install();
+    });
+
+    afterEach(() => {
+      http.restore();
+    });
+
+    it('carries the reason, the field, and the correction on both surfaces', async () => {
+      http.route({ match: () => true, respond: ANALYZED_TEXT });
+
+      const result = await runToolContract(searchRecallsTool, {
+        category: 'drug',
+        sort: 'report_date:desc,classification:asc',
+        limit: 1,
+      });
+
+      expect(result.isError).toBe(true);
+      const { error } = result.structuredContent as ErrorEnvelope;
+      expect(error.code).toBe(JsonRpcErrorCode.ValidationError);
+      expect(error.data).toMatchObject({
+        reason: 'not_sortable',
+        endpoint: 'drug/enforcement',
+        field: 'classification',
+        recovery: { hint: CORRECTION },
+      });
+      const text = textOfResult(result);
+      expect(text).toContain('it is an analyzed text field');
+      expect(text).toContain(CORRECTION);
+      expect(text.split(CORRECTION)).toHaveLength(2); // stated once
+      expect(text).toContain('reason not_sortable');
+      expect(text).not.toMatch(/AND\/OR|quoted phrases|fielddata/);
+      expect(http.calls).toHaveLength(1);
+    });
+
+    it('raises it from a 400 before any record is fetched', async () => {
+      http.route({
+        match: () => true,
+        respond: () =>
+          Response.json(
+            {
+              error: {
+                code: 'BAD_REQUEST',
+                message: 'Sorting allowed by non-analyzed fields only: brand_name',
+              },
+            },
+            { status: 400 },
+          ),
+      });
+
+      const result = await runToolContract(lookupNdcTool, {
+        search: 'brand_name:"aspirin"',
+        sort: 'brand_name:asc',
+        limit: 1,
+      });
+
+      const { error } = result.structuredContent as ErrorEnvelope;
+      expect(error.data).toMatchObject({
+        reason: 'not_sortable',
+        endpoint: 'drug/ndc',
+        field: 'brand_name',
+      });
+      expect(textOfResult(result)).toContain('Sort on "brand_name.exact" instead');
+    });
+
+    it('raises the same reason on a staged call', async () => {
+      const canvas = {
+        acquire: async () => ({
+          canvasId: 'cv_sort_probe',
+          isNew: true,
+          registerTable: () => {
+            throw new Error('The probe page fails first; nothing is staged.');
+          },
+        }),
+      };
+      setCanvas(canvas as unknown as DataCanvas);
+      try {
+        http.route({ match: () => true, respond: ANALYZED_TEXT });
+
+        const result = await runToolContract(searchRecallsTool, {
+          category: 'drug',
+          sort: 'report_date:desc,classification:asc',
+          limit: 1,
+          stage: true,
+        });
+
+        expect(result.isError).toBe(true);
+        const { error } = result.structuredContent as ErrorEnvelope;
+        expect(error.data).toMatchObject({
+          reason: 'not_sortable',
+          field: 'classification',
+          recovery: { hint: CORRECTION },
+        });
+        expect(http.calls).toHaveLength(1);
+      } finally {
+        setCanvas(undefined);
+      }
+    });
+  });
+});
+
 describe('reserved error key', () => {
   it.each(allToolDefinitions.map((definition) => [definition.name, definition] as const))(
     '%s declares no output field named "error"',
@@ -161,7 +332,7 @@ describe('description size', () => {
    * one of these bytes before its first call, so raising it is a decision, made
    * here, not a side effect of a longer description.
    */
-  const SERVER_DESCRIPTION_CEILING_BYTES = 66_000;
+  const SERVER_DESCRIPTION_CEILING_BYTES = 68_000;
 
   const utf8Bytes = (text: string) => Buffer.byteLength(text, 'utf8');
 

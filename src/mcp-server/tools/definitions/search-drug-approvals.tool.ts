@@ -12,15 +12,10 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import type { ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { sortOrNewest } from '@/mcp-server/tools/default-sort.js';
-import {
-  formatFieldHint,
-  OBJECT_ARRAY_PATHS,
-  SINGLE_ENTRY_ARRAYS,
-} from '@/mcp-server/tools/field-catalog.js';
+import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
   codeLiteral,
   emptyPageBody,
-  emptyResultMessage,
   formatRemainingFields,
   humanizeField,
   lineContent,
@@ -31,7 +26,6 @@ import {
 } from '@/mcp-server/tools/format-utils.js';
 import {
   type CursorQuery,
-  cursorEndNotice,
   cursorInput,
   cursorOutputShape,
   invalidCursorError,
@@ -44,10 +38,10 @@ import {
   fieldSelection,
   fieldsDescription,
   limitAboveCapError,
+  notSortableError,
   type PageKind,
   pageLimitBy,
   pageMetaOutput,
-  pageSizeNotice,
   paginationLimitReachedError,
   rateLimitedError,
   resolvePageSize,
@@ -57,11 +51,10 @@ import {
   sortExpression,
   upstreamError,
 } from '@/mcp-server/tools/schema-utils.js';
-import { arrayTieNotice } from '@/mcp-server/tools/search-clauses.js';
+import { enrichSearchPage } from '@/mcp-server/tools/search-enrichment.js';
 import {
   assertSearchDelimitersBalanced,
   malformedSearchError,
-  phrasePlusHint,
   SEARCH_SYNTAX_NOTE,
   searchExpression,
 } from '@/mcp-server/tools/search-expression.js';
@@ -77,20 +70,11 @@ import {
   STAGING_WORKFLOW,
   spillSearch,
   stageInput,
-  stagingNotice,
   varcharColumns,
 } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
-import {
-  inlinePage,
-  oversizedRecordNotice,
-  oversizedRecordOutputShape,
-} from '@/services/openfda/page-budget.js';
-import {
-  projectionNotice,
-  projectionOutputShape,
-  recordProjection,
-} from '@/services/openfda/record-projection.js';
+import { inlinePage, oversizedRecordOutputShape } from '@/services/openfda/page-budget.js';
+import { projectionOutputShape, recordProjection } from '@/services/openfda/record-projection.js';
 
 /**
  * Keys that tell one record apart, kept on every `fields`-projected record. A
@@ -465,6 +449,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
     },
     paginationLimitReachedError,
     invalidCursorError,
+    notSortableError,
   ],
 
   async handler(input, ctx) {
@@ -478,23 +463,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       sort: sortOrNewest(input, newest),
     };
     const searchAfter = resolveCursor(input, query, ctx);
-    /**
-     * openFDA tests each clause against the whole record, so AND-ed clauses on
-     * one array's fields can be met by different entries. Each top array the
-     * catalog lists is a staged column; letters list none. An Orange Book
-     * record's one product splits nothing, though its ingredients can.
-     */
-    const arrayPaths = OBJECT_ARRAY_PATHS[endpoint] ?? [];
-    const singleEntry = SINGLE_ENTRY_ARRAYS[endpoint];
-
-    const emptyNotice = (skip: number, total: number, totalUnverified?: boolean) =>
-      emptyResultMessage(
-        skip,
-        total,
-        `${miss} ${formatFieldHint(endpoint)}`,
-        totalUnverified,
-        searchAfter !== undefined,
-      );
+    const noMatch = () => `${miss} ${formatFieldHint(endpoint)}`;
 
     const projection = recordProjection(input.fields, IDENTITY_KEYS);
     const canvas = getCanvas();
@@ -516,27 +485,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
         ctx,
       });
       const staged = canvasResult(spill);
-      ctx.enrich({ totalResults: spill.total });
-      if (input.search) ctx.enrich.echo(input.search);
-      ctx.enrich.notice(
-        [
-          spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
-          phrasePlusHint(input.search, spill.total),
-          pageSizeNotice(size, staged),
-          projectionNotice(staged),
-          oversizedRecordNotice(staged),
-          stagingNotice(spill),
-          arrayTieNotice(
-            input.search,
-            spill.total,
-            arrayPaths,
-            spill.tableName ? { kind: 'staged', table: spill.tableName } : { kind: 'restage' },
-            singleEntry,
-          ),
-        ]
-          .filter(Boolean)
-          .join(' '),
-      );
+      enrichSearchPage(ctx, { query, page: staged, size, noMatch, spill });
       return staged;
     }
 
@@ -566,26 +515,7 @@ export const searchDrugApprovalsTool = tool('openfda_search_drug_approvals', {
       returned: page.results.length,
     });
 
-    ctx.enrich({ totalResults: response.meta.total });
-    if (input.search) ctx.enrich.echo(input.search);
-    const notices = [
-      page.results.length === 0
-        ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
-        : undefined,
-      phrasePlusHint(input.search, response.meta.total),
-      pageSizeNotice(size, page) ?? cursorEndNotice(page, searchAfter),
-      projectionNotice(page),
-      oversizedRecordNotice(page),
-      arrayTieNotice(
-        input.search,
-        response.meta.total,
-        arrayPaths,
-        { kind: 'restage', byCursor: searchAfter !== undefined },
-        singleEntry,
-      ),
-    ].filter(Boolean);
-    if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
-
+    enrichSearchPage(ctx, { query, page, size, noMatch, response, searchAfter });
     return page;
   },
 

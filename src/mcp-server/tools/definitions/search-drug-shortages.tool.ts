@@ -12,7 +12,6 @@ import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
   codeLiteral,
   emptyPageBody,
-  emptyResultMessage,
   formatRemainingFields,
   projectedRecordLines,
   searchLead,
@@ -20,7 +19,6 @@ import {
 } from '@/mcp-server/tools/format-utils.js';
 import {
   type CursorQuery,
-  cursorEndNotice,
   cursorInput,
   cursorOutputShape,
   invalidCursorError,
@@ -31,9 +29,9 @@ import {
   assertSkipWithinCeiling,
   fieldSelection,
   fieldsDescription,
+  notSortableError,
   pageLimit,
   pageMetaOutput,
-  pageSizeNotice,
   paginationLimitReachedError,
   rateLimitedError,
   resolvePageSize,
@@ -43,10 +41,10 @@ import {
   sortExpression,
   upstreamError,
 } from '@/mcp-server/tools/schema-utils.js';
+import { enrichSearchPage } from '@/mcp-server/tools/search-enrichment.js';
 import {
   assertSearchDelimitersBalanced,
   malformedSearchError,
-  phrasePlusHint,
   SEARCH_SYNTAX_NOTE,
   searchExpression,
 } from '@/mcp-server/tools/search-expression.js';
@@ -63,20 +61,11 @@ import {
   STAGING_WORKFLOW,
   spillSearch,
   stageInput,
-  stagingNotice,
   varcharColumns,
 } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
-import {
-  inlinePage,
-  oversizedRecordNotice,
-  oversizedRecordOutputShape,
-} from '@/services/openfda/page-budget.js';
-import {
-  projectionNotice,
-  projectionOutputShape,
-  recordProjection,
-} from '@/services/openfda/record-projection.js';
+import { inlinePage, oversizedRecordOutputShape } from '@/services/openfda/page-budget.js';
+import { projectionOutputShape, recordProjection } from '@/services/openfda/record-projection.js';
 
 /**
  * Keys that tell one record apart, kept on every `fields`-projected record:
@@ -188,6 +177,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
     },
     paginationLimitReachedError,
     invalidCursorError,
+    notSortableError,
   ],
 
   async handler(input, ctx) {
@@ -201,15 +191,9 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
     };
     const searchAfter = resolveCursor(input, query, ctx);
 
-    const emptyNotice = (skip: number, total: number, totalUnverified?: boolean) => {
+    const noMatch = () => {
       const groupHint = shortageDateGroupHint(input.search);
-      return emptyResultMessage(
-        skip,
-        total,
-        `No drug shortage records matched${input.search ? ` search: ${codeLiteral(input.search)}` : ''}.${groupHint ? ` ${groupHint}` : ''} Try broader filters or check field names. ${formatFieldHint('drug/shortages')}`,
-        totalUnverified,
-        searchAfter !== undefined,
-      );
+      return `No drug shortage records matched${input.search ? ` search: ${codeLiteral(input.search)}` : ''}.${groupHint ? ` ${groupHint}` : ''} Try broader filters or check field names. ${formatFieldHint('drug/shortages')}`;
     };
 
     const projection = recordProjection(input.fields, IDENTITY_KEYS);
@@ -232,20 +216,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
         ctx,
       });
       const staged = canvasResult(spill);
-      ctx.enrich({ totalResults: spill.total });
-      if (input.search) ctx.enrich.echo(input.search);
-      ctx.enrich.notice(
-        [
-          spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
-          phrasePlusHint(input.search, spill.total),
-          pageSizeNotice(size, staged),
-          projectionNotice(staged),
-          oversizedRecordNotice(staged),
-          stagingNotice(spill),
-        ]
-          .filter(Boolean)
-          .join(' '),
-      );
+      enrichSearchPage(ctx, { query, page: staged, size, noMatch, spill });
       return staged;
     }
 
@@ -273,19 +244,7 @@ export const searchDrugShortagesTool = tool('openfda_search_drug_shortages', {
       returned: page.results.length,
     });
 
-    ctx.enrich({ totalResults: response.meta.total });
-    if (input.search) ctx.enrich.echo(input.search);
-    const notices = [
-      page.results.length === 0
-        ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
-        : undefined,
-      phrasePlusHint(input.search, response.meta.total),
-      pageSizeNotice(size, page) ?? cursorEndNotice(page, searchAfter),
-      projectionNotice(page),
-      oversizedRecordNotice(page),
-    ].filter(Boolean);
-    if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
-
+    enrichSearchPage(ctx, { query, page, size, noMatch, response, searchAfter });
     return page;
   },
 

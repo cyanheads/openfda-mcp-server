@@ -15,8 +15,10 @@ import { createMockContext } from '@cyanheads/mcp-ts-core/testing';
 import { describe, expect, it } from 'vitest';
 import {
   type CursorQuery,
+  cursorBlockedNotice,
   cursorEndNotice,
   cursorInput,
+  cursorOutputShape,
   invalidCursorError,
   nextCursorField,
   resolveCursor,
@@ -144,6 +146,10 @@ describe('nextCursorField and resolveCursor', () => {
       ['on an exactly full last page, whose link answers 404', page(75, 25, 100, SEARCH_AFTER)],
       ['when the page runs past a total that shrank', page(90, 25, 100, SEARCH_AFTER)],
       ['on an empty page', page(0, 0, 0, SEARCH_AFTER)],
+      [
+        'when openFDA linked a next page the walk cannot follow',
+        { ...page(0, 25, 100), searchAfterBlocked: 'missing_sort_value' as const },
+      ],
     ])('%s', (_name, response) => {
       expect(nextCursorField(response, QUERY)).toEqual({});
     });
@@ -257,6 +263,107 @@ describe('cursorEndNotice', () => {
     ['a page read without a cursor', page(75, 25, 100), undefined],
   ])('says nothing on %s', (_name, response, searchAfter) => {
     expect(cursorEndNotice(response, searchAfter)).toBeUndefined();
+  });
+});
+
+describe('cursorBlockedNotice', () => {
+  /** A page whose openFDA next link the walk cannot follow: `returned` records from `skip`, of `total`. */
+  const blocked = (
+    skip: number,
+    returned: number,
+    total: number,
+    why: 'missing_sort_value' | 'repeated_link' = 'missing_sort_value',
+  ) => ({
+    ...page(skip, returned, total),
+    searchAfterBlocked: why,
+  });
+  const sortedBy = (sort?: string): CursorQuery => ({
+    endpoint: 'food/enforcement',
+    search: 'recalling_firm:"Acme"',
+    sort,
+  });
+
+  it.each([
+    [
+      'a one-key sort, the next page within the skip ceiling',
+      blocked(0, 2, 9),
+      'termination_date:desc',
+      'openFDA cannot continue a walk sorted by `termination_date:desc` past records that lack the sort field, which sort last, so this page carries no next_cursor though 7 of the 9 matched records follow it. To read on, re-run with skip=2 and the same search and sort, add `_exists_:termination_date` to the search to keep only records that carry it, or sort by another field.',
+    ],
+    [
+      'a cursor page whose next page starts exactly at the ceiling',
+      blocked(24_000, 1_000, 30_000),
+      'termination_date:asc',
+      'openFDA cannot continue a walk sorted by `termination_date:asc` past records that lack the sort field, which sort last, so this page carries no next_cursor though 5000 of the 30000 matched records follow it. To read on, re-run with skip=25000 and the same search and sort, add `_exists_:termination_date` to the search to keep only records that carry it, or sort by another field.',
+    ],
+    [
+      'a cursor page whose next page starts past the ceiling',
+      blocked(25_000, 1_000, 30_000),
+      'termination_date:desc',
+      'openFDA cannot continue a walk sorted by `termination_date:desc` past records that lack the sort field, which sort last, so this page carries no next_cursor though 4000 of the 30000 matched records follow it. To read on, add `_exists_:termination_date` to the search to keep only records that carry it, or sort by another field.',
+    ],
+    [
+      'a multi-key sort, .exact read as its field and the spaces openFDA trims dropped',
+      blocked(0, 3, 9),
+      '  report_date:desc , status.exact:asc,report_date:asc ',
+      'openFDA cannot continue a walk sorted by `report_date:desc , status.exact:asc,report_date:asc` past records that lack a sort field, which sort last, so this page carries no next_cursor though 6 of the 9 matched records follow it. To read on, re-run with skip=3 and the same search and sort, add `_exists_:report_date AND _exists_:status` to the search to keep only records that carry every sort field, or sort by another field.',
+    ],
+    [
+      'an unsorted walk whose link repeats the page, within the ceiling',
+      blocked(4, 1, 9, 'repeated_link'),
+      undefined,
+      'openFDA linked a next page that repeats this one, so this page carries no next_cursor though 4 of the 9 matched records follow it. To read on, re-run with skip=5 and the same search.',
+    ],
+    [
+      'an unsorted walk whose link repeats the page, past the ceiling',
+      blocked(26_000, 1, 26_009, 'repeated_link'),
+      undefined,
+      'openFDA linked a next page that repeats this one, so this page carries no next_cursor though 8 of the 26009 matched records follow it. To read on, narrow the search.',
+    ],
+    [
+      'an unsorted walk whose link carries a missing-value marker, which can only repeat the page',
+      blocked(4, 1, 9),
+      undefined,
+      'openFDA linked a next page that repeats this one, so this page carries no next_cursor though 4 of the 9 matched records follow it. To read on, re-run with skip=5 and the same search.',
+    ],
+    [
+      'a sorted walk whose link repeats the page, blaming no sort field',
+      blocked(4, 1, 9, 'repeated_link'),
+      'termination_date:desc',
+      'openFDA linked a next page that repeats this one, so this page carries no next_cursor though 4 of the 9 matched records follow it. To read on, re-run with skip=5 and the same search and sort.',
+    ],
+  ])('names the routes on %s', (_name, response, sort, notice) => {
+    expect(cursorBlockedNotice(response, sortedBy(sort))).toBe(notice);
+  });
+
+  it.each([
+    ['a page openFDA linked normally', page(0, 2, 9, SEARCH_AFTER)],
+    ['a page with no link', page(0, 2, 9)],
+    ['a blocked page that ends the match', blocked(0, 9, 9)],
+    ['a blocked page past a total that shrank', blocked(5, 9, 9)],
+  ])('says nothing on %s', (_name, response) => {
+    expect(cursorBlockedNotice(response, sortedBy('termination_date:desc'))).toBeUndefined();
+  });
+
+  it('stays linear over a long sort', { timeout: 120_000 }, () => {
+    const run = (sort: string) => cursorBlockedNotice(blocked(0, 2, 9), sortedBy(sort));
+    const shapes: [string, (n: number) => string][] = [
+      ['one long line ending in a break', (n) => `${'a.exact:desc,'.repeat(n / 13)}b\n`],
+      ['breaks throughout', (n) => 'a,\n'.repeat(n / 3)],
+    ];
+    for (const [, build] of shapes) {
+      const { t5k, t320k } = linearTiming(run, build(5_000), build(320_000));
+      expect(t320k / t5k).toBeLessThan(256);
+      expect(t320k).toBeLessThan(500_000);
+    }
+  });
+});
+
+describe('the next_cursor output', () => {
+  it('says the cursor is present only while openFDA can continue the walk, in one sentence', () => {
+    const description = cursorOutputShape.next_cursor.description ?? '';
+    expect(description).toContain('and openFDA can continue the walk');
+    expect(description.match(/[.;]\s/g) ?? []).toHaveLength(1);
   });
 });
 

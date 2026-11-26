@@ -8,11 +8,10 @@ import { tool, z } from '@cyanheads/mcp-ts-core';
 import type { ColumnSchema } from '@cyanheads/mcp-ts-core/canvas';
 import { JsonRpcErrorCode } from '@cyanheads/mcp-ts-core/errors';
 import { sortOrNewest } from '@/mcp-server/tools/default-sort.js';
-import { formatFieldHint, OBJECT_ARRAY_PATHS } from '@/mcp-server/tools/field-catalog.js';
+import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
   codeLiteral,
   emptyPageBody,
-  emptyResultMessage,
   formatRemainingFields,
   lineContent,
   projectedRecordLines,
@@ -22,7 +21,6 @@ import {
 } from '@/mcp-server/tools/format-utils.js';
 import {
   type CursorQuery,
-  cursorEndNotice,
   cursorInput,
   cursorOutputShape,
   invalidCursorError,
@@ -34,9 +32,9 @@ import {
   CONJOINED_ARRAY_NOTICE_TOPIC,
   fieldSelection,
   fieldsDescription,
+  notSortableError,
   pageLimit,
   pageMetaOutput,
-  pageSizeNotice,
   paginationLimitReachedError,
   rateLimitedError,
   resolvePageSize,
@@ -46,11 +44,11 @@ import {
   sortExpression,
   upstreamError,
 } from '@/mcp-server/tools/schema-utils.js';
-import { arrayTieNotice, fieldPathsNamed } from '@/mcp-server/tools/search-clauses.js';
+import { fieldPathsNamed } from '@/mcp-server/tools/search-clauses.js';
+import { enrichSearchPage } from '@/mcp-server/tools/search-enrichment.js';
 import {
   assertSearchDelimitersBalanced,
   malformedSearchError,
-  phrasePlusHint,
   SEARCH_SYNTAX_NOTE,
   searchExpression,
 } from '@/mcp-server/tools/search-expression.js';
@@ -66,34 +64,17 @@ import {
   STAGING_WORKFLOW,
   spillSearch,
   stageInput,
-  stagingNotice,
   varcharColumns,
 } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
-import {
-  inlinePage,
-  oversizedRecordNotice,
-  oversizedRecordOutputShape,
-} from '@/services/openfda/page-budget.js';
-import {
-  projectionNotice,
-  projectionOutputShape,
-  recordProjection,
-} from '@/services/openfda/record-projection.js';
+import { inlinePage, oversizedRecordOutputShape } from '@/services/openfda/page-budget.js';
+import { projectionOutputShape, recordProjection } from '@/services/openfda/record-projection.js';
 
 /**
  * Keys that tell one record apart, kept on every `fields`-projected record:
  * `unique_aer_id_number`.
  */
 const IDENTITY_KEYS = ['unique_aer_id_number'] as const;
-
-/**
- * The record's arrays of objects, by full path, from the field catalog (which
- * lists none for an endpoint it has not surveyed). openFDA tests each clause
- * against the whole report, so AND-ed clauses on one array's fields can be met
- * by different entries; each is a column of the staged table.
- */
-const ARRAY_PATHS = OBJECT_ARRAY_PATHS['animalandveterinary/event'] ?? [];
 
 /** The sort a bare browse sends: the report FDA received most recently first. */
 const NEWEST_FIRST = 'original_receive_date:desc';
@@ -205,6 +186,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
     },
     paginationLimitReachedError,
     invalidCursorError,
+    notSortableError,
   ],
 
   async handler(input, ctx) {
@@ -222,14 +204,8 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
     const maskedFieldNote = MASKED_FIELDS.some((field) => named.includes(field))
       ? ` ${MASKED_FIELD_GUIDANCE}`
       : '';
-    const emptyNotice = (skip: number, total: number, totalUnverified?: boolean) =>
-      emptyResultMessage(
-        skip,
-        total,
-        `No animal adverse event reports matched${input.search ? ` search: ${codeLiteral(input.search)}` : ''}. Try broader filters — use animal.species, drug.active_ingredients.name, or reaction.veddra_term_name fields.${maskedFieldNote} ${formatFieldHint('animalandveterinary/event')}`,
-        totalUnverified,
-        searchAfter !== undefined,
-      );
+    const noMatch = () =>
+      `No animal adverse event reports matched${input.search ? ` search: ${codeLiteral(input.search)}` : ''}. Try broader filters — use animal.species, drug.active_ingredients.name, or reaction.veddra_term_name fields.${maskedFieldNote} ${formatFieldHint('animalandveterinary/event')}`;
 
     const projection = recordProjection(input.fields, IDENTITY_KEYS);
     const canvas = getCanvas();
@@ -251,26 +227,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
         ctx,
       });
       const staged = canvasResult(spill);
-      ctx.enrich({ totalResults: spill.total });
-      if (input.search) ctx.enrich.echo(input.search);
-      ctx.enrich.notice(
-        [
-          spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
-          phrasePlusHint(input.search, spill.total),
-          pageSizeNotice(size, staged),
-          projectionNotice(staged),
-          oversizedRecordNotice(staged),
-          stagingNotice(spill),
-          arrayTieNotice(
-            input.search,
-            spill.total,
-            ARRAY_PATHS,
-            spill.tableName ? { kind: 'staged', table: spill.tableName } : { kind: 'restage' },
-          ),
-        ]
-          .filter(Boolean)
-          .join(' '),
-      );
+      enrichSearchPage(ctx, { query, page: staged, size, noMatch, spill });
       return staged;
     }
 
@@ -297,23 +254,7 @@ export const searchAnimalEventsTool = tool('openfda_search_animal_events', {
       returned: page.results.length,
     });
 
-    ctx.enrich({ totalResults: response.meta.total });
-    if (input.search) ctx.enrich.echo(input.search);
-    const notices = [
-      page.results.length === 0
-        ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
-        : undefined,
-      phrasePlusHint(input.search, response.meta.total),
-      pageSizeNotice(size, page) ?? cursorEndNotice(page, searchAfter),
-      projectionNotice(page),
-      oversizedRecordNotice(page),
-      arrayTieNotice(input.search, response.meta.total, ARRAY_PATHS, {
-        kind: 'restage',
-        byCursor: searchAfter !== undefined,
-      }),
-    ].filter(Boolean);
-    if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
-
+    enrichSearchPage(ctx, { query, page, size, noMatch, response, searchAfter });
     return page;
   },
 

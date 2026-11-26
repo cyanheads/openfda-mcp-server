@@ -38,6 +38,7 @@ import { searchDrugShortagesTool } from '@/mcp-server/tools/definitions/search-d
 import { searchRecallsTool } from '@/mcp-server/tools/definitions/search-recalls.tool.js';
 import { searchTobaccoReportsTool } from '@/mcp-server/tools/definitions/search-tobacco-reports.tool.js';
 import { setCanvas } from '@/services/canvas/canvas-accessor.js';
+import { toolsWithInput } from '../../../helpers/tool-registry.js';
 
 const TENANT = 'acquire-failures';
 
@@ -52,6 +53,10 @@ const STAGING_TOOLS: readonly (readonly [AnyToolDefinition, Record<string, unkno
   [searchTobaccoReportsTool, {}],
   [lookupNdcTool, { search: 'aspirin' }],
 ];
+
+it('STAGING_TOOLS has a row for exactly the tools that take stage (#116)', () => {
+  expect(STAGING_TOOLS.map(([tool]) => tool.name).sort()).toEqual(toolsWithInput('stage'));
+});
 
 let canvas: DataCanvas | undefined;
 

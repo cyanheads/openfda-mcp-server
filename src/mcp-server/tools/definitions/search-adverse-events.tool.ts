@@ -34,11 +34,10 @@ import {
   TREATMENT_DURATION_UNITS,
   withCodeLabels,
 } from '@/mcp-server/tools/drug-event-codes.js';
-import { formatFieldHint, OBJECT_ARRAY_PATHS } from '@/mcp-server/tools/field-catalog.js';
+import { formatFieldHint } from '@/mcp-server/tools/field-catalog.js';
 import {
   codeLiteral,
   emptyPageBody,
-  emptyResultMessage,
   formatRemainingFields,
   lineContent,
   projectedRecordLines,
@@ -48,7 +47,6 @@ import {
 } from '@/mcp-server/tools/format-utils.js';
 import {
   type CursorQuery,
-  cursorEndNotice,
   cursorInput,
   cursorOutputShape,
   invalidCursorError,
@@ -61,9 +59,9 @@ import {
   fieldSelection,
   fieldsDescription,
   limitAboveCapError,
+  notSortableError,
   pageLimitBy,
   pageMetaOutput,
-  pageSizeNotice,
   paginationLimitReachedError,
   rateLimitedError,
   resolvePageSize,
@@ -73,15 +71,11 @@ import {
   sortExpression,
   upstreamError,
 } from '@/mcp-server/tools/schema-utils.js';
-import {
-  type ArrayTieRoute,
-  arrayTieNotice,
-  fieldPathsNamed,
-} from '@/mcp-server/tools/search-clauses.js';
+import { fieldPathsNamed } from '@/mcp-server/tools/search-clauses.js';
+import { enrichSearchPage } from '@/mcp-server/tools/search-enrichment.js';
 import {
   assertSearchDelimitersBalanced,
   malformedSearchError,
-  phrasePlusHint,
   SEARCH_SYNTAX_NOTE,
   searchExpression,
 } from '@/mcp-server/tools/search-expression.js';
@@ -97,21 +91,14 @@ import {
   STAGING_WORKFLOW,
   spillSearch,
   stageInput,
-  stagingNotice,
 } from '@/services/openfda/canvas-spill.js';
 import { getOpenFdaService } from '@/services/openfda/openfda-service.js';
-import {
-  inlinePage,
-  oversizedRecordNotice,
-  oversizedRecordOutputShape,
-} from '@/services/openfda/page-budget.js';
+import { inlinePage, oversizedRecordOutputShape } from '@/services/openfda/page-budget.js';
 import {
   includeDescription,
   LEFT_OUT_NOTICE_TOPIC,
-  omissionNotice,
   omissionOutputShape,
   pageProjection,
-  projectionNotice,
   projectionOutputShape,
 } from '@/services/openfda/record-projection.js';
 
@@ -360,6 +347,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
     },
     paginationLimitReachedError,
     invalidCursorError,
+    notSortableError,
   ],
 
   async handler(input, ctx) {
@@ -374,19 +362,8 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       sort: sortOrNewest(input, NEWEST_FIRST[input.category]),
     };
     const searchAfter = resolveCursor(input, query, ctx);
-    const emptyNotice = (skip: number, total: number, totalUnverified?: boolean) =>
-      emptyResultMessage(
-        skip,
-        total,
-        `No adverse event reports matched${input.search ? ` search: ${codeLiteral(input.search)}` : ''} in ${endpoint}. Try broadening filters or checking field names (for product searches use ${PRODUCT_FIELD_HINT[input.category]}). ${formatFieldHint(endpoint)}`,
-        totalUnverified,
-        searchAfter !== undefined,
-      );
-    // An endpoint the array table has not surveyed raises no notice.
-    const tieNotice = (total: number, route: ArrayTieRoute) => {
-      const arrays = OBJECT_ARRAY_PATHS[endpoint];
-      return arrays && arrayTieNotice(input.search, total, arrays, route);
-    };
+    const noMatch = () =>
+      `No adverse event reports matched${input.search ? ` search: ${codeLiteral(input.search)}` : ''} in ${endpoint}. Try broadening filters or checking field names (for product searches use ${PRODUCT_FIELD_HINT[input.category]}). ${formatFieldHint(endpoint)}`;
 
     const projection = pageProjection(endpoint, IDENTITY_KEYS, {
       fields: input.fields,
@@ -412,25 +389,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
         ctx,
       });
       const staged = canvasResult(spill);
-      ctx.enrich({ totalResults: spill.total });
-      if (input.search) ctx.enrich.echo(input.search);
-      ctx.enrich.notice(
-        [
-          spill.preview.length === 0 ? emptyNotice(spill.skip, spill.total) : undefined,
-          phrasePlusHint(input.search, spill.total),
-          pageSizeNotice(size, staged),
-          projectionNotice(staged),
-          omissionNotice(staged),
-          oversizedRecordNotice(staged),
-          stagingNotice(spill),
-          tieNotice(
-            spill.total,
-            spill.tableName ? { kind: 'staged', table: spill.tableName } : { kind: 'restage' },
-          ),
-        ]
-          .filter(Boolean)
-          .join(' '),
-      );
+      enrichSearchPage(ctx, { query, page: staged, size, noMatch, spill });
       return staged;
     }
 
@@ -458,21 +417,7 @@ export const searchAdverseEventsTool = tool('openfda_search_adverse_events', {
       returned: page.results.length,
     });
 
-    ctx.enrich({ totalResults: response.meta.total });
-    if (input.search) ctx.enrich.echo(input.search);
-    const notices = [
-      page.results.length === 0
-        ? emptyNotice(response.meta.skip, response.meta.total, response.meta.totalUnverified)
-        : undefined,
-      phrasePlusHint(input.search, response.meta.total),
-      pageSizeNotice(size, page) ?? cursorEndNotice(page, searchAfter),
-      projectionNotice(page),
-      omissionNotice(page),
-      oversizedRecordNotice(page),
-      tieNotice(response.meta.total, { kind: 'restage', byCursor: searchAfter !== undefined }),
-    ].filter(Boolean);
-    if (notices.length > 0) ctx.enrich.notice(notices.join(' '));
-
+    enrichSearchPage(ctx, { query, page, size, noMatch, response, searchAfter });
     return page;
   },
 

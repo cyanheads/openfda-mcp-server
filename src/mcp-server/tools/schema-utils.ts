@@ -23,6 +23,7 @@ import { type Context, type TypedFail, z } from '@cyanheads/mcp-ts-core';
 import { JsonRpcErrorCode, validationError } from '@cyanheads/mcp-ts-core/errors';
 import { createCounter } from '@cyanheads/mcp-ts-core/utils';
 import { getServerConfig } from '@/config/server-config.js';
+import type { OpenFdaResponse } from '@/services/openfda/types.js';
 
 /**
  * A free-text input that must carry at least one non-whitespace character.
@@ -93,13 +94,31 @@ export const rateLimitedError = {
   thrownBy: 'service',
 } as const;
 
-/** The `errors[]` entry for openFDA answering 5xx, raised by the service below the handler. */
+/**
+ * The `errors[]` entry for openFDA answering 5xx, or 200 with a body that is not
+ * its JSON (a proxy's page, a body cut short), raised by the service below the
+ * handler.
+ */
 export const upstreamError = {
   reason: 'upstream_error',
   code: JsonRpcErrorCode.ServiceUnavailable,
-  when: 'The openFDA API returned a 5xx server error.',
+  when: 'The openFDA API returned a 5xx error, or a 200 that is not openFDA JSON.',
   retryable: true,
   recovery: 'Retry after a short wait; if the error persists check api.fda.gov status.',
+  thrownBy: 'service',
+} as const;
+
+/**
+ * The `errors[]` entry every tool taking `sort` declares for a sort key openFDA
+ * cannot sort on, raised by the service below the handler from openFDA's own
+ * refusal.
+ */
+export const notSortableError = {
+  reason: 'not_sortable',
+  code: JsonRpcErrorCode.ValidationError,
+  when: 'openFDA refused a key in sort: analyzed text, an .exact form the field lacks, a field with no sortable form, or one the endpoint lacks.',
+  recovery:
+    'Sort on the field’s other form (add or drop .exact) or on another field; a field that fails both ways cannot be sorted.',
   thrownBy: 'service',
 } as const;
 
@@ -315,9 +334,11 @@ export const limitAboveCapError = {
  * the requested value, the cap applied, and where the next page starts — or that
  * this page ends the match, or that the next page would pass openFDA's `skip`
  * ceiling, and how to read past it: the page's `next_cursor` when it carries
- * one, else a walk from `skip: 0`. `page` is the response the call returns, its
- * `meta.skip` the walk position on a page read by cursor; the count term list
- * has no `skip`, so it omits it.
+ * one, else a walk from `skip: 0` — except on a page whose next link openFDA
+ * cannot follow (`searchAfterBlocked`), where that walk reaches the same link
+ * and the blocked notice names the way on. `page` is the response the call
+ * returns, its `meta.skip` the walk position on a page read by cursor; the count
+ * term list has no `skip`, so it omits it.
  */
 export function pageSizeNotice(
   size: PageSize,
@@ -325,6 +346,7 @@ export function pageSizeNotice(
     meta: { skip: number; total: number };
     next_cursor?: string | undefined;
     results: readonly unknown[];
+    searchAfterBlocked?: OpenFdaResponse['searchAfterBlocked'];
   },
 ): string | undefined {
   if (size.clampedFrom === undefined) return;
@@ -338,10 +360,12 @@ export function pageSizeNotice(
     return `${head}; this page holds the last ${returned} of the ${page.meta.total} matched records.`;
   }
   if (next > OPENFDA_MAX_SKIP) {
+    const past = `${head}. The next page would start at skip=${next}, past openFDA's ${OPENFDA_MAX_SKIP}-record pagination ceiling`;
+    if (page.searchAfterBlocked) return `${past}.`;
     const route = page.next_cursor
       ? 'follow next_cursor to read it'
       : `to read past it, ${PAST_CEILING_ROUTE}`;
-    return `${head}. The next page would start at skip=${next}, past openFDA's ${OPENFDA_MAX_SKIP}-record pagination ceiling — ${route}.`;
+    return `${past} — ${route}.`;
   }
   return `${head}. The next page starts at skip=${next}.`;
 }
@@ -403,9 +427,9 @@ const SORT_DIRECTION =
  * openFDA rejects it (`query_shard_exception` for `report_date `).
  *
  * The field path is shape-only. A well-formed path naming a field that does not
- * exist or is analyzed still needs the upstream request to arbitrate — openFDA
- * answers those with a 400 that names the field, which the `query_error` contract
- * surfaces as-is.
+ * exist, is analyzed, or lacks the form given still needs the upstream request to
+ * arbitrate — openFDA refuses those with a 400 or 5xx naming the field, which the
+ * service raises as `not_sortable` with the form to try.
  */
 const SORT_EXPRESSION_PATTERN = new RegExp(
   [
@@ -460,7 +484,8 @@ export function sortExpression() {
  * relevance: the `search_after` value an unsorted page links to is a single
  * document-id key, and `brand_name:aspirin` on `drug/ndc` lists "Low Dose
  * Aspirin" before "Aspirin". The rejected-character and non-sortable-field
- * rules are left to the `pattern` and the `query_error` that names the field.
+ * rules are left to the `pattern` and the `not_sortable` error that names the
+ * field.
  * Append any further text the tool needs after it.
  */
 export function sortDescription(options: { example?: string; newest?: string } = {}): string {

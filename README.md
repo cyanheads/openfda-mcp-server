@@ -67,7 +67,7 @@ FDA data on drugs, food, cosmetics, devices, tobacco, veterinary products, and r
 ### `openfda_search_adverse_events` <sub>tool</sub>
 
 - `category` (`drug`, `food`, `device`, `cosmetic`) selects the endpoint and its record schema; `limit` defaults to 5 (cap 25) for drug, 25 (cap 1000) for food and cosmetic, 10 (cap 175) for device
-- Sortable date fields differ by category: `receivedate` (drug), `date_created` (food), `date_received` (device), `initial_received_date` (cosmetic, the date FDA first received the report); another category's field fails as `query_error`; with neither `search` nor `sort`, results come newest first on that field
+- Sortable date fields differ by category: `receivedate` (drug), `date_created` (food), `date_received` (device), `initial_received_date` (cosmetic, the date FDA first received the report); another category's field fails as `not_sortable`; with neither `search` nor `sort`, results come newest first on that field
 - A drug page read without `fields` leaves `patient.drug.openfda` out of each report, the bulk of the page, and lists it in `omitted_fields` with its bytes; `include` returns it, or a path beneath it, and so does a `search` clause on `patient.drug.openfda.*`
 - A matched search that AND-s clauses under one array (`patient.drug`, `patient.reaction`, a device's `device`, `patient`, or `mdr_text`, a food or cosmetic report's `products`) carries a notice: openFDA tests each clause against the whole report, so different entries can meet them. It names the array, the fields, and the staged SQL that requires one entry
 - Text output lists each reaction with its outcome (`Death — fatal (5)`), shows onset age with its unit (`3 month (802)`), and decodes the coded drug and report fields from FDA's field reference beside the raw value (`via oral (048)`, `elderly (6)`, `drug withdrawn (1)`); structured output keeps the codes
@@ -186,16 +186,16 @@ Built on [`@cyanheads/mcp-ts-core`](https://github.com/cyanheads/mcp-ts-core): s
 
 openFDA-specific:
 
-- One client for all 24 openFDA endpoints, with retry on 429 and 5xx. No API key is needed (1K requests/day); a free `OPENFDA_API_KEY` raises that to 120K/day
+- One client for all 24 openFDA endpoints, with retry on 429, on 5xx, and on a 200 that is not openFDA JSON. No API key is needed (1K requests/day); a free `OPENFDA_API_KEY` raises that to 120K/day
 - Queries are `field:value` over dotted paths joined by AND/OR (a URL-style `+` between clauses reads as a space, and an unquoted hyphenated value such as `D-0123-2024` is sent quoted); `openfda_describe_fields` lists the paths, and a malformed query fails as `malformed_search` before any request: an unclosed quote, group, or range, a trailing backslash, or a character openFDA refuses (one of ``! # $ ; ? ^ ` | ~`` or anything outside printable ASCII), named with its position
 - Paging: `limit` is the page size, with a default and cap per endpoint (default 5 and cap 25 for drug adverse events, default 25 and cap 1000 for the shortest records); a larger value is clamped to the cap with a notice, and `skip` runs up to openFDA's 25,000-record ceiling (`pagination_limit_reached` past it); no page is cut to a byte budget
-- Past the ceiling: every search tool, `openfda_lookup_ndc`, and `openfda_get_drug_label` return `next_cursor` on a page read at `skip` 0 or by cursor while records remain; pass it as `cursor` to continue, from skip 0, past 25,000. `limit`, `fields`, `include`, and `sections` may change between pages; the endpoint, `search`, and `sort` may not (`invalid_cursor`), and a `cursor` cannot come with `skip` above 0, `stage`, or `canvas_id`
+- Past the ceiling: every search tool, `openfda_lookup_ndc`, and `openfda_get_drug_label` return `next_cursor` on a page read at `skip` 0 or by cursor while records remain and openFDA's next link can be followed; pass it as `cursor` to continue, from skip 0, past 25,000. A sorted walk that reaches the records lacking the sort field, or a link that repeats its page, carries no `next_cursor`, and a notice names the way on. `limit`, `fields`, `include`, and `sections` may change between pages; the endpoint, `search`, and `sort` may not (`invalid_cursor`), and a `cursor` cannot come with `skip` above 0, `stage`, or `canvas_id`
 - `fields` on any `openfda_search_*` tool or `openfda_lookup_ndc` trims each record to the dotted paths you name, so large records fit inline; without `fields`, drug adverse events and device recalls and enforcement reports leave their heaviest paths out and list them in `omitted_fields`, and `include` returns them
 - DataCanvas staging (on by default; `CANVAS_PROVIDER_TYPE=none` turns it off) with `stage: true` or a `canvas_id`, and an optional local bulk mirror (`OPENFDA_MIRROR_ENABLED=true`) that answers exact-key lookups without spending API budget
 
 Agent-friendly output:
 
-- Disclosed bounds: the clamp notice, `projected_fields`, `omitted_fields`, the label `outline`, and `staged_rows` report every clamp, projection, left-out path, outline, and staging cut; `page_bytes` and `page_largest_fields` flag a record over 24,000 bytes
+- Disclosed bounds: the clamp notice, `projected_fields`, `omitted_fields`, the label `outline`, and `staged_rows` report every clamp, projection, left-out path, outline, and staging cut, and `truncated_by` names what stopped a staging drain short of the match (`size_budget` at about 16 MB, `row_ceiling` at 25,000 rows when a `skip` walk is all openFDA offers, `time_budget`, or `upstream_end`); `page_bytes` and `page_largest_fields` flag a record over 24,000 bytes
 - Typed failures: callers branch on `error.data.reason` (`rate_limited`, `query_error`, `not_aggregatable`, ...) instead of parsing messages
 - Unknown vs. absent: `openfda_drug_profile` returns `null` for a section with no FDA record and lists failed sections in `degraded[]`
 - Empty-result guidance: a no-match search points at `openfda_describe_fields`, broader terms, and the endpoint's own product-name field
@@ -342,7 +342,7 @@ See [`CLAUDE.md`](./CLAUDE.md) for development guidelines and architectural rule
 
 ## Data attribution
 
-Data comes from [openFDA](https://open.fda.gov), a U.S. Food and Drug Administration service. Under the [openFDA license](https://open.fda.gov/license/) the data is dedicated to the public domain under CC0 1.0, with one exception: GMDN® device-classification content (Term Code, Term Name, and Term Definition) is licensed from The GMDN Agency, and redistributing it or using it to train AI requires a separate licence from the Agency.
+Data comes from [openFDA](https://open.fda.gov), a U.S. Food and Drug Administration service. Under the [openFDA license](https://open.fda.gov/license/) the data is dedicated to the public domain under CC0 1.0, with one exception: GMDN® device nomenclature terms (Term Code, Term Name, and Term Definition, carried by `device/udi` records) are licensed from The GMDN Agency, and redistributing them or using them to train AI requires a separate licence from the Agency.
 
 That is why the local mirror covers drug datasets only. `device/classification` and every other device endpoint are excluded from it, and the ingester rejects any record carrying a GMDN-bearing field rather than writing it to disk.
 
